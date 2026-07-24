@@ -1,6 +1,7 @@
 package terminal
 
 import (
+	"context"
 	"log/slog"
 	"os"
 	"strings"
@@ -294,4 +295,98 @@ func TestNewHandler_NilLoggerDoesNotPanic(t *testing.T) {
 		t.Fatalf("ensureStarted: %v", err)
 	}
 	defer h.Shutdown()
+}
+
+// commandCaptureHandler records every slog record for command-attr assertions.
+type commandCaptureHandler struct {
+	records *[]slog.Record
+}
+
+func (h commandCaptureHandler) Enabled(context.Context, slog.Level) bool { return true }
+func (h commandCaptureHandler) Handle(_ context.Context, r slog.Record) error {
+	*h.records = append(*h.records, r.Clone())
+	return nil
+}
+func (h commandCaptureHandler) WithAttrs([]slog.Attr) slog.Handler { return h }
+func (h commandCaptureHandler) WithGroup(string) slog.Handler      { return h }
+
+// startAndCollectRecords starts a real short-lived process under a capturing
+// logger built from the given options and returns every record emitted through
+// process start.
+func startAndCollectRecords(t *testing.T, opts ...Option) []slog.Record {
+	t.Helper()
+	var records []slog.Record
+	logger := slog.New(commandCaptureHandler{records: &records})
+	h := NewHandler([]string{"/bin/sh", "-c", "true"},
+		append([]Option{WithWorkDir("/"), WithLogger(logger)}, opts...)...)
+	if err := h.ensureStarted(24, 80); err != nil {
+		t.Fatalf("ensureStarted: %v", err)
+	}
+	defer h.Shutdown()
+	return records
+}
+
+// commandAttrOf returns the string form of the "command" attribute of the
+// process-start record, failing the test when the record or attr is missing.
+func commandAttrOf(t *testing.T, records []slog.Record) string {
+	t.Helper()
+	for _, r := range records {
+		if r.Message != "terminal: process started" {
+			continue
+		}
+		var got string
+		var found bool
+		r.Attrs(func(a slog.Attr) bool {
+			if a.Key == "command" {
+				got = a.Value.String()
+				found = true
+				return false
+			}
+			return true
+		})
+		if !found {
+			t.Fatal("process-start record carries no command attribute")
+		}
+		return got
+	}
+	t.Fatal("no process-start record emitted")
+	return ""
+}
+
+// TestNewHandler_WithCommandLogValue verifies the process-start line records
+// the fixed marker instead of the argv, and that no record leaks the argv.
+func TestNewHandler_WithCommandLogValue(t *testing.T) {
+	records := startAndCollectRecords(t, WithCommandLogValue("[redacted]"))
+
+	if got := commandAttrOf(t, records); got != "[redacted]" {
+		t.Errorf("command attr = %q, want the fixed marker", got)
+	}
+	for _, r := range records {
+		r.Attrs(func(a slog.Attr) bool {
+			if s := a.Value.String(); strings.Contains(s, "/bin/sh") {
+				t.Errorf("argv leaked through %q attr %q = %q", r.Message, a.Key, s)
+			}
+			return true
+		})
+	}
+}
+
+// TestNewHandler_WithCommandLogValue_defaultLogsArgv pins the default: without
+// the option the process-start line records the full argv.
+func TestNewHandler_WithCommandLogValue_defaultLogsArgv(t *testing.T) {
+	records := startAndCollectRecords(t)
+
+	if got := commandAttrOf(t, records); !strings.Contains(got, "/bin/sh") {
+		t.Errorf("command attr = %q, want the argv by default", got)
+	}
+}
+
+// TestNewHandler_WithCommandLogValue_emptyIgnored pins the skip-zero option
+// convention: an empty value keeps the default argv logging.
+func TestNewHandler_WithCommandLogValue_emptyIgnored(t *testing.T) {
+	records := startAndCollectRecords(t, WithCommandLogValue(""))
+
+	if got := commandAttrOf(t, records); !strings.Contains(got, "/bin/sh") {
+		t.Errorf("command attr = %q, want the argv when the option value is empty", got)
+	}
 }

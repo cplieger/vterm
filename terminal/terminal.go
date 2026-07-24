@@ -153,6 +153,7 @@ type handlerConfig struct {
 	onProcessExit      func(error)
 	theme              *vt.Theme
 	workDir            string
+	commandLogValue    string
 	env                []string
 	scrollbackCapacity int
 	keepUnfocused      bool
@@ -171,6 +172,25 @@ func WithLogger(l *slog.Logger) Option {
 			l = slog.New(slog.DiscardHandler)
 		}
 		c.logger = l
+	}
+}
+
+// WithCommandLogValue replaces the value the process-start log line records
+// as its "command" attribute. By default the line carries the child's full
+// argv; a consumer whose argv embeds operator-supplied values that could
+// carry a credential (CWE-532 — e.g. launch flags interpolated from a
+// compose file) passes a fixed marker such as "[redacted]" so the launch
+// event stays logged, and greppable by the stable "command" key, without
+// disclosing the argument values. This is the engine's only argv-bearing
+// log site, so the option makes the whole lifecycle log safe for sensitive
+// argv without the consumer wrapping the logger in a redacting slog.Handler.
+// An empty v is ignored (the package's skip-zero option convention), keeping
+// the default argv logging.
+func WithCommandLogValue(v string) Option {
+	return func(c *handlerConfig) {
+		if v != "" {
+			c.commandLogValue = v
+		}
 	}
 }
 
@@ -554,8 +574,12 @@ func (h *Handler) ensureStarted(cols, rows int) error {
 	h.started.Store(true)
 	h.sizeEstablished = true
 	h.screen.Resize(rows, cols)
+	loggedCommand := any(h.command)
+	if h.cfg.commandLogValue != "" {
+		loggedCommand = h.cfg.commandLogValue
+	}
 	h.cfg.logger.Info("terminal: process started",
-		"pid", cmd.Process.Pid, "command", h.command, "cols", cols, "rows", rows)
+		"pid", cmd.Process.Pid, "command", loggedCommand, "cols", cols, "rows", rows)
 
 	// PTY reader goroutine — feeds VT screen and notifies clients.
 	go h.readLoop(ctx)

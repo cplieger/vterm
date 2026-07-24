@@ -1348,7 +1348,7 @@ func (h *Handler) handleResume(ws *websocket.Conn, state *clientState, sessionID
 		// together the two lines make a forgotten-ledger incident correlatable
 		// end to end.
 		h.cfg.logger.Info("terminal: resume key missed with claimed sent bytes; signaling ledger loss",
-			"session_id", logID(sessionID), "sent_bytes", sentBytes)
+			"session_id", LogID(sessionID), "sent_bytes", sentBytes)
 	}
 
 	h.mu.Lock()

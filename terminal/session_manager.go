@@ -204,14 +204,26 @@ func (m *SessionManager) Create() (string, error) {
 	m.created++
 	m.mu.Unlock()
 
-	m.logger.Info("session: created", "session", logID(id), "sessions", n)
+	m.logger.Info("session: created", "session", LogID(id), "sessions", n)
 	return id, nil
 }
 
-// logID returns a short, correlation-safe prefix of a session id for logs.
-// The full id is a WS routing + resume capability token; logging it in full
-// places a session-access token into aggregated logs (CWE-532).
-func logID(id string) string {
+// LogID returns a short, correlation-safe prefix of a session id for logs:
+// the first 8 bytes plus an ellipsis, or the id unchanged when it is already
+// that short. Session ids are cryptographically-random hex, so a byte prefix
+// never splits a rune.
+//
+// The full id is a WS routing + resume capability token: logging it whole
+// places a session-access credential into aggregated logs (CWE-532), where
+// anyone with log-read reach and network access can attach to the session.
+// Every consumer that logs a session id — its own lifecycle lines, a
+// per-session logger's bound attribute — must pass it through here rather
+// than re-deriving the truncation, so the fleet keeps ONE definition of how
+// much of a session token may be logged. Exported for exactly that reason:
+// re-implemented copies drift, and the drift is silent (a wrong length leaks
+// more entropy; a missing call leaks the whole token) unless a test asserts
+// the logged value, which is why consumers should pin it.
+func LogID(id string) string {
 	if len(id) > 8 {
 		return id[:8] + "\u2026"
 	}
@@ -274,7 +286,7 @@ func (m *SessionManager) Close(id string) bool {
 		return false
 	}
 	s.handler.Shutdown()
-	m.logger.Info("session: closed", "session", logID(id))
+	m.logger.Info("session: closed", "session", LogID(id))
 	return true
 }
 
@@ -492,7 +504,7 @@ func (m *SessionManager) maybeReap() {
 	m.mu.Unlock()
 	for _, s := range victims {
 		s.handler.Shutdown()
-		m.logger.Info("session: reaped (no client for idle window)", "session", logID(s.id))
+		m.logger.Info("session: reaped (no client for idle window)", "session", LogID(s.id))
 	}
 }
 

@@ -177,7 +177,7 @@ func (r *clientRegistry) gcIdleSessions() {
 		if time.Since(s.lastSeen) > 60*time.Minute {
 			if s.bytesReceived > 0 {
 				r.logger.Info("terminal: gc'd idle session with received bytes",
-					"session_id", logID(id),
+					"session_id", LogID(id),
 					"bytes_received", s.bytesReceived,
 					"idle", time.Since(s.lastSeen).Round(time.Second))
 			}

@@ -74,6 +74,7 @@ package terminal
 
 import (
 	"encoding/binary"
+	"fmt"
 	"unicode/utf8"
 
 	"github.com/cplieger/web-terminal-engine/v3/vt"
@@ -162,6 +163,58 @@ const (
 	// guessing from an ambiguous received=0.
 	resumeAckFlagLedgerLost byte = 1 << 0
 )
+
+// WirePairIncompatibility reports whether a Go-server / TS-client PAIR is
+// declared-incompatible before either half runs, and why. It is the
+// peer-less, build-time form of the compatibility decision this package
+// already makes twice at runtime — the server refusing a below-floor client
+// (close code WireIncompatibleCloseCode) and the TS client refusing a
+// below-floor server — so a consumer's release gate can reach the same
+// verdict from two pairs of published integers instead of restating the rule.
+//
+// serverRev / serverMinClient are normally this package's WireProtocolVersion
+// and MinSupportedClientWireVersion; they are parameters so a gate can also
+// judge a pairing that does not involve the engine version it links against
+// (a cross-version matrix, a proposed bump). clientRev / clientMinServer come
+// from the TS half's WIRE_PROTOCOL_VERSION / MIN_SUPPORTED_SERVER_WIRE_VERSION.
+//
+// Returns "" when both declared floors admit the pairing; otherwise a
+// human-readable reason naming the violated floor, the two revisions, and
+// which half is behind. A caller decorates that with its own remediation
+// (which pin to bump is the consumer's build-layout knowledge, not the
+// engine's). Both floors are EXCLUSIVE bounds: a revision exactly at the
+// peer's floor is compatible, matching the runtime checks.
+//
+// Deliberately stricter than runtime on version-silent input: a
+// non-positive argument is a caller error (it cannot be distinguished from
+// "not extracted"), so it is reported rather than tolerated. At runtime a
+// version-silent peer declares 0 and stays supported; at build time a 0 means
+// the gate failed to read the constant and must fail loudly.
+//
+// Higher-than-known revisions are compatible here, as at runtime: a future
+// revision alone does not prove its compatible baseline is unusable.
+func WirePairIncompatibility(serverRev, serverMinClient, clientRev, clientMinServer int) string {
+	switch {
+	case serverRev <= 0 || serverMinClient <= 0:
+		return fmt.Sprintf(
+			"server wire revisions must be positive (got rev %d, min client %d)",
+			serverRev, serverMinClient)
+	case clientRev <= 0 || clientMinServer <= 0:
+		return fmt.Sprintf(
+			"client wire revisions must be positive (got rev %d, min server %d)",
+			clientRev, clientMinServer)
+	case serverRev < clientMinServer:
+		return fmt.Sprintf(
+			"Go server wire revision %d is below the TS client's minimum supported server revision %d (the Go half is behind)",
+			serverRev, clientMinServer)
+	case clientRev < serverMinClient:
+		return fmt.Sprintf(
+			"TS client wire revision %d is below the Go server's minimum supported client revision %d (the TS half is behind)",
+			clientRev, serverMinClient)
+	default:
+		return ""
+	}
+}
 
 // encodeScreenMsg builds a binary screen frame containing only the
 // rows whose indices appear in `changed`. screenHeight is the full

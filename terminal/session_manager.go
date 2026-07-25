@@ -122,6 +122,17 @@ type session struct {
 	autoTitle string
 }
 
+// titleSources is the four inputs effectiveTitle resolves. A struct rather than
+// four positional strings: they are all the same type, three of them are
+// title-shaped, and a swapped pair at a call site would silently invert the
+// precedence while every unit test of effectiveTitle itself still passed.
+type titleSources struct {
+	pinned string // the user's explicit name
+	osc    string // the program's OSC 0/2 window title
+	client string // a client-derived automatic title we were asked to remember
+	auto   string // the server's own inference (foreground process / cwd / command)
+}
+
 // effectiveTitle combines a session's title sources in precedence order:
 // explicit beats inferred. The user's pinned name wins outright; then the live
 // OSC window title, when the program set one; then a client-derived title a
@@ -136,17 +147,17 @@ type session struct {
 // three from manager state (m.mu), and every caller (List, snapshot,
 // diffStatuses) reads them under their own locks — never one lock nested in the
 // other.
-func effectiveTitle(pinnedTitle, oscTitle, clientTitle, autoTitle string) string {
-	if pinnedTitle != "" {
-		return pinnedTitle
+func effectiveTitle(src titleSources) string {
+	if src.pinned != "" {
+		return src.pinned
 	}
-	if oscTitle != "" {
-		return oscTitle
+	if src.osc != "" {
+		return src.osc
 	}
-	if clientTitle != "" {
-		return clientTitle
+	if src.client != "" {
+		return src.client
 	}
-	return autoTitle
+	return src.auto
 }
 
 // SessionManager maps session ids to PTY-backed handlers and serves the
@@ -305,7 +316,10 @@ func (m *SessionManager) List() []SessionInfo {
 	for i := range items {
 		it := &items[i]
 		it.info.Status = refinedStatus(it.lastStatus, it.handler)
-		it.info.Title = effectiveTitle(it.info.PinnedTitle, it.handler.Title(), it.info.ClientTitle, it.autoTitle)
+		it.info.Title = effectiveTitle(titleSources{
+			pinned: it.info.PinnedTitle, osc: it.handler.Title(),
+			client: it.info.ClientTitle, auto: it.autoTitle,
+		})
 		// reportsActivity mirrors the status stream: sticky once any OSC 9;4
 		// progress has been seen (Progress() >= 0), or a notification latched.
 		it.info.ReportsActivity = it.handler.Progress() >= 0 || it.latched
@@ -344,7 +358,7 @@ func (m *SessionManager) SetSessionTitle(id, title string) bool {
 	if !ok {
 		return false
 	}
-	s.clientTitle = title
+	s.clientTitle = sanitizeTitle(title, maxClientTitleRunes)
 	return true
 }
 
@@ -359,7 +373,7 @@ func (m *SessionManager) SetSessionPinnedTitle(id, title string) bool {
 	if !ok {
 		return false
 	}
-	s.pinnedTitle = title
+	s.pinnedTitle = sanitizeTitle(title, maxPinnedTitleRunes)
 	return true
 }
 
@@ -486,7 +500,7 @@ func (m *SessionManager) handleSetTitle(w http.ResponseWriter, r *http.Request) 
 	if !ok {
 		return
 	}
-	if m.SetSessionTitle(r.PathValue("id"), sanitizeTitle(title, maxClientTitleRunes)) {
+	if m.SetSessionTitle(r.PathValue("id"), title) {
 		w.WriteHeader(http.StatusNoContent)
 		return
 	}

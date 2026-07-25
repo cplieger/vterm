@@ -82,8 +82,9 @@ type statusTracker struct {
 // It is elapsed time, not a sample count: "the same pgid on two consecutive
 // sweeps" would be only statusSweepInterval apart and therefore phase-sensitive,
 // adopting a 260ms command or missing a 400ms one depending on where the ticks
-// landed. At a 250ms sweep this is the third consecutive observation, so adoption
-// lands 500-750ms after the command starts.
+// landed. Adoption therefore lands within one sweep past this window, whatever
+// statusSweepInterval happens to be — do not restate the arithmetic in terms of a
+// particular tick count, which rots the moment the interval changes.
 //
 // 500ms is chosen, not inherited. tmux's NAME_INTERVAL is also 500ms but is a
 // different mechanism — a rate limit on how often it recomputes a window name,
@@ -240,7 +241,9 @@ func (m *SessionManager) diffStatuses() []statusEvent {
 		// List and snapshot read one confirmed value instead of each probing
 		// procfs and disagreeing with this stream.
 		m.confirmAutoTitle(s, it, tr)
-		title := effectiveTitle(pinnedTitle, it.oscTitle, clientTitle, s.autoTitle)
+		title := effectiveTitle(titleSources{
+			pinned: pinnedTitle, osc: it.oscTitle, client: clientTitle, auto: s.autoTitle,
+		})
 		// reportsActivity is sticky: Progress() stays >= 0 once any OSC 9;4 has
 		// been seen (state 0 is "cleared", not "never seen" = -1), and a latched
 		// notification is the other genuine OSC 9 signal. The client reveals the
@@ -416,7 +419,10 @@ func (m *SessionManager) snapshot() []statusEvent {
 	for i := range items {
 		it := &items[i]
 		it.ev.Status = refinedStatus(it.lastStatus, it.handler)
-		it.ev.Title = effectiveTitle(it.ev.PinnedTitle, it.handler.Title(), it.ev.ClientTitle, it.autoTitle)
+		it.ev.Title = effectiveTitle(titleSources{
+			pinned: it.ev.PinnedTitle, osc: it.handler.Title(),
+			client: it.ev.ClientTitle, auto: it.autoTitle,
+		})
 		it.ev.ReportsActivity = it.handler.Progress() >= 0 || it.latched
 		out = append(out, it.ev)
 	}

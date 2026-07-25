@@ -38,16 +38,29 @@ import (
 const procNameMaxBytes = 1024
 
 func probeForeground(ptmx *os.File, rootPID int) autoTitleProbe {
-	p := autoTitleProbe{ok: true, cwdBase: processCwdBase(rootPID)}
-	pgid, err := foregroundPGID(ptmx)
-	if err != nil || pgid <= 0 {
-		return p // no controlling terminal, or the ioctl failed: rest at the cwd
+	p := autoTitleProbe{ok: true}
+	pgid, pgidErr := foregroundPGID(ptmx)
+	if pgidErr == nil && pgid > 0 && pgid != rootPID {
+		// Something other than the session's own shell holds the terminal, so its
+		// name is the label and the cwd is never consulted — do not pay for the
+		// readlink 4x/s per session just to discard it.
+		p.pgid = pgid
+		if p.procName = processName(pgid); p.procName != "" {
+			return p
+		}
+	} else if pgidErr == nil && pgid > 0 {
+		p.pgid = pgid
 	}
-	p.pgid = pgid
-	if pgid == rootPID {
-		return p // the session's own shell is in the foreground; nothing is running
+	// Resting, or the foreground leader was unreadable (the documented pipeline
+	// case): the label is the session's own directory.
+	p.cwdBase = processCwdBase(rootPID)
+	if p.cwdBase == "" && pgidErr != nil {
+		// Neither interface answered, so this sweep learned NOTHING — which is not
+		// the same as "nothing is running". Report it as such (ok=false) so the
+		// confirmation window HOLDS the title instead of disarming, and hand back
+		// the reason so the caller can say so once.
+		return autoTitleProbe{err: pgidErr}
 	}
-	p.procName = processName(pgid)
 	return p
 }
 
@@ -139,9 +152,10 @@ func readArgv0(path string) string {
 	defer func() { _ = f.Close() }()
 	buf := make([]byte, procNameMaxBytes)
 	n, err := f.Read(buf)
-	if n <= 0 || (err != nil && n == 0) {
-		return ""
+	if n <= 0 {
+		return "" // nothing readable; err is immaterial once no bytes arrived
 	}
+	_ = err // a short read with bytes is fine: argv[0] is the first NUL-terminated field
 	argv0, _, found := bytes.Cut(buf[:n], []byte{0})
 	if !found {
 		return ""

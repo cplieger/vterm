@@ -193,6 +193,19 @@ func TestConfirmAutoTitleWindow(t *testing.T) {
 		}
 	})
 
+	t.Run("an armed candidate inside the window is still not adopted", func(t *testing.T) {
+		// The distinguishing case against a sample-COUNT implementation: the
+		// candidate is already armed and matches, so "the second observation
+		// adopts" would pass here. Only elapsed time may decide.
+		s, tr := newCase("workspace")
+		tr.candidatePGID = 42
+		tr.candidateSince = time.Now().Add(-autoTitleConfirm + 50*time.Millisecond)
+		m.confirmAutoTitle(s, probe(42, "vim", "workspace"), tr)
+		if s.autoTitle != "workspace" {
+			t.Errorf("autoTitle = %q, want the held %q: %v had not elapsed yet", s.autoTitle, "workspace", autoTitleConfirm)
+		}
+	})
+
 	t.Run("candidate held past the window is adopted", func(t *testing.T) {
 		s, tr := newCase("workspace")
 		tr.candidatePGID = 42

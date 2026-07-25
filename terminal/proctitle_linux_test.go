@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -143,19 +144,36 @@ func TestProbeForegroundNotStarted(t *testing.T) {
 	}
 }
 
-// TestProbeForegroundRunningChild is the rung-1 case end to end: with job control
-// enabled, a foreground command gets its own process group, so the probe names it.
-// This is the behaviour the whole automatic title exists for — a tab that reads
-// "vim" instead of the shell's name.
-//
-// Job control is what makes a foreground child its own process group, and a shell
-// only enables it when interactive, so the test asks for it explicitly (set -m).
-// If the available /bin/sh does not honour that, the probe keeps reporting the
-// shell and the test skips rather than failing: the mechanism under test is the
-// probe, not the shell's job-control support.
-func TestProbeForegroundRunningChild(t *testing.T) {
+// jobControlWorks reports whether the available /bin/sh puts a foreground child
+// in its own process group when asked to (set -m). This is a PREREQUISITE probe,
+// deliberately separate from the assertions that depend on it: a test that skipped
+// on "the title never appeared" would convert a broken probe into a silent pass,
+// since that is the same signature.
+func jobControlWorks(t *testing.T) bool {
+	t.Helper()
 	ptmx, pid := startPTY(t, "/bin/sh")
+	if _, err := ptmx.WriteString("set -m\nsleep 30\n"); err != nil {
+		t.Fatalf("write to pty: %v", err)
+	}
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		if p := probeForeground(ptmx, pid); p.pgid > 0 && p.pgid != pid {
+			return true
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	return false
+}
 
+// TestProbeForegroundRunningChild is the rung-1 case: with job control enabled, a
+// foreground command gets its own process group, so the probe names it. This is
+// the behaviour the whole automatic title exists for — a tab that reads "vim"
+// instead of the shell's name.
+func TestProbeForegroundRunningChild(t *testing.T) {
+	if !jobControlWorks(t) {
+		t.Skip("/bin/sh does not honour set -m here; job control is the shell's prerequisite, not the probe's behaviour")
+	}
+	ptmx, pid := startPTY(t, "/bin/sh")
 	if _, err := ptmx.WriteString("set -m\nsleep 30\n"); err != nil {
 		t.Fatalf("write to pty: %v", err)
 	}
@@ -170,9 +188,132 @@ func TestProbeForegroundRunningChild(t *testing.T) {
 			return // rung 1 reached
 		}
 		if time.Now().After(deadline) {
-			t.Skipf("/bin/sh did not put a foreground child in its own process group "+
-				"(last probe: %+v); job control is the shell's, not the probe's", p)
+			// The prerequisite held, so this IS the probe failing.
+			t.Fatalf("foreground child never named; last probe: %+v", p)
 		}
 		time.Sleep(20 * time.Millisecond)
+	}
+}
+
+// TestAutoTitleLadderThroughManager is the end-to-end ladder the design promised:
+// a real session on a real pty, driven by the real status sweep, observed through
+// the public SessionInfo.Title. It covers what the probe-level tests cannot — that
+// confirmAutoTitle, the sweep's sole-writer rule, and List all agree — plus the
+// two transitions that matter: resting at the cwd, adopting a confirmed
+// foreground command, and returning to rest when it exits.
+func TestAutoTitleLadderThroughManager(t *testing.T) {
+	if !jobControlWorks(t) {
+		t.Skip("/bin/sh does not honour set -m here; the foreground-adoption rung needs job control")
+	}
+	m := NewSessionManager(func(string) *Handler {
+		return NewHandler([]string{"/bin/sh"}, WithLogger(nil))
+	})
+	t.Cleanup(m.Shutdown)
+
+	id, err := m.Create()
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	titleOf := func() string {
+		for _, info := range m.List() {
+			if info.ID == id {
+				return info.Title
+			}
+		}
+		return ""
+	}
+	awaitTitle := func(t *testing.T, want string) {
+		t.Helper()
+		deadline := time.Now().Add(5 * time.Second)
+		for time.Now().Before(deadline) {
+			if titleOf() == want {
+				return
+			}
+			time.Sleep(25 * time.Millisecond)
+		}
+		t.Fatalf("title never became %q (last: %q)", want, titleOf())
+	}
+
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("Getwd: %v", err)
+	}
+	// Rung 3: the shell is at rest, so the label is the session's directory. (The
+	// seeded rung-4 value is "sh", so this also proves a sweep ran and refined it.)
+	awaitTitle(t, filepath.Base(wd))
+
+	// Rung 1: a foreground command that outlives the confirmation window.
+	h := handlerOf(t, m, id)
+	if _, err := h.ptmx.WriteString("set -m\nsleep 30\n"); err != nil {
+		t.Fatalf("write to pty: %v", err)
+	}
+	awaitTitle(t, "sleep")
+
+	// Back to rung 3 when it goes away: falling back is NOT debounced.
+	if _, err := h.ptmx.Write([]byte{0x03}); err != nil { // Ctrl-C
+		t.Fatalf("interrupt: %v", err)
+	}
+	awaitTitle(t, filepath.Base(wd))
+}
+
+// TestCleanProcName pins the sanitizer on the one automatic-title rung fed by
+// untrusted input: argv[0] is chosen by whoever started the process, so on a
+// shared terminal a hostile name must not reach a tab label, an SSE frame, or a
+// log line intact (CWE-117). Invalid UTF-8 returns EMPTY rather than a mangled
+// name, so the ladder falls to the next rung instead of rendering garbage.
+func TestCleanProcName(t *testing.T) {
+	long := strings.Repeat("n", procNameMaxRunes+40)
+	cases := map[string]struct {
+		in   string
+		want string
+	}{
+		"plain":            {"vim", "vim"},
+		"controls dropped": {"vi\nm\x1b[31m", "vim[31m"},
+		"del dropped":      {"vi\x7fm", "vim"},
+		"invalid utf8":     {"vim\xff\xfe", ""},
+		"empty":            {"", ""},
+		"bounded":          {long, strings.Repeat("n", procNameMaxRunes)},
+		"multibyte kept":   {"café", "café"},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			if got := cleanProcName(tc.in); got != tc.want {
+				t.Errorf("cleanProcName(%q) = %q, want %q", tc.in, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestReadArgv0 covers the bounded procfs read's failure directions against real
+// files: a NUL-separated argv yields its first element, and a buffer with NO
+// terminator yields empty rather than a truncated prefix — half a path is a worse
+// label than falling through to comm.
+func TestReadArgv0(t *testing.T) {
+	dir := t.TempDir()
+	write := func(t *testing.T, name string, content []byte) string {
+		t.Helper()
+		p := filepath.Join(dir, name)
+		if err := os.WriteFile(p, content, 0o600); err != nil {
+			t.Fatalf("write %s: %v", p, err)
+		}
+		return p
+	}
+
+	if got := readArgv0(write(t, "normal", []byte("/usr/bin/vim\x00-p\x00file\x00"))); got != "/usr/bin/vim" {
+		t.Errorf("readArgv0(normal) = %q, want %q", got, "/usr/bin/vim")
+	}
+	// No NUL anywhere in the bounded read: indistinguishable from a truncated
+	// prefix, so it must be rejected.
+	if got := readArgv0(write(t, "unterminated", []byte(strings.Repeat("x", procNameMaxBytes+50)))); got != "" {
+		t.Errorf("readArgv0(unterminated) = %q, want empty", got)
+	}
+	if got := readArgv0(write(t, "empty", nil)); got != "" {
+		t.Errorf("readArgv0(empty) = %q, want empty", got)
+	}
+	if got := readArgv0(write(t, "all-nul", []byte{0, 0, 0})); got != "" {
+		t.Errorf("readArgv0(all NUL) = %q, want empty", got)
+	}
+	if got := readArgv0(filepath.Join(dir, "does-not-exist")); got != "" {
+		t.Errorf("readArgv0(missing) = %q, want empty", got)
 	}
 }

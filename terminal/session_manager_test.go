@@ -368,21 +368,30 @@ func TestSessionManagerSetTitleREST(t *testing.T) {
 	}
 }
 
-// TestSanitizeTitle verifies the tab-label sanitizer: a >512-rune input is
-// truncated to 512 retained runes, and control characters (< 0x20) and DEL
-// (0x7f) are stripped so a title cannot inject newlines/control into the UI.
+// TestSanitizeTitle verifies the tab-label sanitizer at both of its bounds: a
+// client-derived title truncates at maxClientTitleRunes, a user-pinned name at
+// the tighter maxPinnedTitleRunes, and control characters (< 0x20) and DEL (0x7f)
+// are stripped either way so a title cannot inject newlines/control into the UI.
 func TestSanitizeTitle(t *testing.T) {
-	// Truncation: 600 plain runes reduce to exactly 512.
-	if got := sanitizeTitle(strings.Repeat("a", 600)); len([]rune(got)) != 512 {
-		t.Fatalf("sanitizeTitle(600 runes) length = %d, want 512", len([]rune(got)))
+	// Truncation is per-bound: the same 600-rune input reduces to each cap.
+	if got := sanitizeTitle(strings.Repeat("a", 600), maxClientTitleRunes); len([]rune(got)) != maxClientTitleRunes {
+		t.Fatalf("sanitizeTitle(600 runes, client) length = %d, want %d", len([]rune(got)), maxClientTitleRunes)
+	}
+	if got := sanitizeTitle(strings.Repeat("a", 600), maxPinnedTitleRunes); len([]rune(got)) != maxPinnedTitleRunes {
+		t.Fatalf("sanitizeTitle(600 runes, pinned) length = %d, want %d", len([]rune(got)), maxPinnedTitleRunes)
 	}
 	// A short plain title is unchanged.
-	if got := sanitizeTitle("plain title"); got != "plain title" {
+	if got := sanitizeTitle("plain title", maxClientTitleRunes); got != "plain title" {
 		t.Fatalf("sanitizeTitle(plain) = %q, want %q", got, "plain title")
 	}
 	// Control characters and DEL are stripped, surrounding runes preserved.
-	if got := sanitizeTitle("a\nb\x1bc\x7fd\te"); got != "abcde" {
+	if got := sanitizeTitle("a\nb\x1bc\x7fd\te", maxPinnedTitleRunes); got != "abcde" {
 		t.Fatalf("sanitizeTitle(control chars) = %q, want %q", got, "abcde")
+	}
+	// The cap counts RETAINED runes, so a control-heavy input is not shortened by
+	// the characters it drops.
+	if got := sanitizeTitle(strings.Repeat("a\n", 200), maxPinnedTitleRunes); got != strings.Repeat("a", maxPinnedTitleRunes) {
+		t.Fatalf("sanitizeTitle(control-heavy) = %q, want %d a's", got, maxPinnedTitleRunes)
 	}
 }
 

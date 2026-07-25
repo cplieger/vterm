@@ -9,16 +9,28 @@ import { nextBackoffDelay } from "./reconnect.js";
 
 /** SessionInfo is one session's wire shape: the JSON object the session REST
  *  API (GET/POST /api/sessions) returns per session. Mirrors the Go
- *  terminal.SessionInfo — the two are kept in lockstep by hand (single 6-field
- *  type; flip to wiregen if this surface grows). */
+ *  terminal.SessionInfo — the two are kept in lockstep by hand (single 7-field
+ *  type; flip to wiregen if this surface grows).
+ *
+ *  Three of the fields are title-shaped and they are not interchangeable:
+ *  `title` is the RESOLVED display title, `pinnedTitle` is the USER's name (set
+ *  and cleared only by a human action, outranking everything else), and
+ *  `clientTitle` is a CLIENT-DERIVED automatic title a client asked the server to
+ *  remember. */
 export interface SessionInfo {
   readonly id: string;
   readonly status: "working" | "idle" | "input" | "done" | "exited";
   readonly title: string;
-  /** the raw client-set title (before the OSC fallback baked into `title`); a
-   *  consumer that treats the program's OSC window title as unreliable reads
-   *  this instead of `title`. */
+  /** the raw client-derived automatic title (before the precedence baked into
+   *  `title`); a consumer that treats the program's OSC window title as
+   *  unreliable reads this instead of `title`. */
   readonly clientTitle?: string;
+  /** the user's pinned name, set through PUT /api/sessions/{id}/pinned-title and
+   *  cleared through DELETE on the same path. It outranks every automatic source
+   *  in `title`; it is carried raw so a UI can tell that a pin EXISTS (to offer
+   *  the automatic name again) rather than only seeing its effect. Absent or
+   *  empty means the session has no user-set name. */
+  readonly pinnedTitle?: string;
   readonly createdAt: string;
   /** true once the session has emitted a genuine activity signal — OSC 9;4
    *  progress (kiro-cli, Claude Code, …) or a classified OSC 9 notification.

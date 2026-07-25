@@ -7,3 +7,5 @@ require (
 	github.com/cplieger/runesafe v1.2.1
 	github.com/creack/pty v1.1.24
 )
+
+require golang.org/x/sys v0.47.0 // indirect

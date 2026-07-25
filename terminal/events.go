@@ -46,25 +46,82 @@ type statusEvent struct {
 	CreatedAt time.Time `json:"createdAt"`
 	ID        string    `json:"id"`
 	Status    string    `json:"status"`
-	Title     string    `json:"title"` // OSC-first effective title (effectiveTitle)
-	// ClientTitle is the raw stored client title, carried alongside Title so a
-	// consumer can read the pushed label directly (bypassing the OSC-first
-	// fallback in Title). Not carried on a Removed event.
-	ClientTitle     string `json:"clientTitle"`
+	Title     string    `json:"title"` // resolved display title (effectiveTitle)
+	// ClientTitle is the raw stored client-derived title, carried alongside Title
+	// so a consumer can read the pushed label directly (bypassing the precedence
+	// in Title). Not carried on a Removed event.
+	ClientTitle string `json:"clientTitle"`
+	// PinnedTitle is the raw user-set name, carried for the same reason and so a
+	// second client learns of a rename (or its removal) made elsewhere. Not
+	// carried on a Removed event.
+	PinnedTitle     string `json:"pinnedTitle"`
 	Removed         bool   `json:"removed,omitempty"`
 	ReportsActivity bool   `json:"reportsActivity"`
 }
 
 // statusTracker holds the per-session state the status computation needs beyond
 // the handler: the last emitted status/title (to detect changes), the last
-// notification sequence classified, and the latched needs-input/done state.
+// notification sequence classified, the latched needs-input/done state, and the
+// automatic-title confirmation window.
 type statusTracker struct {
+	candidateSince  time.Time // when candidatePGID was first observed
 	lastStatus      string
 	lastTitle       string
 	lastClientTitle string // last emitted raw client title (to detect a title-only PUT)
+	lastPinnedTitle string // last emitted raw pinned name (to detect a rename / clear)
 	latched         string // "", StatusInput, or StatusDone
 	notifSeen       uint64
+	candidatePGID   int  // foreground pgid awaiting the confirmation window
 	lastReports     bool // last emitted reportsActivity (to detect a false->true flip)
+}
+
+// autoTitleConfirm is how long a foreground process must hold the terminal
+// before its name is adopted as the session's automatic title. A command that
+// lives 30ms (ls, git status) must never flash into a tab label.
+//
+// 500ms matches tmux's own NAME_INTERVAL. It is elapsed time, not a sample
+// count: "the same pgid on two consecutive sweeps" would be only
+// statusSweepInterval apart and therefore phase-sensitive, adopting a 260ms
+// command or missing a 400ms one depending on where the ticks landed. At a 250ms
+// sweep this is the third consecutive observation, so adoption lands 500-750ms
+// after the command starts.
+const autoTitleConfirm = 500 * time.Millisecond
+
+// confirmAutoTitle folds one sweep's probe into the session's confirmed
+// server-derived title. The sweep is the ONLY writer of session.autoTitle, so
+// List and snapshot read a single confirmed value instead of each probing procfs
+// and disagreeing with the live stream. Called from diffStatuses phase 3, with
+// m.mu held (it writes session and tracker state).
+//
+// The asymmetry is deliberate. Adopting a running process is debounced by
+// autoTitleConfirm; RESTING (the process finished, so the shell is in the
+// foreground again) is immediate, because a stale name is worse than a brief
+// correct one. While a candidate is inside its confirmation window the previous
+// title is HELD rather than reset to the cwd, so `vim` giving way to `less` does
+// not detour through the directory name.
+func (m *SessionManager) confirmAutoTitle(s *session, in *statusRaw, tr *statusTracker) {
+	p := in.autoProbe
+	if !p.ok {
+		return // no information this sweep (OSC-titled, exited, unsupported platform)
+	}
+	if p.procName != "" {
+		if tr.candidatePGID != p.pgid {
+			tr.candidatePGID = p.pgid
+			tr.candidateSince = time.Now()
+			return // window restarts; hold the current title
+		}
+		if time.Since(tr.candidateSince) >= autoTitleConfirm {
+			s.autoTitle = p.procName
+		}
+		return // hold while the window runs
+	}
+	// Nothing is running: the shell owns the terminal again. Rest at the cwd
+	// basename, or keep the seeded command basename when the cwd is unreadable.
+	tr.candidatePGID = 0
+	tr.candidateSince = time.Time{}
+	if p.cwdBase != "" {
+		s.autoTitle = p.cwdBase
+	}
 }
 
 func (m *SessionManager) sweepLoop(ctx context.Context) {
@@ -91,6 +148,16 @@ type statusRaw struct {
 	id        string
 	notifMsg  string
 	oscTitle  string
+	// autoProbe is the foreground-process probe result for this sweep: the
+	// candidate pgid plus the name/cwd it resolves to. Read in phase 2 (procfs +
+	// one ioctl, no locks held) and folded into the confirmation window in
+	// phase 3. Zero when the OSC title already names the session, since the
+	// probe is skipped then.
+	//
+	// Placed after the strings and before the scalars deliberately: its own
+	// trailing non-pointer tail (pgid, ok) then falls outside the struct's
+	// pointer-scan range (govet fieldalignment).
+	autoProbe autoTitleProbe
 	notifSeq  uint64
 	progress  int
 	exited    bool
@@ -105,6 +172,11 @@ type statusRaw struct {
 func (it *statusRaw) read() {
 	it.exited = it.handler.Exited()
 	it.progress, it.notifMsg, it.notifSeq, it.oscTitle = it.handler.statusSnapshot()
+	// Skip the probe entirely when the program named itself: the automatic title
+	// is the LAST rung, so an OSC-titled session must never pay for procfs reads.
+	if it.oscTitle == "" && !it.exited {
+		it.autoProbe = it.handler.probeAutoTitle()
+	}
 }
 
 // diffStatuses recomputes every session's status and returns the events for
@@ -152,25 +224,37 @@ func (m *SessionManager) diffStatuses() []statusEvent {
 		}
 		tr := it.tr
 		status := m.computeStatus(it, tr)
-		// The client title is re-read under m.mu — a PUT /title during phase 2
-		// must not be masked by the phase-1 capture.
+		// The stored titles are re-read under m.mu — a PUT during phase 2 must not
+		// be masked by the phase-1 capture.
 		clientTitle := s.clientTitle
-		title := effectiveTitle(it.oscTitle, clientTitle)
+		pinnedTitle := s.pinnedTitle
+		// The sweep is the ONLY writer of the server-derived automatic title, so
+		// List and snapshot read one confirmed value instead of each probing
+		// procfs and disagreeing with this stream.
+		m.confirmAutoTitle(s, it, tr)
+		title := effectiveTitle(pinnedTitle, it.oscTitle, clientTitle, s.autoTitle)
 		// reportsActivity is sticky: Progress() stays >= 0 once any OSC 9;4 has
 		// been seen (state 0 is "cleared", not "never seen" = -1), and a latched
 		// notification is the other genuine OSC 9 signal. The client reveals the
 		// tab's activity dot only when this is set.
 		reports := it.progress >= 0 || tr.latched != ""
-		// Emit on a raw client-title change too: a PUT /title can change only the
-		// client title (OSC title and status unchanged), and a consumer reading
-		// clientTitle directly needs that pushed even when the effective title is
-		// unmoved (an OSC title is masking the fallback).
-		if status != tr.lastStatus || title != tr.lastTitle || clientTitle != tr.lastClientTitle || reports != tr.lastReports {
+		// Emit on a raw client-title or pinned-name change too: a PUT can change
+		// only one of those (OSC title and status unchanged), and a consumer
+		// reading them directly needs that pushed even when the effective title is
+		// unmoved (a pin or an OSC title masking the rung below). Without the
+		// pinned guard, a rename would not reach a second browser watching the
+		// same session until something else changed.
+		if status != tr.lastStatus || title != tr.lastTitle || clientTitle != tr.lastClientTitle ||
+			pinnedTitle != tr.lastPinnedTitle || reports != tr.lastReports {
 			tr.lastStatus = status
 			tr.lastTitle = title
 			tr.lastClientTitle = clientTitle
+			tr.lastPinnedTitle = pinnedTitle
 			tr.lastReports = reports
-			events = append(events, statusEvent{ID: it.id, Status: status, Title: title, ClientTitle: clientTitle, CreatedAt: it.createdAt, ReportsActivity: reports})
+			events = append(events, statusEvent{
+				ID: it.id, Status: status, Title: title, ClientTitle: clientTitle,
+				PinnedTitle: pinnedTitle, CreatedAt: it.createdAt, ReportsActivity: reports,
+			})
 		}
 	}
 	for id, tr := range m.trackers {
@@ -294,8 +378,9 @@ func (m *SessionManager) unsubscribe(ch chan statusEvent) {
 // getters (Exited/Progress/Title, each taking h.mu) after it is released.
 func (m *SessionManager) snapshot() []statusEvent {
 	type snapItem struct {
-		lastStatus string
 		handler    *Handler
+		lastStatus string
+		autoTitle  string
 		ev         statusEvent
 		latched    bool
 	}
@@ -304,8 +389,12 @@ func (m *SessionManager) snapshot() []statusEvent {
 	for id, s := range m.sessions {
 		tr := m.trackers[id]
 		it := snapItem{
-			ev:      statusEvent{ID: id, ClientTitle: s.clientTitle, CreatedAt: s.createdAt},
-			handler: s.handler,
+			ev: statusEvent{
+				ID: id, ClientTitle: s.clientTitle, PinnedTitle: s.pinnedTitle,
+				CreatedAt: s.createdAt,
+			},
+			handler:   s.handler,
+			autoTitle: s.autoTitle,
 		}
 		if tr != nil {
 			it.lastStatus = tr.lastStatus
@@ -319,7 +408,7 @@ func (m *SessionManager) snapshot() []statusEvent {
 	for i := range items {
 		it := &items[i]
 		it.ev.Status = refinedStatus(it.lastStatus, it.handler)
-		it.ev.Title = effectiveTitle(it.handler.Title(), it.ev.ClientTitle)
+		it.ev.Title = effectiveTitle(it.ev.PinnedTitle, it.handler.Title(), it.ev.ClientTitle, it.autoTitle)
 		it.ev.ReportsActivity = it.handler.Progress() >= 0 || it.latched
 		out = append(out, it.ev)
 	}

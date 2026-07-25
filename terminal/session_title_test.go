@@ -15,43 +15,43 @@ import (
 	"time"
 )
 
-// TestEffectiveTitlePrecedence walks every combination of the four title sources
-// so the "explicit beats inferred" order is pinned exhaustively rather than by
-// example: pinned name, then the program's OSC title, then a client-derived
-// title, then the server's own inference.
+// TestEffectiveTitlePrecedence walks EVERY combination of the five title sources
+// (2^5 = 32) rather than a hand-picked table, so the order is pinned by
+// construction and a new rung cannot be added without extending the check. The
+// rungs slice IS the precedence: the highest-priority source present must win.
 func TestEffectiveTitlePrecedence(t *testing.T) {
-	const (
-		pin  = "PIN"
-		osc  = "OSC"
-		cli  = "CLI"
-		auto = "AUTO"
-	)
-	// Each case names which sources are present; want is the expected winner.
-	cases := map[string]struct {
-		src  titleSources
-		want string
+	rungs := []struct {
+		name  string
+		value string
+		set   func(*titleSources)
 	}{
-		"all four":            {titleSources{pin, osc, cli, auto}, pin},
-		"no pin":              {titleSources{"", osc, cli, auto}, osc},
-		"no pin no osc":       {titleSources{"", "", cli, auto}, cli},
-		"auto only":           {titleSources{"", "", "", auto}, auto},
-		"nothing":             {titleSources{"", "", "", ""}, ""},
-		"pin only":            {titleSources{pin, "", "", ""}, pin},
-		"osc only":            {titleSources{"", osc, "", ""}, osc},
-		"client only":         {titleSources{"", "", cli, ""}, cli},
-		"pin beats osc":       {titleSources{pin, osc, "", ""}, pin},
-		"pin beats client":    {titleSources{pin, "", cli, ""}, pin},
-		"pin beats auto":      {titleSources{pin, "", "", auto}, pin},
-		"osc beats client":    {titleSources{"", osc, cli, ""}, osc},
-		"osc beats auto":      {titleSources{"", osc, "", auto}, osc},
-		"client beats auto":   {titleSources{"", "", cli, auto}, cli},
-		"pin osc auto no cli": {titleSources{pin, osc, "", auto}, pin},
-		"osc auto no cli":     {titleSources{"", osc, "", auto}, osc},
+		{"pinned", "PIN", func(s *titleSources) { s.pinned = "PIN" }},
+		{"derived", "DER", func(s *titleSources) { s.derived = "DER" }},
+		{"osc", "OSC", func(s *titleSources) { s.osc = "OSC" }},
+		{"client", "CLI", func(s *titleSources) { s.client = "CLI" }},
+		{"auto", "AUTO", func(s *titleSources) { s.auto = "AUTO" }},
 	}
-	for name, tc := range cases {
+	for mask := range 1 << len(rungs) {
+		var src titleSources
+		var present []string
+		want := ""
+		for i, r := range rungs {
+			if mask&(1<<i) == 0 {
+				continue
+			}
+			r.set(&src)
+			present = append(present, r.name)
+			if want == "" {
+				want = r.value // rungs are in precedence order, so the first set wins
+			}
+		}
+		name := "none"
+		if len(present) > 0 {
+			name = strings.Join(present, "+")
+		}
 		t.Run(name, func(t *testing.T) {
-			if got := effectiveTitle(tc.src); got != tc.want {
-				t.Errorf("effectiveTitle(%+v) = %q, want %q", tc.src, got, tc.want)
+			if got := effectiveTitle(&src); got != want {
+				t.Errorf("effectiveTitle(%+v) = %q, want %q", src, got, want)
 			}
 		})
 	}

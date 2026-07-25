@@ -128,14 +128,20 @@ type session struct {
 // precedence while every unit test of effectiveTitle itself still passed.
 type titleSources struct {
 	pinned string // the user's explicit name
-	osc    string // the program's OSC 0/2 window title
-	client string // a client-derived automatic title we were asked to remember
-	auto   string // the server's own inference (foreground process / cwd / command)
+	// derived is the input-derived name (WithInputTitle): the first eligible line
+	// the user submitted. Empty unless the consumer asked for it. It outranks the
+	// OSC title because the only reason to ask for it is that the program's own
+	// title is not worth showing.
+	derived string
+	osc     string // the program's OSC 0/2 window title
+	client  string // a client-derived automatic title we were asked to remember
+	auto    string // the server's own inference (foreground process / cwd / command)
 }
 
 // effectiveTitle combines a session's title sources in precedence order:
-// explicit beats inferred. The user's pinned name wins outright; then the live
-// OSC window title, when the program set one; then a client-derived title a
+// explicit beats inferred. The user's pinned name wins outright; then the
+// input-derived name, when the consumer asked the engine to derive one; then the
+// live OSC window title, when the program set one; then a client-derived title a
 // client asked us to remember; then the server's own inference (foreground
 // process / cwd / command).
 //
@@ -147,9 +153,12 @@ type titleSources struct {
 // three from manager state (m.mu), and every caller (List, snapshot,
 // diffStatuses) reads them under their own locks — never one lock nested in the
 // other.
-func effectiveTitle(src titleSources) string {
+func effectiveTitle(src *titleSources) string {
 	if src.pinned != "" {
 		return src.pinned
+	}
+	if src.derived != "" {
+		return src.derived
 	}
 	if src.osc != "" {
 		return src.osc
@@ -316,8 +325,9 @@ func (m *SessionManager) List() []SessionInfo {
 	for i := range items {
 		it := &items[i]
 		it.info.Status = refinedStatus(it.lastStatus, it.handler)
-		it.info.Title = effectiveTitle(titleSources{
-			pinned: it.info.PinnedTitle, osc: it.handler.Title(),
+		osc, derived := it.handler.titles()
+		it.info.Title = effectiveTitle(&titleSources{
+			pinned: it.info.PinnedTitle, derived: derived, osc: osc,
 			client: it.info.ClientTitle, auto: it.autoTitle,
 		})
 		// reportsActivity mirrors the status stream: sticky once any OSC 9;4

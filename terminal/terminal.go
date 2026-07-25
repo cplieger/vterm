@@ -157,6 +157,24 @@ type handlerConfig struct {
 	env                []string
 	scrollbackCapacity int
 	keepUnfocused      bool
+	inputTitle         bool
+}
+
+// WithInputTitle enables the input-derived session title: the engine watches the
+// input stream and latches the first eligible submitted line as the session's
+// name (see inputtitle.go). Off by default.
+//
+// Turn it on for a session-per-conversation shell whose program sets no useful
+// OSC window title, where "what the user asked for" is the best available name —
+// the derived title then outranks the OSC title in the reported Title. Leave it
+// off for a general-purpose terminal, where the foreground-process ladder is a
+// better automatic label and the shell's own OSC title is usually meaningful.
+//
+// It observes only what a client actually sends to the PTY, so it is naming the
+// session, not any one client: the label is identical for every attached client
+// and survives a reload with no client round trip.
+func WithInputTitle() Option {
+	return func(c *handlerConfig) { c.inputTitle = true }
 }
 
 // WithWorkDir sets the working directory for the spawned process.
@@ -283,6 +301,10 @@ type clientState struct {
 // performs ws.Write outside the lock so a slow client can't block
 // readLoop / handleControl / new handleWS connections.
 type Handler struct {
+	// inputTitle derives a session name from the input stream when the consumer
+	// asked for it (WithInputTitle); nil otherwise, and title() reads nil as "".
+	// Guarded by h.mu, like the screen state it sits beside.
+	inputTitle *inputTitleDeriver
 	cmd        *exec.Cmd
 	screen     *vt.Screen
 	registry   *clientRegistry
@@ -339,7 +361,12 @@ func NewHandler(command []string, opts ...Option) *Handler {
 	if cfg.theme != nil {
 		vtOpts = append(vtOpts, vt.WithTheme(*cfg.theme))
 	}
+	var derived *inputTitleDeriver
+	if cfg.inputTitle {
+		derived = &inputTitleDeriver{}
+	}
 	return &Handler{
+		inputTitle: derived,
 		command:    command,
 		cfg:        cfg,
 		screen:     vt.New(defaultRows, defaultCols, vtOpts...),
@@ -454,10 +481,31 @@ func (h *Handler) Progress() int {
 // can pair a stale active progress with a fresh turn-end notification — the
 // inconsistent pairing computeStatus must not see (its fresh-latch precedence
 // guards the state machine; this getter removes the torn read).
-func (h *Handler) statusSnapshot() (progress int, notifMsg string, notifSeq uint64, title string) {
+func (h *Handler) statusSnapshot() (progress int, notifMsg string, notifSeq uint64, title, derivedTitle string) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	return h.screen.Progress, h.screen.Notification, h.screen.NotificationSeq, h.screen.Title
+	return h.screen.Progress, h.screen.Notification, h.screen.NotificationSeq,
+		h.screen.Title, h.inputTitle.title()
+}
+
+// observeInputTitle feeds one input chunk to the derived-title state machine, and
+// is a no-op unless WithInputTitle was set. Cheap enough to call per frame: it is
+// a byte loop that stops entirely once a title has latched.
+func (h *Handler) observeInputTitle(chunk []byte) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.inputTitle != nil {
+		h.inputTitle.observe(chunk)
+	}
+}
+
+// titles returns the two handler-owned title sources under ONE lock acquisition:
+// the program's OSC window title and the input-derived title. One getter rather
+// than two so a caller cannot pair a fresh OSC title with a stale derived one.
+func (h *Handler) titles() (osc, derived string) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.screen.Title, h.inputTitle.title()
 }
 
 // StartEager starts the child process now at a default size, rather than lazily
@@ -1164,6 +1212,11 @@ func (h *Handler) handleBinaryFrame(ws *websocket.Conn, state *clientState, msg 
 		h.cfg.logger.Debug("terminal: pty write", "error", err)
 		return armed, false
 	}
+	// Derive the session title from the same bytes the program received (after
+	// the write, so input that never reached it never names the session). One
+	// binary frame is one atomic input event, which is the chunk boundary the
+	// deriver's escape parser relies on.
+	h.observeInputTitle(msg)
 	// Increment session bytesReceived for the resume protocol.
 	// state.session is set when the client sends its first resume
 	// control message; without it we silently skip — the client is

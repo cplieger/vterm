@@ -147,12 +147,13 @@ func (m *SessionManager) sweepLoop(ctx context.Context) {
 // statusRaw carries one session's handler-derived status inputs, read in
 // diffStatuses's lock-free phase (each getter takes only that handler's h.mu).
 type statusRaw struct {
-	createdAt time.Time
-	handler   *Handler
-	tr        *statusTracker
-	id        string
-	notifMsg  string
-	oscTitle  string
+	createdAt    time.Time
+	handler      *Handler
+	tr           *statusTracker
+	id           string
+	notifMsg     string
+	oscTitle     string
+	derivedTitle string
 	// autoProbe is the foreground-process probe result for this sweep: the
 	// candidate pgid plus the name/cwd it resolves to. Read in phase 2 (procfs +
 	// one ioctl, no locks held) and folded into the confirmation window in
@@ -178,7 +179,7 @@ type statusRaw struct {
 // done latch).
 func (it *statusRaw) read() {
 	it.exited = it.handler.Exited()
-	it.progress, it.notifMsg, it.notifSeq, it.oscTitle = it.handler.statusSnapshot()
+	it.progress, it.notifMsg, it.notifSeq, it.oscTitle, it.derivedTitle = it.handler.statusSnapshot()
 	// Skip the probe entirely when the program named itself: the automatic title
 	// is the LAST rung, so an OSC-titled session must never pay for procfs reads.
 	if it.oscTitle == "" && !it.exited {
@@ -241,8 +242,9 @@ func (m *SessionManager) diffStatuses() []statusEvent {
 		// List and snapshot read one confirmed value instead of each probing
 		// procfs and disagreeing with this stream.
 		m.confirmAutoTitle(s, it, tr)
-		title := effectiveTitle(titleSources{
-			pinned: pinnedTitle, osc: it.oscTitle, client: clientTitle, auto: s.autoTitle,
+		title := effectiveTitle(&titleSources{
+			pinned: pinnedTitle, derived: it.derivedTitle, osc: it.oscTitle,
+			client: clientTitle, auto: s.autoTitle,
 		})
 		// reportsActivity is sticky: Progress() stays >= 0 once any OSC 9;4 has
 		// been seen (state 0 is "cleared", not "never seen" = -1), and a latched
@@ -419,8 +421,9 @@ func (m *SessionManager) snapshot() []statusEvent {
 	for i := range items {
 		it := &items[i]
 		it.ev.Status = refinedStatus(it.lastStatus, it.handler)
-		it.ev.Title = effectiveTitle(titleSources{
-			pinned: it.ev.PinnedTitle, osc: it.handler.Title(),
+		osc, derived := it.handler.titles()
+		it.ev.Title = effectiveTitle(&titleSources{
+			pinned: it.ev.PinnedTitle, derived: derived, osc: osc,
 			client: it.ev.ClientTitle, auto: it.autoTitle,
 		})
 		it.ev.ReportsActivity = it.handler.Progress() >= 0 || it.latched

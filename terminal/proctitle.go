@@ -35,21 +35,32 @@ import "path/filepath"
 // window (see confirmAutoTitle) rather than using it directly, because a
 // foreground process that lives 30ms must not flash into a tab label.
 type autoTitleProbe struct {
+	// err carries WHY a probe learned nothing, for the one-line-per-session debug
+	// note. Only set when ok is false.
+	//
+	// Field order here is load-bearing for govet fieldalignment: an interface is
+	// two pointer words, a string is one pointer plus a length, so putting err
+	// first and the strings after it ends the struct's pointer-scan range at a
+	// string's length word. Adding a field means re-checking the linter.
+	err error
 	// procName is the foreground process-group leader's name, or "" when the
 	// session's own shell is in the foreground, when the leader is gone, or when
 	// the platform cannot tell. Non-empty means "something is running".
 	procName string
 	// cwdBase is the basename of the session's working directory, or "" when it
-	// cannot be read. This is the RESTING title: read from the session's root
-	// process, so it tracks the shell's own cd rather than a foreground child's
-	// directory.
+	// cannot be read or was not needed (a named foreground process outranks it, so
+	// the readlink is skipped entirely in that case). This is the RESTING title:
+	// read from the session's root process, so it tracks the shell's own cd rather
+	// than a foreground child's directory.
 	cwdBase string
 	// pgid identifies the candidate for the confirmation window: the window
 	// restarts whenever this changes. Zero when unknown.
 	pgid int
-	// ok reports that the probe actually ran. False (a stopped session, a
-	// platform without the syscalls) means "no information this sweep", which
-	// holds the last confirmed title rather than clearing it.
+	// ok reports that the probe learned something. False (a stopped session, a
+	// platform without the syscalls, a procfs that answered nothing at all) means
+	// "no information this sweep", which HOLDS the last confirmed title rather
+	// than clearing it. This is deliberately distinct from "probed successfully
+	// and nothing is running", which is ok=true with an empty procName.
 	ok bool
 }
 
@@ -69,9 +80,15 @@ func (h *Handler) commandBase() string {
 // and the root pid (both written once by ensureStarted), then performs the ioctl
 // and the procfs reads with no lock held, so a slow or unreadable procfs stalls
 // only the sweep goroutine.
+//
+// ONLY THE STATUS SWEEP MAY CALL THIS. A second caller would get an unconfirmed,
+// un-debounced sample, and if it wrote the result anywhere it would break the
+// single-writer rule that lets List and the SSE snapshot agree (see
+// confirmAutoTitle).
 func (h *Handler) probeAutoTitle() autoTitleProbe {
 	h.mu.Lock()
 	ptmx := h.ptmx
+	warned := h.autoTitleWarned
 	var rootPID int
 	if h.cmd != nil && h.cmd.Process != nil {
 		rootPID = h.cmd.Process.Pid
@@ -80,7 +97,20 @@ func (h *Handler) probeAutoTitle() autoTitleProbe {
 	if ptmx == nil || rootPID <= 0 {
 		return autoTitleProbe{} // not started: no information, hold what we have
 	}
-	return probeForeground(ptmx, rootPID)
+	p := probeForeground(ptmx, rootPID)
+	// One debug line per session, never per sweep: an operator on a procfs-less or
+	// hidepid-restricted host otherwise has no way to tell "this platform cannot"
+	// from "this build is broken", since both look like a tab named after the
+	// command. Logged outside h.mu; the sweep is the only caller, so the
+	// check-then-set cannot interleave.
+	if p.err != nil && !warned {
+		h.mu.Lock()
+		h.autoTitleWarned = true
+		h.mu.Unlock()
+		h.cfg.logger.Debug("terminal: automatic session title unavailable, using the command name",
+			"error", p.err)
+	}
+	return p
 }
 
 // probeForeground is the platform-specific half, implemented per build tag. It

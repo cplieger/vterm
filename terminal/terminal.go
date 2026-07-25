@@ -317,6 +317,9 @@ type Handler struct {
 	scrollbackClearedPending bool
 	paletteChangedPending    bool
 	lastFocusReporting       bool
+	// autoTitleWarned makes the automatic-title probe's failure note once-per-
+	// session rather than once-per-sweep (see probeAutoTitle). Guarded by h.mu.
+	autoTitleWarned bool
 }
 
 // NewHandler returns a terminal handler. command is the argv to spawn

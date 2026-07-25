@@ -28,31 +28,30 @@ func TestEffectiveTitlePrecedence(t *testing.T) {
 	)
 	// Each case names which sources are present; want is the expected winner.
 	cases := map[string]struct {
-		pinned, oscTitle, clientTitle, autoTitle string
-		want                                     string
+		src  titleSources
+		want string
 	}{
-		"all four":            {pin, osc, cli, auto, pin},
-		"no pin":              {"", osc, cli, auto, osc},
-		"no pin no osc":       {"", "", cli, auto, cli},
-		"auto only":           {"", "", "", auto, auto},
-		"nothing":             {"", "", "", "", ""},
-		"pin only":            {pin, "", "", "", pin},
-		"osc only":            {"", osc, "", "", osc},
-		"client only":         {"", "", cli, "", cli},
-		"pin beats osc":       {pin, osc, "", "", pin},
-		"pin beats client":    {pin, "", cli, "", pin},
-		"pin beats auto":      {pin, "", "", auto, pin},
-		"osc beats client":    {"", osc, cli, "", osc},
-		"osc beats auto":      {"", osc, "", auto, osc},
-		"client beats auto":   {"", "", cli, auto, cli},
-		"pin osc auto no cli": {pin, osc, "", auto, pin},
-		"osc auto no cli":     {"", osc, "", auto, osc},
+		"all four":            {titleSources{pin, osc, cli, auto}, pin},
+		"no pin":              {titleSources{"", osc, cli, auto}, osc},
+		"no pin no osc":       {titleSources{"", "", cli, auto}, cli},
+		"auto only":           {titleSources{"", "", "", auto}, auto},
+		"nothing":             {titleSources{"", "", "", ""}, ""},
+		"pin only":            {titleSources{pin, "", "", ""}, pin},
+		"osc only":            {titleSources{"", osc, "", ""}, osc},
+		"client only":         {titleSources{"", "", cli, ""}, cli},
+		"pin beats osc":       {titleSources{pin, osc, "", ""}, pin},
+		"pin beats client":    {titleSources{pin, "", cli, ""}, pin},
+		"pin beats auto":      {titleSources{pin, "", "", auto}, pin},
+		"osc beats client":    {titleSources{"", osc, cli, ""}, osc},
+		"osc beats auto":      {titleSources{"", osc, "", auto}, osc},
+		"client beats auto":   {titleSources{"", "", cli, auto}, cli},
+		"pin osc auto no cli": {titleSources{pin, osc, "", auto}, pin},
+		"osc auto no cli":     {titleSources{"", osc, "", auto}, osc},
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
-			if got := effectiveTitle(tc.pinned, tc.oscTitle, tc.clientTitle, tc.autoTitle); got != tc.want {
-				t.Errorf("effectiveTitle(%q,%q,%q,%q) = %q, want %q",
-					tc.pinned, tc.oscTitle, tc.clientTitle, tc.autoTitle, got, tc.want)
+			if got := effectiveTitle(tc.src); got != tc.want {
+				t.Errorf("effectiveTitle(%+v) = %q, want %q", tc.src, got, tc.want)
 			}
 		})
 	}

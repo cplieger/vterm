@@ -26,6 +26,8 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
+	"unicode/utf8"
 
 	"golang.org/x/sys/unix"
 )
@@ -77,19 +79,58 @@ func foregroundPGID(ptmx *os.File) (int, error) {
 // processName returns the basename of a process's argv[0], falling back to its
 // comm. Empty when the process is gone (the documented pipeline case: the group
 // leader exited while another member runs) or unreadable.
+//
+// The result is SANITIZED before it is returned. argv[0] is chosen by whoever
+// started the process, so on a shared terminal it is untrusted input that ends
+// up in a tab label, an SSE frame, and any log line that carries the title —
+// exactly the CWE-117 shape the client-supplied titles are already bounded for.
+// A name is additionally required to be valid UTF-8, since procfs hands back raw
+// bytes and an invalid sequence would reach JSON encoding as replacement
+// characters.
 func processName(pid int) string {
 	if argv0 := readArgv0(procPath(pid, "cmdline")); argv0 != "" {
-		return filepath.Base(argv0)
+		return cleanProcName(filepath.Base(argv0))
 	}
 	// comm is a single line, already a bare name (kernel-truncated to 15 bytes).
-	if comm, err := os.ReadFile(procPath(pid, "comm")); err == nil {
-		return string(bytes.TrimSpace(comm))
+	if comm, err := os.ReadFile(procPath(pid, "comm")); err == nil { // #nosec G304 -- procPath(int, literal)
+		return cleanProcName(string(bytes.TrimSpace(comm)))
 	}
 	return ""
 }
 
+// procNameMaxRunes bounds a process-derived label. A basename longer than this is
+// not a tab label anyone reads, and the bound keeps a hostile argv out of every
+// SSE frame at full length.
+const procNameMaxRunes = 64
+
+// cleanProcName drops control characters and DEL, rejects invalid UTF-8 outright,
+// and bounds the length. Returning "" on invalid input is deliberate: the ladder
+// treats empty as "no name available" and falls to the next rung, which is a
+// better outcome than rendering a mangled one.
+func cleanProcName(s string) string {
+	if !utf8.ValidString(s) {
+		return ""
+	}
+	var b strings.Builder
+	n := 0
+	for _, r := range s {
+		if n >= procNameMaxRunes {
+			break
+		}
+		if r < 0x20 || r == 0x7f {
+			continue
+		}
+		b.WriteRune(r)
+		n++
+	}
+	return b.String()
+}
+
 // readArgv0 extracts argv[0] from a NUL-separated procfs cmdline. Returns "" for
-// a missing, empty, or all-NUL cmdline (a kernel thread has no argv).
+// a missing, empty, or all-NUL cmdline (a kernel thread has no argv), and also
+// when no NUL appears within the bounded read: without a terminator we cannot
+// tell a complete argv[0] from a truncated prefix, and half a path is a worse
+// label than falling through to comm.
 func readArgv0(path string) string {
 	f, err := os.Open(path) // #nosec G304 -- path is procPath(int, literal), not user input
 	if err != nil {
@@ -101,7 +142,10 @@ func readArgv0(path string) string {
 	if n <= 0 || (err != nil && n == 0) {
 		return ""
 	}
-	argv0, _, _ := bytes.Cut(buf[:n], []byte{0})
+	argv0, _, found := bytes.Cut(buf[:n], []byte{0})
+	if !found {
+		return ""
+	}
 	return string(argv0)
 }
 

@@ -79,12 +79,16 @@ type statusTracker struct {
 // before its name is adopted as the session's automatic title. A command that
 // lives 30ms (ls, git status) must never flash into a tab label.
 //
-// 500ms matches tmux's own NAME_INTERVAL. It is elapsed time, not a sample
-// count: "the same pgid on two consecutive sweeps" would be only
-// statusSweepInterval apart and therefore phase-sensitive, adopting a 260ms
-// command or missing a 400ms one depending on where the ticks landed. At a 250ms
-// sweep this is the third consecutive observation, so adoption lands 500-750ms
-// after the command starts.
+// It is elapsed time, not a sample count: "the same pgid on two consecutive
+// sweeps" would be only statusSweepInterval apart and therefore phase-sensitive,
+// adopting a 260ms command or missing a 400ms one depending on where the ticks
+// landed. At a 250ms sweep this is the third consecutive observation, so adoption
+// lands 500-750ms after the command starts.
+//
+// 500ms is chosen, not inherited. tmux's NAME_INTERVAL is also 500ms but is a
+// different mechanism — a rate limit on how often it recomputes a window name,
+// which is why tmux CAN briefly show a short-lived command. This is a
+// confirmation window, which cannot.
 const autoTitleConfirm = 500 * time.Millisecond
 
 // confirmAutoTitle folds one sweep's probe into the session's confirmed
@@ -151,12 +155,14 @@ type statusRaw struct {
 	// autoProbe is the foreground-process probe result for this sweep: the
 	// candidate pgid plus the name/cwd it resolves to. Read in phase 2 (procfs +
 	// one ioctl, no locks held) and folded into the confirmation window in
-	// phase 3. Zero when the OSC title already names the session, since the
-	// probe is skipped then.
+	// phase 3. Zero when no probe ran this sweep: an OSC-titled session (the
+	// automatic title is the LAST rung, so it must not pay for procfs reads) or an
+	// exited one.
 	//
 	// Placed after the strings and before the scalars deliberately: its own
 	// trailing non-pointer tail (pgid, ok) then falls outside the struct's
-	// pointer-scan range (govet fieldalignment).
+	// pointer-scan range (govet fieldalignment). Adding a field here without
+	// keeping pointer-bearing types ahead of scalar ones re-trips that linter.
 	autoProbe autoTitleProbe
 	notifSeq  uint64
 	progress  int
@@ -180,9 +186,11 @@ func (it *statusRaw) read() {
 }
 
 // diffStatuses recomputes every session's status and returns the events for
-// sessions whose status, effective title, raw client title, or reported
-// activity changed since the last sweep, plus removed events for sessions that
-// vanished. Broadcasting happens outside the lock (see sweepLoop).
+// sessions whose status, effective title, raw client title, raw pinned name, or
+// reported activity changed since the last sweep, plus removed events for
+// sessions that vanished. Broadcasting happens outside the lock (see sweepLoop).
+// It is also the sole writer of each session's server-derived automatic title
+// (see confirmAutoTitle).
 //
 // It runs in three phases so the manager lock is never held across handler
 // getters: each getter takes that handler's h.mu, and one wedged handler under

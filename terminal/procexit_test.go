@@ -26,14 +26,21 @@ func TestExitedAttachServesReplayBefore4001(t *testing.T) {
 	if err := h.StartEager(); err != nil {
 		t.Fatalf("StartEager: %v", err)
 	}
-	// Wait for the child to have exited so the attach below is genuinely
-	// against a dead session.
+	// Wait for the child's output to be PARSED INTO THE SCREEN, not merely for
+	// the child to exit. Exited() flips when the process is reaped, which can
+	// happen before readLoop has drained the remaining PTY bytes and the VT
+	// parser has applied them — so waiting on Exited() alone raced the replay
+	// assertion below and failed it intermittently with an empty screen.
+	// Waiting on the screen makes the precondition the thing the test needs.
 	deadline := time.Now().Add(5 * time.Second)
-	for !h.Exited() {
+	for !screenContains(h, "deadwords") {
 		if time.Now().After(deadline) {
-			t.Fatal("child process did not exit within 5s")
+			t.Fatalf("child output never reached the screen within 5s (exited=%v)", h.Exited())
 		}
 		time.Sleep(10 * time.Millisecond)
+	}
+	if !h.Exited() {
+		t.Fatal("child wrote its output but has not exited; the attach below would not be against a dead session")
 	}
 
 	mux := http.NewServeMux()
@@ -113,4 +120,24 @@ func TestProcessExitClosesWith4001(t *testing.T) {
 		}
 		return
 	}
+}
+
+// screenContains reports whether the parsed screen currently holds want. Reads
+// the cells under h.mu, the same lock the parser writes them under, so a test
+// can wait on "the child's output has been parsed" rather than on the weaker
+// "the child has exited" — the two are not the same instant, and assuming they
+// were is what made the replay assertion above flaky.
+func screenContains(h *Handler, want string) bool {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	var b strings.Builder
+	for _, row := range h.screen.Cells {
+		for _, c := range row {
+			if c.Ch != 0 {
+				b.WriteRune(c.Ch)
+			}
+		}
+		b.WriteByte('\n')
+	}
+	return strings.Contains(b.String(), want)
 }

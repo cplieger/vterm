@@ -156,3 +156,55 @@ describe("per-view scroll memory seam (currentScrollTop / restoreScrollTop)", ()
     expect(scroll.isUserScrolledUp()).toBe(false);
   });
 });
+
+// adjustForContentShift is manual scroll anchoring: it exists because WebKit has
+// never implemented the native kind, so on Safari/iPadOS nothing held the reading
+// position when rows were evicted from the top of history during streaming.
+describe("adjustForContentShift", () => {
+  let el: HTMLElement;
+  let changes: boolean[];
+
+  beforeEach(() => {
+    el = makeScrollEl(1000, 300);
+    changes = [];
+    scroll.init({ scrollEl: el, onUserScrollChange: (up) => changes.push(up) });
+  });
+
+  it("moves the viewport by the height that vanished above the reading position", () => {
+    scrollTo(el, 400); // scroll up to read
+    expect(scroll.isUserScrolledUp()).toBe(true);
+
+    // Two 17px rows evicted from the top of history: the content the user is
+    // reading is now 34px higher, so the viewport must follow it up by 34px.
+    scroll.adjustForContentShift(-34);
+    expect(el.scrollTop).toBe(366);
+  });
+
+  it("moves the other way when content is inserted above (the trim marker)", () => {
+    scrollTo(el, 400);
+    scroll.adjustForContentShift(20);
+    expect(el.scrollTop).toBe(420);
+  });
+
+  it("does not disengage or re-engage following", () => {
+    scrollTo(el, 400);
+    changes.length = 0;
+    scroll.adjustForContentShift(-34);
+    el.dispatchEvent(new Event("scroll")); // the adjust's own event
+    expect(scroll.isUserScrolledUp()).toBe(true);
+    expect(changes).toEqual([]); // no follow flip, no churn
+  });
+
+  it("is a no-op while following, where the bottom pin owns the position", () => {
+    scrollTo(el, 700); // at the bottom
+    expect(scroll.isUserScrolledUp()).toBe(false);
+    scroll.adjustForContentShift(-34);
+    expect(el.scrollTop).toBe(700);
+  });
+
+  it("is a no-op for a zero delta", () => {
+    scrollTo(el, 400);
+    scroll.adjustForContentShift(0);
+    expect(el.scrollTop).toBe(400);
+  });
+});

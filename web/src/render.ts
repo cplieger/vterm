@@ -669,8 +669,80 @@ function scheduleFlush(): void {
   pendingFrame = requestAnimationFrame(flushRender);
 }
 
+// --- Read-position anchoring (manual scroll anchoring) ---
+//
+// A flush can change the content height ABOVE the reading position: rows evicted
+// from the top of history once the retention cap is reached, and the trim marker
+// appearing. Every such change moves whatever the user is reading, unless the
+// viewport is shifted by the same amount.
+//
+// Chrome and Firefox do that natively (scroll anchoring, `overflow-anchor`).
+// WebKit does not implement it at all, so on Safari — including the iPad, where
+// this UI mostly runs — a user scrolled up to read had their position dragged
+// one line per evicted row for as long as output kept arriving.
+//
+// The anchor is the first row at or below the viewport top, found by binary
+// search over the container's children: they are in document order, so their
+// offsetTop is monotonic. ~13 reads for a full 5000-row buffer, and only while
+// the user is actually scrolled up — a following viewport takes this path not at
+// all, because the bottom pin owns its position.
+interface ReadAnchor {
+  el: HTMLElement;
+  /** Where the row sat ON SCREEN: offsetTop minus the scroll offset. Measuring
+   *  the screen position rather than the container offset is what makes the
+   *  correction idempotent — see restoreReadAnchor. */
+  screenTop: number;
+}
+
+function captureReadAnchor(): ReadAnchor | null {
+  if (!scroll.isUserScrolledUp()) {
+    return null; // following: stickToBottom owns the position
+  }
+  const kids = output.children;
+  if (kids.length === 0) {
+    return null;
+  }
+  const offset = scroll.currentScrollTop();
+  let lo = 0;
+  let hi = kids.length - 1;
+  let found: HTMLElement | null = null;
+  while (lo <= hi) {
+    const mid = (lo + hi) >> 1;
+    const el = kids[mid] as HTMLElement;
+    if (el.offsetTop >= offset) {
+      found = el;
+      hi = mid - 1;
+    } else {
+      lo = mid + 1;
+    }
+  }
+  // Everything is above the viewport top (a shrink already clamped past the
+  // last row): anchor on the last row rather than giving up.
+  const el = found ?? (kids[kids.length - 1] as HTMLElement);
+  return { el, screenTop: el.offsetTop - offset };
+}
+
+function restoreReadAnchor(anchor: ReadAnchor | null): void {
+  if (anchor?.el.parentElement !== output) {
+    return; // not holding, or the anchor row was itself evicted (mass trim)
+  }
+  // Correct by how far the row DRIFTED ON SCREEN, not by how much the content
+  // above it changed. The two differ exactly when the browser already did this
+  // itself: Chrome and Firefox have native scroll anchoring, so their offsetTop
+  // change comes with a matching scrollTop change and the screen position is
+  // already right — this then measures zero drift and does nothing. Correcting
+  // the content delta instead would double-compensate there and throw the view
+  // the other way. On Safari, which has no native anchoring, the drift is the
+  // whole content delta and this is the only thing that fixes it.
+  const drift = anchor.el.offsetTop - scroll.currentScrollTop() - anchor.screenTop;
+  scroll.adjustForContentShift(drift);
+}
+
 function flushRender(): void {
   pendingFrame = undefined;
+  // Measured BEFORE any DOM mutation, so the post-mutation read below reveals
+  // exactly how much the content above the reading position moved.
+  const anchor = captureReadAnchor();
   try {
     flushRenderInner();
     // A clean pass means the error condition (if any) has cleared, so give a
@@ -704,6 +776,12 @@ function flushRender(): void {
       console.error("vterm: giving up render retry after repeated no-progress errors");
     }
   }
+  // Two position invariants, applied after every DOM mutation and in this order:
+  // hold the reader's line against content that shifted above it, then (only if
+  // following) pin to the new bottom. They are mutually exclusive by
+  // construction — the anchor is null while following — so the order is for
+  // readability, not correctness.
+  restoreReadAnchor(anchor);
   // Single auto-follow invariant, applied after every DOM mutation.
   stickToBottomIfFollowing();
 }

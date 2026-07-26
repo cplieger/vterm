@@ -8,7 +8,7 @@ Three packages, two languages, one wire contract:
 
 - **`vt/` (Go)**: The VT100/VT500 screen buffer. It parses terminal byte streams (CSI/OSC/DCS, SGR, DEC modes, charsets, mouse) into a cell grid and renders rows to the wire format. No I/O or networking.
 - **`terminal/` (Go)**: The WebSocket session handler. It bridges a PTY (`github.com/creack/pty`) to a browser through `github.com/coder/websocket`, drives a `vt` screen, and adds reconnect, scrollback replay, adaptive ping, and the resume/inputAck reliability layer. `terminal/` also provides `SessionManager` (`session_manager.go`, `events.go`) for the multi-session `/ws?session=`, `/api/sessions`, and status-SSE surface.
-- **`web/` (TypeScript)**: The browser renderer (`render`), keyboard mapper (`keyboard`), mouse/focus encoder (`mouse`), DEC-mode state (`modes`), scroll tracker (`scroll`), socket lifecycle (`connection`), and binary frame decoder (`decodeWireBinary`). It is published as `@cplieger/web-terminal-engine` with zero runtime dependencies.
+- **`web/` (TypeScript)**: The browser renderer (`render`), keyboard mapper (`keyboard`), on-screen mobile toolbar (`toolbar`), mouse/focus encoder (`mouse`), DEC-mode state (`modes`), scroll tracker (`scroll`), socket lifecycle (`connection`), and binary frame decoder (`decodeWireBinary`). It is published as `@cplieger/web-terminal-engine` with zero runtime dependencies.
 
 ### The wire contract is load-bearing
 

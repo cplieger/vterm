@@ -10,8 +10,13 @@
 // failure mode; see the #web-terminal-engine steering doc, "Design rationale").
 //
 // The renderer calls stickToBottom() once after each flush: if following, pin
-// to the new bottom; if holding, do nothing and let native scroll anchoring
-// (overflow-anchor) hold the reading position when history is inserted above.
+// to the new bottom; if holding, do nothing. Holding the reading position when
+// content ABOVE it changes height (top-of-history eviction at the retention cap,
+// the trim marker appearing) is adjustForContentShift's job, called by the
+// renderer around its DOM mutations. That used to be left to native scroll
+// anchoring (overflow-anchor), which WebKit has never shipped — so on Safari and
+// iPadOS the read position slid up one line per evicted row while the user was
+// scrolled up reading.
 // Appending content at the bottom does not fire a scroll event, so following
 // stays true across new output and the post-flush pin lands correctly. Pinning
 // to the bottom produces a scroll event whose recomputation yields
@@ -146,6 +151,34 @@ export function isUserScrolledUp(): boolean {
  */
 export function currentScrollTop(): number {
   return scrollEl ? scrollEl.scrollTop : 0;
+}
+
+/**
+ * Shift the viewport by a content-height change that happened ABOVE the reading
+ * position, so the user keeps looking at the same line. A no-op while following
+ * (the bottom pin owns the position then) and when the delta is zero.
+ *
+ * This is scroll anchoring, done by hand. Chrome and Firefox do it natively
+ * (`overflow-anchor`), and this module's design leaned on that: "if holding, do
+ * nothing and let native scroll anchoring hold the reading position when history
+ * is inserted above". WebKit has never shipped scroll anchoring, so on Safari
+ * — including iPadOS, where this UI mostly lives — nothing compensated, and
+ * every row evicted from the top of history while the user was scrolled up
+ * reading slid their reading position one line further up. Over a streaming
+ * agent session at the retention cap that reads as "the view scrolls itself
+ * while I am trying to read".
+ *
+ * `following` is deliberately NOT touched, and neither is `lastScrollTop`: the
+ * state stays derived purely from the resulting scroll event, exactly as it is
+ * for the bottom pin. Both directions recompute to holding (an upward shift
+ * leaves a gap below; a downward one is not at the bottom), so there is no churn
+ * and no follow flip.
+ */
+export function adjustForContentShift(deltaPx: number): void {
+  if (!scrollEl || following || deltaPx === 0) {
+    return;
+  }
+  scrollEl.scrollTop += deltaPx;
 }
 
 /**

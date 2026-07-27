@@ -496,10 +496,17 @@ func supportsFlush(w http.ResponseWriter) bool {
 }
 
 // writeSSEHeaders sets the SSE response headers and the 200 status.
+//
+// no-cache is the conventional SSE directive but it only forces revalidation — it
+// still permits a cache to STORE the response, and every event on this stream
+// carries a full session id (statusEvent.ID), the same capability token the REST
+// responses now refuse to let a cache keep. no-store is therefore carried
+// alongside it: the conventional token stays for any middlebox that sniffs for it,
+// and the stronger prohibition is the one that matches what the body contains.
 func writeSSEHeaders(w http.ResponseWriter) {
 	h := w.Header()
 	h.Set("Content-Type", "text/event-stream")
-	h.Set("Cache-Control", "no-cache")
+	h.Set("Cache-Control", "no-cache, no-store")
 	h.Set("Connection", "keep-alive")
 	h.Set("X-Accel-Buffering", "no") // ask proxies not to buffer the stream
 	w.WriteHeader(http.StatusOK)

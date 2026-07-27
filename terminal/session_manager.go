@@ -686,8 +686,26 @@ func newSessionID() (string, error) {
 	return hex.EncodeToString(b[:]), nil
 }
 
+// writeJSON writes a session-surface JSON response. Its only two callers are the
+// responses that carry session ids in full — handleCreate (201, the new id) and
+// handleList (200, every live id) — which is why no-store is set here rather than
+// left to each consumer.
+//
+// A session id IS a capability: it is the credential /ws attaches and resumes
+// with, which is why this package refuses to log one whole (see LogID). A 200/201
+// JSON body with no Cache-Control is heuristically cacheable under RFC 9111, so
+// without this header the same value the engine will not put in a log file can be
+// written to a browser's disk cache or held by an intermediary. Consumers were
+// closing that gap unevenly — web-terminal-kiro wrapped the surface in its own
+// no-store middleware, web-terminal-server set no cache directive at all — and a
+// credential's cache policy belongs to whoever issues the credential, so the
+// default lives here. A consumer may still add a broader policy of its own (kiro
+// covers its /api/tools and /api/health routes the same way); setting the same
+// header twice is idempotent.
 func writeJSON(w http.ResponseWriter, status int, v any) {
-	w.Header().Set("Content-Type", "application/json")
+	h := w.Header()
+	h.Set("Content-Type", "application/json")
+	h.Set("Cache-Control", "no-store")
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(v) // #nosec G104 -- client hangup is not actionable
 }

@@ -427,3 +427,87 @@ func TestWebSocketUnknownSessionClosesDefinitively(t *testing.T) {
 		t.Fatalf("close status = %d, want %d (statusUnknownSession); read err: %v", got, statusUnknownSession, rerr)
 	}
 }
+
+// TestSessionSurfaceRefusesCaching pins the cache policy on every session-surface
+// response that carries a session id. The id is the /ws attach + resume
+// credential, so a cache that stores one of these bodies holds a live credential
+// on disk; this package already refuses to log an id whole (LogID), and the
+// header is the same refusal aimed at caches.
+//
+// It is a CONTRACT test, not a coverage test: consumers were closing this gap
+// unevenly by hand (one wrapped the surface in its own middleware, one set no
+// directive at all) before the engine took the default, so a consumer that drops
+// its own middleware after upgrading is relying on these assertions holding.
+func TestSessionSurfaceRefusesCaching(t *testing.T) {
+	m := NewSessionManager(catFactory)
+	t.Cleanup(m.Shutdown)
+
+	// hasDirective reports whether a Cache-Control value carries the named
+	// directive, tolerating either ordering and surrounding whitespace so the
+	// test pins the POLICY rather than one exact spelling of the header.
+	hasDirective := func(header, want string) bool {
+		for part := range strings.SplitSeq(header, ",") {
+			if strings.EqualFold(strings.TrimSpace(part), want) {
+				return true
+			}
+		}
+		return false
+	}
+
+	t.Run("REST", func(t *testing.T) {
+		srv := httptest.NewServer(m.RESTHandler())
+		t.Cleanup(srv.Close)
+
+		// POST returns the new id, GET returns every live id: both are bodies a
+		// cache must not keep. The two 204/404 responses carry no id and are
+		// deliberately not asserted here.
+		resp, err := http.Post(srv.URL+"/api/sessions", "application/json", nil)
+		if err != nil {
+			t.Fatalf("POST: %v", err)
+		}
+		var created SessionInfo
+		_ = json.NewDecoder(resp.Body).Decode(&created)
+		resp.Body.Close()
+		if created.ID == "" {
+			t.Fatal("POST returned no id, so this test would assert nothing")
+		}
+		if cc := resp.Header.Get("Cache-Control"); !hasDirective(cc, "no-store") {
+			t.Errorf("POST /api/sessions Cache-Control = %q, want no-store: the response body carries the session id %s", cc, LogID(created.ID))
+		}
+		t.Cleanup(func() { m.Close(created.ID) })
+
+		respL, err := http.Get(srv.URL + "/api/sessions")
+		if err != nil {
+			t.Fatalf("GET: %v", err)
+		}
+		respL.Body.Close()
+		if cc := respL.Header.Get("Cache-Control"); !hasDirective(cc, "no-store") {
+			t.Errorf("GET /api/sessions Cache-Control = %q, want no-store: the response body lists every live session id", cc)
+		}
+	})
+
+	t.Run("SSE", func(t *testing.T) {
+		srv := httptest.NewServer(m.EventsHandler())
+		t.Cleanup(srv.Close)
+
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+		req, _ := http.NewRequestWithContext(ctx, http.MethodGet, srv.URL, nil)
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatalf("GET events: %v", err)
+		}
+		defer resp.Body.Close()
+		// Each event carries statusEvent.ID in full, so the stream needs the
+		// same prohibition as the REST bodies. no-cache alone only forces
+		// revalidation -- it still lets a cache store the response -- so it is
+		// asserted as PRESENT (middleboxes sniff for it) but not as sufficient.
+		cc := resp.Header.Get("Cache-Control")
+		if !hasDirective(cc, "no-store") {
+			t.Errorf("events Cache-Control = %q, want no-store: every event carries a full session id", cc)
+		}
+		if !hasDirective(cc, "no-cache") {
+			t.Errorf("events Cache-Control = %q, want the conventional SSE no-cache retained alongside no-store", cc)
+		}
+	})
+}

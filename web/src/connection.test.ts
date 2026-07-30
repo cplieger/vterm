@@ -858,6 +858,50 @@ describe("connection: ledger-loss signal, ackOnly trimming, wire-version surface
     expect(onServerRestart).toHaveBeenCalledTimes(1); // drop-and-notify
   });
 
+  it("ledgerLost resumeAck with a fully-acked outbox resets silently (no false restart banner)", () => {
+    setSession(generateSessionId());
+    const first = allMockWebSockets.at(-1)!;
+    first.fireOpen();
+    sendBinary(new Uint8Array([1, 2, 3]));
+    first.fireMessage(ackOnlyFrame(3)); // the server received and acked all 3
+
+    // The socket drops (a phone screen sleeping), the server's idle GC reclaims
+    // the ledger, and the reconnect's resume key misses. sentBytes === the GC'd
+    // ledger's bytes_received, so nothing was ever at risk.
+    reconnectNow();
+    const second = allMockWebSockets.at(-1)!;
+    second.fireOpen();
+    second.fireMessage(resumeAckFrame({ received: 0, ledgerLost: true }));
+
+    expect(rawInputSends(second)).toEqual([]); // nothing to replay
+    expect(onServerRestart).not.toHaveBeenCalled(); // nothing lost, so nothing to announce
+  });
+
+  it("resets the byte counters on a forgotten ledger so later acks still trim", () => {
+    setSession(generateSessionId());
+    const first = allMockWebSockets.at(-1)!;
+    first.fireOpen();
+    sendBinary(new Uint8Array([1, 2, 3]));
+    first.fireMessage(ackOnlyFrame(3));
+
+    reconnectNow();
+    const second = allMockWebSockets.at(-1)!;
+    second.fireOpen();
+    second.fireMessage(resumeAckFrame({ received: 0, ledgerLost: true }));
+
+    // The server's replacement ledger counts from zero. If the client had kept
+    // bytesAcked=3, this ack would read as stale in applyAck and the outbox
+    // would never trim again.
+    sendBinary(new Uint8Array([9]));
+    second.fireMessage(ackOnlyFrame(1));
+    reconnectNow();
+    const third = allMockWebSockets.at(-1)!;
+    third.fireOpen();
+    expect(controlFramesSent(third).at(-1)?.sentBytes).toBe(1);
+    third.fireMessage(resumeAckFrame({ received: 1 }));
+    expect(rawInputSends(third)).toEqual([]); // acked, so nothing replayed
+  });
+
   it("a clear ledgerLost flag keeps the legacy in-transit-loss replay (received=0, bytesAcked=0)", () => {
     setSession(generateSessionId());
     const first = allMockWebSockets.at(-1)!;

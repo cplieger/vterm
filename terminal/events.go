@@ -4,7 +4,8 @@ package terminal
 // tab's activity indicator. A single sweep recomputes every session's status on
 // a fixed interval and pushes only changes to subscribers, which debounces the
 // working/idle flap for free. Status derives from process liveness, OSC 9;4
-// progress, and output activity (working/idle/exited); a consumer's classifier
+// progress, and output activity (working/idle/exited, or crashed when the
+// process died badly); a consumer's classifier
 // maps an OSC 9 notification to a latched needs-input or done state (Tier 2).
 // One stream serves all tabs (not one per tab) to stay under the browser's
 // per-origin connection cap.
@@ -37,6 +38,10 @@ const (
 	// small SSE frame and below the 15s keepalive, so a dead client is caught
 	// before the next keepalive fires; a healthy-but-slow client is unaffected.
 	sseWriteTimeout = 10 * time.Second
+	// progressAbsent is the OSC 9;4 marker for "no percentage reported" —
+	// vt.Screen.ProgressValue's absent value, mirrored here so the event path can
+	// name it. Distinct from 0, which is a real 0%.
+	progressAbsent = -1
 )
 
 // statusEvent is one status-stream message: a session's current status and
@@ -54,15 +59,38 @@ type statusEvent struct {
 	// PinnedTitle is the raw user-set name, carried for the same reason and so a
 	// second client learns of a rename (or its removal) made elsewhere. Not
 	// carried on a Removed event.
-	PinnedTitle     string `json:"pinnedTitle"`
-	Removed         bool   `json:"removed,omitempty"`
-	ReportsActivity bool   `json:"reportsActivity"`
+	PinnedTitle string `json:"pinnedTitle"`
+	// Notification is the OSC 9 notification message captured for this session,
+	// carried on the event so a consumer with NO status classifier still RECEIVES
+	// it: "no classifier" means "I map notifications myself", not "discard them".
+	// A notification is an EVENT, not a state — the engine latches nothing for it,
+	// and it is carried only on the sweep that first observes it, never replayed.
+	// NotificationSeq is vt.Screen.NotificationSeq, so a consumer detects a fresh
+	// notification even when the text repeats.
+	//
+	// The text is untrusted program output. It is already sanitised by the vt
+	// layer (control, bidi and line-terminator runes dropped, length clamped —
+	// see vt.sanitizeNotification) and it travels to a client that already
+	// receives the session's full terminal stream over the WebSocket, so carrying
+	// it here is not a new exposure. A consumer still escapes it for whatever
+	// surface it renders it on, exactly as it does the terminal stream.
+	Notification    string `json:"notification,omitempty"`
+	NotificationSeq uint64 `json:"notificationSeq,omitempty"`
+	// ProgressValue is the OSC 9;4 percentage for this session: -1 when absent or
+	// unknown, else 0-100 (see Handler.ProgressValue). Always carried — a session
+	// that has reported no percentage is not a session at 0%, so the field must
+	// not be omitempty. A change in this value alone emits an event, or a
+	// consumer's determinate bar would stay at the first value it ever saw.
+	ProgressValue   int  `json:"progressValue"`
+	Removed         bool `json:"removed,omitempty"`
+	ReportsActivity bool `json:"reportsActivity"`
 }
 
 // statusTracker holds the per-session state the status computation needs beyond
-// the handler: the last emitted status/title (to detect changes), the last
-// notification sequence classified, the latched needs-input/done state, and the
-// automatic-title confirmation window.
+// the handler: the last emitted status/title/progress percentage (to detect
+// changes), the last notification sequence classified and the last one
+// delivered, the latched needs-input/done state, and the automatic-title
+// confirmation window.
 type statusTracker struct {
 	candidateSince  time.Time // when candidatePGID was first observed
 	lastStatus      string
@@ -71,8 +99,18 @@ type statusTracker struct {
 	lastPinnedTitle string // last emitted raw pinned name (to detect a rename / clear)
 	latched         string // "", StatusInput, or StatusDone
 	notifSeen       uint64
-	candidatePGID   int  // foreground pgid awaiting the confirmation window
-	lastReports     bool // last emitted reportsActivity (to detect a false->true flip)
+	// notifDelivered is the last notification sequence CARRIED on an event.
+	// Separate from notifSeen, which only advances when a classifier consumed the
+	// message: delivery is unconditional, so the two would otherwise disagree for
+	// a consumer with no classifier — the very consumer the delivery exists for.
+	notifDelivered uint64
+	candidatePGID  int // foreground pgid awaiting the confirmation window
+	// lastProgressValue is the last emitted OSC 9;4 percentage. Zero-valued at 0
+	// rather than -1 for a brand-new tracker, which only means the session's
+	// first sweep also counts the percentage as changed — that sweep emits
+	// anyway, because the status itself moves off "".
+	lastProgressValue int
+	lastReports       bool // last emitted reportsActivity (to detect a false->true flip)
 }
 
 // autoTitleConfirm is how long a foreground process must hold the terminal
@@ -137,8 +175,11 @@ func (m *SessionManager) sweepLoop(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-t.C:
-			for _, ev := range m.diffStatuses() {
-				m.broadcast(&ev)
+			// Indexed, not ranged: a statusEvent is well past the value-copy
+			// threshold, and broadcast takes a pointer anyway.
+			evs := m.diffStatuses()
+			for i := range evs {
+				m.broadcast(&evs[i])
 			}
 		}
 	}
@@ -168,7 +209,13 @@ type statusRaw struct {
 	autoProbe autoTitleProbe
 	notifSeq  uint64
 	progress  int
-	exited    bool
+	// progressValue is the OSC 9;4 percentage from the SAME snapshot as progress
+	// (-1 when absent or unknown, else 0-100).
+	progressValue int
+	exited        bool
+	// crashed is meaningful only when exited: true when the exit was a failure
+	// rather than an ordinary end (see crashedExit).
+	crashed bool
 }
 
 // read fills the handler-derived fields (diffStatuses phase 2). It takes only
@@ -178,8 +225,14 @@ type statusRaw struct {
 // progress with a fresh turn-end notification (the torn snapshot that lost a
 // done latch).
 func (it *statusRaw) read() {
-	it.exited = it.handler.Exited()
-	it.progress, it.notifMsg, it.notifSeq, it.oscTitle, it.derivedTitle = it.handler.statusSnapshot()
+	it.exited, it.crashed = it.handler.exitOutcome()
+	sc := it.handler.statusSnapshot()
+	it.progress = sc.progress
+	it.progressValue = sc.progressValue
+	it.notifMsg = sc.notifMsg
+	it.notifSeq = sc.notifSeq
+	it.oscTitle = sc.title
+	it.derivedTitle = sc.derivedTitle
 	// Skip the probe entirely when the program named itself: the automatic title
 	// is the LAST rung, so an OSC-titled session must never pay for procfs reads.
 	if it.oscTitle == "" && !it.exited {
@@ -232,91 +285,159 @@ func (m *SessionManager) diffStatuses() []statusEvent {
 		if !live {
 			continue // closed while computing; the removed sweep below emits it
 		}
-		tr := it.tr
-		status := m.computeStatus(it, tr)
-		// The stored titles are re-read under m.mu — a PUT during phase 2 must not
-		// be masked by the phase-1 capture.
-		clientTitle := s.clientTitle
-		pinnedTitle := s.pinnedTitle
-		// The sweep is the ONLY writer of the server-derived automatic title, so
-		// List and snapshot read one confirmed value instead of each probing
-		// procfs and disagreeing with this stream.
-		m.confirmAutoTitle(s, it, tr)
-		title := effectiveTitle(&titleSources{
-			pinned: pinnedTitle, derived: it.derivedTitle, osc: it.oscTitle,
-			client: clientTitle, auto: s.autoTitle,
-		})
-		// reportsActivity is sticky: Progress() stays >= 0 once any OSC 9;4 has
-		// been seen (state 0 is "cleared", not "never seen" = -1), and a latched
-		// notification is the other genuine OSC 9 signal. The client reveals the
-		// tab's activity dot only when this is set.
-		reports := it.progress >= 0 || tr.latched != ""
-		// Emit on a raw client-title or pinned-name change too: a PUT can change
-		// only one of those (OSC title and status unchanged), and a consumer
-		// reading them directly needs that pushed even when the effective title is
-		// unmoved (a pin or an OSC title masking the rung below). Without the
-		// pinned guard, a rename would not reach a second browser watching the
-		// same session until something else changed.
-		if status != tr.lastStatus || title != tr.lastTitle || clientTitle != tr.lastClientTitle ||
-			pinnedTitle != tr.lastPinnedTitle || reports != tr.lastReports {
-			tr.lastStatus = status
-			tr.lastTitle = title
-			tr.lastClientTitle = clientTitle
-			tr.lastPinnedTitle = pinnedTitle
-			tr.lastReports = reports
-			events = append(events, statusEvent{
-				ID: it.id, Status: status, Title: title, ClientTitle: clientTitle,
-				PinnedTitle: pinnedTitle, CreatedAt: it.createdAt, ReportsActivity: reports,
-			})
+		if ev, changed := m.sweepSession(s, it); changed {
+			events = append(events, ev)
 		}
 	}
 	for id, tr := range m.trackers {
 		if _, ok := m.sessions[id]; !ok {
 			delete(m.trackers, id)
-			events = append(events, statusEvent{ID: id, Status: StatusExited, Title: tr.lastTitle, Removed: true, ReportsActivity: tr.lastReports})
+			events = append(events, statusEvent{
+				ID: id, Status: StatusExited, Title: tr.lastTitle, Removed: true,
+				ReportsActivity: tr.lastReports, ProgressValue: progressAbsent,
+			})
 		}
 	}
 	m.mu.Unlock()
 	return events
 }
 
+// sweepSession runs one session's tracker state machine and change detection
+// (diffStatuses phase 3), returning the event to broadcast and whether anything
+// changed. Callers hold m.mu: it reads the session's stored titles and mutates
+// the tracker.
+func (m *SessionManager) sweepSession(s *session, it *statusRaw) (statusEvent, bool) {
+	tr := it.tr
+	// A notification the tracker has not delivered yet. Read BEFORE
+	// computeStatus, which advances the separate classifier cursor.
+	notifNew := it.notifSeq > tr.notifDelivered
+	status := m.computeStatus(it, tr)
+	// The stored titles are re-read under m.mu — a PUT during phase 2 must not
+	// be masked by the phase-1 capture.
+	clientTitle := s.clientTitle
+	pinnedTitle := s.pinnedTitle
+	// The sweep is the ONLY writer of the server-derived automatic title, so
+	// List and snapshot read one confirmed value instead of each probing
+	// procfs and disagreeing with this stream.
+	m.confirmAutoTitle(s, it, tr)
+	title := effectiveTitle(&titleSources{
+		pinned: pinnedTitle, derived: it.derivedTitle, osc: it.oscTitle,
+		client: clientTitle, auto: s.autoTitle,
+	})
+	// reportsActivity is sticky: progress stays >= 0 once any OSC 9;4 has been
+	// seen (state 0 is "cleared", not "never seen" = -1), and a latched
+	// notification is the other genuine OSC 9 signal. The client reveals the
+	// tab's activity dot only when this is set.
+	reports := it.progress >= 0 || tr.latched != ""
+	// Emit on a raw client-title or pinned-name change too: a PUT can change
+	// only one of those (OSC title and status unchanged), and a consumer
+	// reading them directly needs that pushed even when the effective title is
+	// unmoved (a pin or an OSC title masking the rung below). Without the
+	// pinned guard, a rename would not reach a second browser watching the
+	// same session until something else changed. The progress percentage is in
+	// here for the same reason: 10% -> 60% moves nothing else about the session,
+	// so without it a consumer's determinate bar would stay where it started.
+	// A fresh notification always emits, since delivering the event IS the point.
+	if status == tr.lastStatus && title == tr.lastTitle && clientTitle == tr.lastClientTitle &&
+		pinnedTitle == tr.lastPinnedTitle && reports == tr.lastReports &&
+		it.progressValue == tr.lastProgressValue && !notifNew {
+		return statusEvent{}, false
+	}
+	tr.lastStatus = status
+	tr.lastTitle = title
+	tr.lastClientTitle = clientTitle
+	tr.lastPinnedTitle = pinnedTitle
+	tr.lastReports = reports
+	tr.lastProgressValue = it.progressValue
+	ev := statusEvent{
+		ID: it.id, Status: status, Title: title, ClientTitle: clientTitle,
+		PinnedTitle: pinnedTitle, CreatedAt: it.createdAt, ReportsActivity: reports,
+		ProgressValue: it.progressValue,
+	}
+	// A notification rides along on the sweep that first observes it, and only
+	// that sweep: it is an event, so replaying it on a later status-only change
+	// would show the consumer the same notification twice.
+	if notifNew {
+		tr.notifDelivered = it.notifSeq
+		ev.Notification = it.notifMsg
+		ev.NotificationSeq = it.notifSeq
+	}
+	return ev, true
+}
+
 // computeStatus derives a session's status from the handler inputs captured in
 // diffStatuses's lock-free phase. Callers hold m.mu (it mutates the tracker's
-// latch state, which snapshot() reads under m.mu). Precedence: exited, then a
-// notification classified in THIS sweep (a fresh latch), then working (OSC 9;4
-// progress active), then a latch from an earlier sweep, then idle (the
-// default / new-session / at-rest state).
+// latch state, which snapshot() reads under m.mu).
+//
+// Precedence, highest first:
+//
+//  1. the process is gone, nothing else matters — exited for an ordinary end,
+//     crashed for a failed one (crashedExit draws the line);
+//  2. a notification classified in THIS sweep (a fresh latch), which outranks
+//     ANY progress state for the turn-boundary reason below;
+//  3. the program's current OSC 9;4 progress state — working (1 value, 3
+//     indeterminate), failed (2 error), or warning (4, iTerm2 semantics) — which
+//     supersedes a latch from an EARLIER sweep and clears it;
+//  4. a latch from an earlier sweep (needs-input or done), still current because
+//     the program has reported no new progress state;
+//  5. idle — the default / new-session / at-rest state, which is also where a
+//     cleared progress state (0) and a never-reported one (-1) land.
+//
 // Working comes ONLY from OSC 9;4 progress — never from raw output activity — so
 // a program that reports no progress never flaps to working merely because the
 // user is typing at its prompt (the reveal gate then keeps its dot hidden).
 func (m *SessionManager) computeStatus(in *statusRaw, tr *statusTracker) string {
 	if in.exited {
+		// Top precedence, and the split lives here rather than in the caller so
+		// every status consumer (sweep, List, SSE snapshot) reads one rule: a
+		// dead session's LAST progress state or latch says nothing useful about
+		// how it died.
+		if in.crashed {
+			return StatusCrashed
+		}
 		return StatusExited
 	}
 	latchedNow := m.applyNotification(in, tr)
-	// A progress-reporting program (kiro-cli, Claude Code) drives working from
+	// A progress-reporting program (kiro-cli, Claude Code) drives its status from
 	// its OSC 9;4 progress: an active state (1 value, 3 indeterminate) means the
-	// agent is working. A new working phase supersedes a latch from an EARLIER
-	// sweep (a new turn starting clears the stale done/input dot) — but never
-	// one applied in THIS sweep: at a turn boundary the snapshot can pair the
-	// fresh "Response complete" / "Permission required" notification with a
-	// progress value that still reads active (the notification flushed a chunk
-	// ahead of the progress-off), and clearing the just-set latch here would
-	// consume the notification for good (notifSeen has advanced) — the next
-	// sweep then lands on idle and the tab's done/input dot is silently lost.
-	// Honoring the fresh latch is self-correcting: if the agent truly is still
-	// working, the next sweep has no new notification and its active progress
-	// clears the latch then.
-	if (in.progress == 1 || in.progress == 3) && !latchedNow {
+	// agent is working, and the error and warning states are states in exactly
+	// the same sense — they persist until the program itself changes them, so a
+	// build that has since failed is never masked by a stale done.
+	// A new progress state supersedes a latch from an EARLIER sweep (a new turn
+	// starting clears the stale done/input dot) — but never one applied in THIS
+	// sweep: at a turn boundary the snapshot can pair the fresh "Response
+	// complete" / "Permission required" notification with a progress value that
+	// still reads active (the notification flushed a chunk ahead of the
+	// progress-off), and clearing the just-set latch here would consume the
+	// notification for good (notifSeen has advanced) — the next sweep then lands
+	// on idle and the tab's done/input dot is silently lost. Honoring the fresh
+	// latch is self-correcting: if the agent truly is still working, the next
+	// sweep has no new notification and its progress state clears the latch then.
+	if st, ok := progressStatus(in.progress); ok && !latchedNow {
 		tr.latched = ""
-		return StatusWorking
+		return st
 	}
 	// A latched notification state (needs-input or done) persists through the
-	// quiet gap after the turn until the next working phase clears it.
+	// quiet gap after the turn until the next progress state clears it.
 	if tr.latched != "" {
 		return tr.latched
 	}
 	return StatusIdle
+}
+
+// progressStatus maps an OSC 9;4 progress state to the status it reports, and
+// whether it reports one at all. State 0 (cleared) and -1 (never reported) carry
+// no status of their own: they leave the decision to the latch and to idle.
+func progressStatus(progress int) (string, bool) {
+	switch progress {
+	case 1, 3: // determinate value / indeterminate: the program is working
+		return StatusWorking, true
+	case 2: // error state (with a percentage, or indeterminate without one)
+		return StatusFailed, true
+	case 4: // iTerm2's warning at pr percent (ConEmu calls the same state paused)
+		return StatusWarning, true
+	}
+	return "", false
 }
 
 // applyNotification updates the tracker's latch from a new OSC 9 notification
@@ -388,7 +509,11 @@ func (m *SessionManager) unsubscribe(ch chan statusEvent) {
 // sources must agree; see refinedStatus).
 //
 // Two-phase like diffStatuses and List: manager state under m.mu, handler
-// getters (Exited/Progress/Title, each taking h.mu) after it is released.
+// getters after it is released. The screen-derived inputs come from ONE
+// statusSnapshot call per handler, so the initial sync cannot pair one session's
+// progress state with a percentage read a moment later. No notification is
+// replayed here: a notification is an event, and a subscriber joining later did
+// not miss a state.
 func (m *SessionManager) snapshot() []statusEvent {
 	type snapItem struct {
 		handler    *Handler
@@ -421,12 +546,13 @@ func (m *SessionManager) snapshot() []statusEvent {
 	for i := range items {
 		it := &items[i]
 		it.ev.Status = refinedStatus(it.lastStatus, it.handler)
-		osc, derived := it.handler.titles()
+		sc := it.handler.statusSnapshot()
 		it.ev.Title = effectiveTitle(&titleSources{
-			pinned: it.ev.PinnedTitle, derived: derived, osc: osc,
+			pinned: it.ev.PinnedTitle, derived: sc.derivedTitle, osc: sc.title,
 			client: it.ev.ClientTitle, auto: it.autoTitle,
 		})
-		it.ev.ReportsActivity = it.handler.Progress() >= 0 || it.latched
+		it.ev.ProgressValue = sc.progressValue
+		it.ev.ReportsActivity = sc.progress >= 0 || it.latched
 		out = append(out, it.ev)
 	}
 	return out
@@ -466,8 +592,9 @@ func (m *SessionManager) EventsHandler() http.Handler {
 
 		writeSSEHeaders(w)
 		_ = rc.SetWriteDeadline(time.Now().Add(sseWriteTimeout)) // bound the snapshot burst too
-		for _, ev := range m.snapshot() {
-			if !writeSSE(w, &ev) {
+		snap := m.snapshot()
+		for i := range snap {
+			if !writeSSE(w, &snap[i]) {
 				return
 			}
 		}

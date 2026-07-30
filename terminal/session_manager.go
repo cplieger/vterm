@@ -67,6 +67,25 @@ const (
 	StatusInput   = "input"   // blocked awaiting user action (latched from a notification)
 	StatusDone    = "done"    // a turn completed (latched from a notification; cleared on next working)
 	StatusExited  = "exited"  // the process has exited
+	// StatusCrashed is a session whose process exited BADLY: a non-zero exit
+	// status, or a terminating signal it was not asked for. StatusExited is
+	// reserved for an ordinary end — status 0, or any exit the server itself
+	// caused (Close, the idle reaper, Shutdown) — so a routine restart never
+	// reads as a failure. crashedExit owns the exact boundary and states why
+	// each case falls where it does.
+	StatusCrashed = "crashed"
+	// StatusFailed is OSC 9;4 progress state 2: the program reported an error
+	// state (with a percentage, or indeterminate when pr is omitted). Like every
+	// progress state it PERSISTS until the program changes it — it is a state,
+	// not an event, so no timeout and no output activity clears it.
+	StatusFailed = "failed"
+	// StatusWarning is OSC 9;4 progress state 4. The two sources that define
+	// these sequences disagree on state 4: iTerm2 calls it a warning at pr
+	// percent, ConEmu calls it paused. The engine follows iTerm2, because it
+	// advertises TERM_PROGRAM=iTerm.app — that identity is what makes a client
+	// emit these sequences at all — and iTerm2's definition is the more
+	// specified of the two. Persists like StatusFailed.
+	StatusWarning = "warning"
 )
 
 // ManagerOption configures a SessionManager.
@@ -663,11 +682,15 @@ func (m *SessionManager) maybeReap() {
 // activity dots from whichever answers last, and when List still reported the
 // coarse liveness status a reload visibly downgraded a latched done/input dot
 // back to idle until the next real transition. Process exit is checked live and
-// always wins (it is definitive, while lastStatus can lag a sweep tick behind);
-// an empty lastStatus (created within the current sweep tick) is the
-// new-session default, idle.
+// always wins (it is definitive, while lastStatus can lag a sweep tick behind),
+// and it carries the same exited-vs-crashed split the sweep applies, so the two
+// sources cannot disagree about HOW a session ended either; an empty lastStatus
+// (created within the current sweep tick) is the new-session default, idle.
 func refinedStatus(lastStatus string, h *Handler) string {
-	if h.Exited() {
+	if exited, crashed := h.exitOutcome(); exited {
+		if crashed {
+			return StatusCrashed
+		}
 		return StatusExited
 	}
 	if lastStatus != "" {

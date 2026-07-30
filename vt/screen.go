@@ -93,6 +93,14 @@ type Screen struct {
 	// sequence; a program that never emits one leaves it at -1 (the signal that
 	// the status layer should fall back to output activity).
 	Progress int
+	// ProgressValue holds the percentage carried by the last OSC 9;4 progress
+	// sequence: -1 when absent or unknown (no sequence seen yet, a state that
+	// does not carry one — 0 clear and 3 indeterminate — or state 2 in its
+	// indeterminate-error form), else 0-100 (a numeric value outside that range
+	// is clamped into it). iTerm2 states 1 (value) and 4 (warning) require it;
+	// state 2 may carry it. -1 is deliberately distinct from 0: a session that
+	// has reported no percentage is not a session at 0%.
+	ProgressValue int
 	// NotificationSeq increments each time a new OSC 9 notification is captured,
 	// so a reader (the status layer) detects a fresh notification even when the
 	// message text repeats. Starts at 0 (no notification seen).
@@ -260,7 +268,8 @@ func DefaultTheme() Theme {
 func New(rows, cols int, opts ...Option) *Screen {
 	s := &Screen{Height: rows, Width: cols, Cells: make([][]Cell, rows), wrapped: make([]bool, rows), scrollTop: 0, scrollBottom: rows - 1, rightMargin: cols - 1, conformanceLevel: 65, AutoWrap: true, CursorBlink: true, theme: DefaultTheme()}
 	s.singleShft = -1
-	s.Progress = -1 // no OSC 9;4 progress seen yet
+	s.Progress = progressAbsent      // no OSC 9;4 progress seen yet
+	s.ProgressValue = progressAbsent // no OSC 9;4 percentage seen yet (absent/unknown)
 	for i := range s.Cells {
 		s.Cells[i] = makeRow(cols, Color{})
 	}

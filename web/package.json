@@ -34,7 +34,8 @@
   "description": "Browser terminal engine: VT500 screen buffer, DOM renderer, and binary wire protocol",
   "license": "GPL-3.0-or-later",
   "exports": {
-    ".": "./src/index.ts"
+    ".": "./src/index.ts",
+    "./wire-compatibility.json": "./wire-compatibility.json"
   },
   "types": "./src/index.ts",
   "publishConfig": {
@@ -50,6 +51,7 @@
     "!src/**/*.test.ts",
     "!src/**/test-helpers",
     "!src/**/fc-strict-setup.ts",
-    "jsr.json"
+    "jsr.json",
+    "wire-compatibility.json"
   ]
 }

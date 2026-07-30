@@ -278,12 +278,16 @@ export interface Callbacks {
    *  transient treatment (onClose + backoff reconnect), so existing
    *  consumers are unaffected until they opt in. */
   onProcessExit?(): void;
-  /** Fired when the server's boot-epoch in resumeAck differs from the
-   *  one observed on a previous connection — i.e. the server has
-   *  restarted. By the time this fires, the connection module has
-   *  already reset bytesSent/bytesAcked/outbox so subsequent input
-   *  starts from zero. UI should clear scrollback and surface a
-   *  banner so the user knows old input may have been lost. */
+  /** Fired when the client's queued input can no longer be trusted, which
+   *  happens two ways: the server's boot-epoch in resumeAck differs from the
+   *  one observed on a previous connection (the server restarted), or the
+   *  server no longer holds this session's input ledger AND the outbox still
+   *  held unacked bytes. A forgotten ledger whose every byte was already acked
+   *  does NOT fire this — nothing was lost, and reporting it made a phone
+   *  waking from sleep announce a restart that never happened. By the time this
+   *  fires, the connection module has already reset bytesSent/bytesAcked/outbox
+   *  so subsequent input starts from zero. UI should surface a banner so the
+   *  user knows recent input may have been lost. */
   onServerRestart?(): void;
   /** Fired when a resumeAck carries an explicit server revision outside
    *  [MIN_SUPPORTED_SERVER_WIRE_VERSION, WIRE_PROTOCOL_VERSION]. A newer
@@ -415,16 +419,49 @@ export function sendResize(): void {
   sendControl({ type: "resize", cols, rows });
 }
 
-// resetSessionAfterRestart clears a session's reliable-input accounting and
-// notifies the UI. Called when the server's boot epoch changes (restart) or when
-// the server no longer recognizes the session (received=0 with prior acks) -- both
-// invalidate the local bytesSent/bytesAcked/outbox state.
-function resetSessionAfterRestart(st: ResumeState): void {
+// resetLedger drops a session's reliable-input accounting. Called when the
+// server's boot epoch changes (restart) or when the server no longer recognizes
+// the session -- both invalidate the local bytesSent/bytesAcked/outbox state.
+// The three entry points below differ only in whether the UI hears about it.
+// resetLedger drops a session's reliable-input accounting. Called whenever the
+// server no longer holds the ledger these counters were keyed to (a restart, an
+// idle-GC'd resume key, a session the server does not recognize): its
+// replacement counts from zero, so keeping non-zero counters would make every
+// later ack read as stale in applyAck and the outbox would never trim again.
+function resetLedger(st: ResumeState): void {
   st.bytesSent = 0;
   st.bytesAcked = 0;
   st.outbox.length = 0;
   st.outboxBytes = 0;
+}
+
+// resetSessionAfterRestart resets the ledger and tells the UI the server
+// restarted. Reserved for a boot-epoch change, which is the one cause where
+// that sentence is literally true.
+function resetSessionAfterRestart(st: ResumeState): void {
+  resetLedger(st);
   cb?.onServerRestart?.();
+}
+
+// resetForgottenLedger handles a ledger the server no longer holds (the
+// explicit ledgerLost flag, or the old-server received=0 heuristic). The server
+// forgetting a ledger is not a restart and is not by itself a loss: only the
+// UNACKED remainder was ever at risk. So the UI is notified only when there was
+// one, and a session whose every sent byte was already acked resets silently —
+// nothing can be replayed and nothing was lost.
+//
+// The silent case is the common one, and reporting it was a real defect: an
+// iPad whose screen slept for half an hour woke, reconnected, and announced a
+// server restart that never happened. Server-side, the ledger it claimed had
+// received EXACTLY as many bytes as the client claimed to have sent (10531 ==
+// 10531 in the incident logs), i.e. an empty outbox and a fully-applied
+// session, and the banner still fired.
+function resetForgottenLedger(st: ResumeState): void {
+  const lostUnacked = st.bytesSent > st.bytesAcked;
+  resetLedger(st);
+  if (lostUnacked) {
+    cb?.onServerRestart?.();
+  }
 }
 
 // applyAck drops chunks from the front of the session's outbox until the
@@ -901,11 +938,12 @@ export function connect(): void {
       // tail): the resume key missed the server's registry while we claimed
       // sent bytes — our ledger was reclaimed (idle GC / cap eviction). The
       // server cannot vouch for ANY previously sent input, so replaying the
-      // outbox risks duplicate execution. Deterministic drop-and-notify,
+      // outbox risks duplicate execution. Deterministic drop, plus a notify
+      // only when unacked bytes were actually dropped (resetForgottenLedger),
       // covering the bytesAcked === 0 case the heuristic below cannot see
       // (acks that never reached us before the disconnect).
       if (msg.ledgerLost) {
-        resetSessionAfterRestart(st);
+        resetForgottenLedger(st);
         return;
       }
       // Server-doesn't-recognize-this-session safeguard (old-server
@@ -914,12 +952,12 @@ export function connect(): void {
       // our session (idle GC kicked in, or sessionId persistence failed and
       // a reload created a new one). Replaying the outbox would deliver
       // every queued chunk again, causing the iOS tab-suspend
-      // duplicate-resend bug. Drop the outbox and notify the UI as if the
-      // server restarted — input since the last successful ack is
+      // duplicate-resend bug. Drop the outbox, and notify only if it held
+      // unacked bytes — input since the last successful ack is
       // irrecoverable but at least not duplicated. Skip this branch when
       // bytesSent = 0 (genuine first-connect; received=0 is correct).
       if (msg.received === 0 && st.bytesAcked > 0) {
-        resetSessionAfterRestart(st);
+        resetForgottenLedger(st);
         return;
       }
       applyAck(st, msg.received);

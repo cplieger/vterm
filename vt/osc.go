@@ -9,8 +9,9 @@
 //   - OSC 8 ; params ; URI BEL/ST — Set/clear hyperlink (URI empty = clear)
 //   - OSC 9 ; Pt BEL/ST — desktop notification: Pt is captured into
 //     Notification for the status layer. The ConEmu subcommand form
-//     (OSC 9 ; Ps ; ...) is not a notification; subcommand 4 (progress) is
-//     captured into Progress, any other numeric subcommand is ignored
+//     (OSC 9 ; Ps [; ...]) is not a notification; subcommand 4 (progress) is
+//     captured into Progress + ProgressValue, any other numeric subcommand is
+//     ignored
 //   - OSC 10-19 ; spec|? BEL/ST — set/query the dynamic colors (default
 //     fg/bg/cursor/…), answered from the configured Theme; see WithTheme
 //   - OSC 52 ; Pc ; Pd — clipboard: SET pushes to the browser clipboard and
@@ -137,7 +138,7 @@ func (s *Screen) dispatchOsc() {
 	case 9:
 		// OSC 9 — desktop notification (Pt captured into Notification) or a
 		// ConEmu subcommand (numeric first field); subcommand 4 is progress,
-		// captured into Progress. See handleOsc9.
+		// captured into Progress/ProgressValue. See handleOsc9.
 		s.handleOsc9(data)
 	case 52:
 		// OSC 52 — clipboard. SET always works (kiro-cli uses this to copy);
@@ -170,24 +171,35 @@ const maxNotificationLen = 256
 // handleOsc9 handles the two OSC 9 forms. A human-readable message
 // (ESC ] 9 ; <text> ST) is captured into Notification for the status layer,
 // stripped of control bytes and length-clamped because it is attacker-influenced
-// terminal output. The ConEmu subcommand form (OSC 9 ; Ps ; ... where the first
-// field is numeric) is not a notification: subcommand 4 is progress reporting
-// (OSC 9 ; 4 ; st [; pr]), captured into Progress so the status layer can derive
-// a working state, and any other numeric subcommand is ignored. The engine stays
-// generic: it stores whatever notification text arrives and does not interpret
-// it. Mapping a message to a session status (kiro-cli's "Response complete" /
-// "Permission required") is the consumer's job, so no application strings are
-// hard-coded here.
+// terminal output. The ConEmu subcommand form (OSC 9 ; Ps [; ...] where the
+// first field is numeric) is not a notification: subcommand 4 is progress
+// reporting (OSC 9 ; 4 [; st [; pr]]), captured into Progress/ProgressValue so
+// the status layer can derive working/error/warning, and any other numeric
+// subcommand is ignored. The engine stays generic: it stores whatever
+// notification text arrives and does not interpret it. Mapping a message to a
+// session status (kiro-cli's "Response complete" / "Permission required") is the
+// consumer's job, so no application strings are hard-coded here.
+//
+// The two forms are told apart by the FIRST ';'-delimited field, and only a
+// PURELY numeric one is a subcommand — a message that merely starts with digits
+// ("4 files changed") is free text and must arrive as a notification. The
+// degenerate subcommand, a payload that is nothing but digits and carries no
+// separator at all, is a subcommand too: that is how the abbreviated progress
+// form (ESC ] 9 ; 4 ST, "stop the progress bar") reaches setProgress instead of
+// being captured as the notification text "4".
 func (s *Screen) handleOsc9(data string) {
 	if data == "" {
 		return
 	}
-	// A purely numeric first ';'-delimited field marks a ConEmu subcommand, not
-	// a human-readable notification. Subcommand 4 is progress; capture it.
-	if head, rest, hasSep := strings.Cut(data, ";"); hasSep && isAllDigits(head) {
+	head, rest, hasFields := strings.Cut(data, ";")
+	if isAllDigits(head) {
 		if head == "4" {
-			s.setProgress(rest)
+			s.setProgress(rest, hasFields)
 		}
+		// Every other ConEmu subcommand is consumed and ignored, deliberately:
+		// driven from terminal output, 9;7 (run a process), 9;6 (GUI macro) and
+		// 9;2 (message box) are remote-execution and UI-hijack primitives. Do not
+		// "complete" ConEmu support here.
 		return
 	}
 	msg := sanitizeNotification(data)
@@ -198,17 +210,75 @@ func (s *Screen) handleOsc9(data string) {
 	s.NotificationSeq++
 }
 
-// setProgress records a ConEmu OSC 9;4 progress state from its payload ("st" or
-// "st;pr"). st is 0 (off), 1 (value), 2 (error), 3 (indeterminate), or 4
-// (paused); the optional pr percentage is not used. An unparseable or
-// out-of-range state is ignored, leaving Progress unchanged.
-func (s *Screen) setProgress(rest string) {
-	stField, _, _ := strings.Cut(rest, ";")
-	st, err := strconv.Atoi(stField)
-	if err != nil || st < 0 || st > 4 {
+// OSC 9;4 progress states, and the marker for an absent percentage. State 1
+// (determinate value) has no constant because no branch tests for it: it is
+// covered by the range check plus the "requires pr" default in progressPercent.
+const (
+	progressAbsent             = -1 // no percentage reported (ProgressValue) / no state seen (Progress)
+	progressStateClear         = 0  // stop / clear the progress bar; pr n/a
+	progressStateError         = 2  // error state; pr optional (omitted = indeterminate error)
+	progressStateIndeterminate = 3  // indeterminate, animates; pr n/a
+	progressStateWarning       = 4  // iTerm2: warning at pr percent (ConEmu calls it paused); pr required
+	progressPercentMax         = 100
+)
+
+// setProgress records a ConEmu/iTerm2 OSC 9;4 progress report from the payload
+// following "4" ("st", "st;pr", or nothing at all). hasFields reports whether a
+// ';' followed the subcommand, which is what separates the abbreviated form
+// (ESC ] 9 ; 4 ST — no state field, stops the progress bar) from an explicit but
+// empty state field ("9;4;", malformed).
+//
+// State 4 is read with iTerm2's semantics (warning at pr percent) rather than
+// ConEmu's (paused), because the engine advertises TERM_PROGRAM=iTerm.app — that
+// identity is what makes a client emit these sequences — and iTerm2's definition
+// is the more specified of the two.
+//
+// A progress report is a STATE, not an event: it persists until the program
+// sends another one, and only state 0 (or the abbreviated form) clears it.
+// Neither source defines the malformed cases, so these are OUR documented
+// choices: a non-numeric or out-of-range st, and a pr that is not a number at
+// all, leave the previous state untouched rather than inventing one; a numeric
+// pr outside 0-100 is clamped into range; fields beyond pr are ignored.
+func (s *Screen) setProgress(rest string, hasFields bool) {
+	if !hasFields {
+		// Abbreviated form: no state field at all means stop the progress bar.
+		s.Progress = progressStateClear
+		s.ProgressValue = progressAbsent
 		return
 	}
+	fields := strings.Split(rest, ";")
+	st, err := strconv.Atoi(fields[0])
+	if err != nil || st < progressStateClear || st > progressStateWarning {
+		return // unparseable or out-of-range state: ignore, leave Progress alone
+	}
+	value, ok := progressPercent(st, fields)
+	if !ok {
+		return // malformed pr for this state: ignore the whole sequence
+	}
 	s.Progress = st
+	s.ProgressValue = value
+}
+
+// progressPercent resolves the percentage an OSC 9;4 payload reports for state
+// st, given the ';'-split fields after the subcommand (fields[0] is st). It
+// returns the value to store and whether the sequence is well-formed; !ok means
+// the caller must leave the previous state untouched.
+func progressPercent(st int, fields []string) (int, bool) {
+	if st == progressStateClear || st == progressStateIndeterminate {
+		// pr is n/a for these states, so a stray one is not retained.
+		return progressAbsent, true
+	}
+	if len(fields) < 2 {
+		// pr omitted. Legal only for the error state, whose indeterminate form
+		// carries no percentage; states 1 and 4 require one, and inventing a
+		// value for them would report a percentage the program never sent.
+		return progressAbsent, st == progressStateError
+	}
+	pr, err := strconv.Atoi(fields[1])
+	if err != nil {
+		return 0, false // present but not a number at all: refuse to guess
+	}
+	return min(max(pr, 0), progressPercentMax), true
 }
 
 // isAllDigits reports whether s is non-empty and every byte is an ASCII digit.

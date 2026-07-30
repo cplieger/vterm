@@ -74,10 +74,17 @@ func TestWirePairIncompatibility(t *testing.T) {
 		},
 		"client one below the server floor is refused": {
 			WireProtocolVersion, MinSupportedClientWireVersion,
-			MinSupportedClientWireVersion - 1, MinSupportedClientWireVersion, false, "TS half is behind",
+			// The client's own floor moves down with its revision: a client at
+			// rev N-1 that still demanded a server >= N would be
+			// self-inconsistent, and that verdict is reported before any
+			// cross-side one, which would mask the skew this case pins.
+			MinSupportedClientWireVersion - 1, MinSupportedClientWireVersion - 1, false, "TS half is behind",
 		},
 		"server one below the client floor is refused": {
-			MinSupportedClientWireVersion - 1, MinSupportedClientWireVersion,
+			// Same reason as above, on the server half: a server at rev N-1
+			// declaring a client floor of N is incoherent, so keep the pair's
+			// server half internally consistent to test the cross-side floor.
+			MinSupportedClientWireVersion - 1, MinSupportedClientWireVersion - 1,
 			WireProtocolVersion, MinSupportedClientWireVersion, false, "Go half is behind",
 		},
 		"future client revision is compatible": {
@@ -100,6 +107,18 @@ func TestWirePairIncompatibility(t *testing.T) {
 			-1, MinSupportedClientWireVersion,
 			WireProtocolVersion, MinSupportedClientWireVersion, false, "server wire revisions must be positive",
 		},
+		"server demanding a client newer than itself is self-inconsistent": {
+			WireProtocolVersion, WireProtocolVersion + 1,
+			WireProtocolVersion, MinSupportedClientWireVersion, false, "Go server half is self-inconsistent",
+		},
+		"client demanding a server newer than itself is self-inconsistent": {
+			WireProtocolVersion, MinSupportedClientWireVersion,
+			WireProtocolVersion, WireProtocolVersion + 1, false, "TS client half is self-inconsistent",
+		},
+		"a half whose floor equals its own revision is coherent": {
+			WireProtocolVersion, WireProtocolVersion,
+			WireProtocolVersion, WireProtocolVersion, true, "",
+		},
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -119,6 +138,62 @@ func TestWirePairIncompatibility(t *testing.T) {
 				t.Errorf("reason = %q, want it to contain %q", got, tc.wantSubstr)
 			}
 		})
+	}
+}
+
+// TestWirePairIncompatibility_selfInconsistencyPrecedesSkew pins the case
+// ORDER, which is the point of the within-side invariant rather than a detail
+// of it. When a half's floor exceeds its own revision, the numbers describe no
+// released artifact, so any cross-side verdict computed from them ("the Go half
+// is behind — bump your pin") is confident and wrong. The self-inconsistency
+// must win, so the caller is sent to re-check how it read the constants.
+func TestWirePairIncompatibility_selfInconsistencyPrecedesSkew(t *testing.T) {
+	cases := map[string]struct {
+		serverRev, serverMinClient, clientRev, clientMinServer int
+		wantSubstr, notWantSubstr                              string
+	}{
+		// serverRev 4 < clientMinServer 6 would read as "Go half is behind",
+		// but serverMinClient 9 > serverRev 4 makes the server half garbage.
+		"server self-inconsistency outranks the Go-half-behind verdict": {
+			4, 9, 6, 6, "Go server half is self-inconsistent", "behind",
+		},
+		// clientRev 3 < serverMinClient 5 would read as "TS half is behind",
+		// but clientMinServer 9 > clientRev 3 makes the client half garbage.
+		"client self-inconsistency outranks the TS-half-behind verdict": {
+			5, 5, 3, 9, "TS client half is self-inconsistent", "behind",
+		},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			got := WirePairIncompatibility(tc.serverRev, tc.serverMinClient, tc.clientRev, tc.clientMinServer)
+			if !strings.Contains(got, tc.wantSubstr) {
+				t.Errorf("reason = %q, want it to contain %q", got, tc.wantSubstr)
+			}
+			if strings.Contains(got, tc.notWantSubstr) {
+				t.Errorf("reason = %q, want it NOT to contain %q (a skew diagnosis from incoherent input misdirects the caller to a version pin)", got, tc.notWantSubstr)
+			}
+			// The message must also name the real remediation.
+			if !strings.Contains(got, "mis-extracted") {
+				t.Errorf("reason = %q, want it to name corrupt/mis-extracted input as the cause", got)
+			}
+		})
+	}
+}
+
+// TestWirePairIncompatibility_realConstantsAreSelfConsistent guards the
+// invariant on the values this module actually ships: if either half's own
+// floor ever rises above its own revision, every consumer's release gate would
+// start refusing the engine paired with itself.
+func TestWirePairIncompatibility_realConstantsAreSelfConsistent(t *testing.T) {
+	if MinSupportedClientWireVersion > WireProtocolVersion {
+		t.Errorf("server half is self-inconsistent: min client %d > own rev %d",
+			MinSupportedClientWireVersion, WireProtocolVersion)
+	}
+	if got := WirePairIncompatibility(
+		WireProtocolVersion, MinSupportedClientWireVersion,
+		WireProtocolVersion, MinSupportedClientWireVersion,
+	); got != "" {
+		t.Errorf("the engine paired with a client at its own revisions must be compatible, got %q", got)
 	}
 }
 

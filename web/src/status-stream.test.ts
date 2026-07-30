@@ -18,6 +18,13 @@
 // 7. On a permanent close (readyState CLOSED) the module re-establishes the
 //    stream after a capped backoff, fires onOpen on the reopen, and close()
 //    cancels a pending reconnect.
+// 8. OSC 9 wire floor (per the OSC 9 spec brief): the "failed" (progress state
+//    2) and "warning" (state 4) statuses parse, the progress percentage is
+//    carried with -1 meaning absent, a notification is delivered as event data
+//    rather than as a status, and an UNKNOWN status string from a newer server is
+//    forwarded rather than dropped or thrown on.
+// 9. The session-end split: "exited" (an ordinary end) and "crashed" (a non-zero
+//    or signalled exit) are both admitted by the status union and both parse.
 
 import { describe, it, expect, vi } from "vitest";
 
@@ -195,5 +202,121 @@ describe("connectStatusStream", () => {
 
     randomSpy.mockRestore();
     vi.useRealTimers();
+  });
+
+  // OSC 9 wire-floor cases, written against the OSC 9 spec brief.
+  //
+  // Two things the brief makes the client's problem. (1) Progress state 2 is an
+  // error and state 4 is a warning (iTerm2 semantics), so "failed" and "warning"
+  // are statuses the server can send and the union has to admit; the percentage
+  // rides along, with -1 meaning absent (which is NOT 0%). (2) A notification is
+  // an EVENT, so it arrives as event data rather than as a status, and a consumer
+  // with no server-side classifier still sees it.
+  describe("OSC 9 progress and notification fields", () => {
+    const cases: { name: string; status: SessionStatus["status"]; progressValue: number }[] = [
+      { name: "failed with a percentage", status: "failed", progressValue: 75 },
+      { name: "failed indeterminate", status: "failed", progressValue: -1 },
+      { name: "warning with a percentage", status: "warning", progressValue: 25 },
+      { name: "working with a percentage", status: "working", progressValue: 50 },
+      { name: "idle with no percentage", status: "idle", progressValue: -1 },
+    ];
+    for (const tc of cases) {
+      it(`parses ${tc.name}`, () => {
+        const onStatus = vi.fn();
+        const { fake } = mountFake({ onStatus });
+        const ev: SessionStatus = { ...sample, status: tc.status, progressValue: tc.progressValue };
+
+        fake.emit("message", JSON.stringify(ev));
+
+        expect(onStatus).toHaveBeenCalledTimes(1);
+        expect(onStatus).toHaveBeenCalledWith(ev);
+        const got = onStatus.mock.calls[0]![0] as SessionStatus;
+        expect(got.status).toBe(tc.status);
+        expect(got.progressValue).toBe(tc.progressValue);
+      });
+    }
+
+    it("delivers a notification and its sequence without it being a status", () => {
+      const onStatus = vi.fn();
+      const { fake } = mountFake({ onStatus });
+      const ev: SessionStatus = {
+        ...sample,
+        status: "idle",
+        notification: "Response complete",
+        notificationSeq: 7,
+        progressValue: -1,
+      };
+
+      fake.emit("message", JSON.stringify(ev));
+
+      const got = onStatus.mock.calls[0]![0] as SessionStatus;
+      expect(got.notification).toBe("Response complete");
+      expect(got.notificationSeq).toBe(7);
+      // An event, not a state: the status is whatever the session's state is.
+      expect(got.status).toBe("idle");
+    });
+
+    it("forwards an UNKNOWN status from a newer server without throwing", () => {
+      const onStatus = vi.fn();
+      const { fake } = mountFake({ onStatus });
+      // A server one release ahead adds a status this client has never heard of.
+      // The stream is parsed, not validated: dropping the frame would lose the
+      // session's title and removal signal too, so the value is forwarded as-is
+      // and the consumer falls back on its own default rendering.
+      const raw = JSON.stringify({
+        id: "abc123",
+        status: "throttled",
+        title: "kiro-cli",
+        createdAt: "2026-07-01T12:00:00Z",
+        progressValue: 40,
+        futureField: { nested: true },
+      });
+
+      expect(() => {
+        fake.emit("message", raw);
+      }).not.toThrow();
+
+      expect(onStatus).toHaveBeenCalledTimes(1);
+      const got = onStatus.mock.calls[0]![0] as SessionStatus;
+      expect(got.status).toBe("throttled");
+      expect(got.id).toBe("abc123");
+      expect(got.progressValue).toBe(40);
+    });
+  });
+
+  // The session-end split. The server reports "exited" for an ordinary end —
+  // status 0, or any exit the server itself caused (a closed session, the idle
+  // reaper, a shutdown) — and "crashed" only for a non-zero or signalled exit,
+  // so a routine restart never arrives as a failure. Both are terminal: no
+  // progress state or notification latch outranks them.
+  describe("session-end statuses", () => {
+    const cases: SessionStatus["status"][] = ["exited", "crashed"];
+    for (const status of cases) {
+      it(`accepts and parses "${status}"`, () => {
+        const onStatus = vi.fn();
+        const { fake } = mountFake({ onStatus });
+        // Typed as SessionStatus, so this is also the type-level assertion that
+        // the union admits the value: tsc fails the build if it does not.
+        const ev: SessionStatus = { ...sample, status, progressValue: -1 };
+
+        fake.emit("message", JSON.stringify(ev));
+
+        expect(onStatus).toHaveBeenCalledTimes(1);
+        const got = onStatus.mock.calls[0]![0] as SessionStatus;
+        expect(got.status).toBe(status);
+      });
+    }
+
+    it("carries a crashed session's removal marker like any other status", () => {
+      const onStatus = vi.fn();
+      const { fake } = mountFake({ onStatus });
+      const ev: SessionStatus = { ...sample, status: "crashed", removed: true };
+
+      fake.emit("message", JSON.stringify(ev));
+
+      const got = onStatus.mock.calls[0]![0] as SessionStatus;
+      expect(got.status).toBe("crashed");
+      expect(got.removed).toBe(true);
+    });
   });
 });

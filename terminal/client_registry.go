@@ -50,10 +50,24 @@ func (r *clientRegistry) Add(ws *websocket.Conn) *clientState {
 // client had last reported (0, 0 if it never sent a resize). The caller uses it
 // to decide whether the departure should heal the shared screen size (see
 // Handler.maybeHealSize).
+//
+// It also stamps lastSeen on the departing client's resume ledger, which is
+// what makes the idle-GC window mean "60 minutes since a client last HELD this
+// ledger". Without the stamp, lastSeen only advanced on attach and on
+// client->server input, so a tab open for hours reading agent output without
+// typing carried an hours-old lastSeen while still connected — protected only
+// by the GC's attached-session skip — and went GC-eligible the instant its
+// socket dropped. A phone that slept for 30 minutes then came back to a
+// reclaimed ledger and a false "server restarted" banner, because the window
+// the iOS-suspension rationale sized had already elapsed before the sleep
+// began. Stamping here restarts the clock at the disconnect.
 func (r *clientRegistry) Remove(ws *websocket.Conn) (cols, rows int) {
 	r.mu.Lock()
 	if st := r.clients[ws]; st != nil {
 		cols, rows = st.cols, st.rows
+		if sess := st.session.Load(); sess != nil {
+			sess.lastSeen = time.Now()
+		}
 	}
 	delete(r.clients, ws)
 	r.mu.Unlock()
@@ -120,9 +134,11 @@ func (r *clientRegistry) Snapshot() map[*websocket.Conn]uint64 {
 // ambiguous received=0).
 // A key hit refreshes lastSeen so an attached, input-idle client (a pure
 // viewer that reconnects but never types) is not GC-eligible merely because
-// IncrementReceived never ran for it.
-// Opportunistically GCs sessions idle >60 min. The 60-minute window is
-// long enough to survive iOS Safari aggressively unloading a backgrounded
+// IncrementReceived never ran for it. Remove stamps it again on detach, so
+// between the two the retention window below always measures time since a
+// client last held the ledger.
+// Opportunistically GCs sessions unattached for >60 min. The 60-minute window
+// is long enough to survive iOS Safari aggressively unloading a backgrounded
 // tab (which can keep the same sessionId via sessionStorage but suspends
 // the WebSocket for an unbounded period). A shorter window (the previous
 // 10-minute one) caused a duplicate-resend bug: tab suspended >10 min →
@@ -161,9 +177,11 @@ func (r *clientRegistry) attachedSessions() map[*sessionState]bool {
 	return m
 }
 
-// gcIdleSessions deletes sessions idle longer than the 60-minute
+// gcIdleSessions deletes sessions unattached for longer than the 60-minute
 // retention window, skipping sessions attached to a live client (a
-// connected viewer's ledger must never be reclaimed under it). A GC'd
+// connected viewer's ledger must never be reclaimed under it). lastSeen is
+// stamped on attach, on input, and on DETACH, so "idle" here is time since
+// the last client let go — not time since the last keystroke. A GC'd
 // session that had received bytes is logged: a later reconnect with that
 // sessionId takes the explicit ledger-lost path on the resumeAck
 // (drop-and-notify), and the log is the server half of that event.

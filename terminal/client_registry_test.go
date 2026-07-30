@@ -268,6 +268,65 @@ func TestRemove_returnsDepartedSize(t *testing.T) {
 	}
 }
 
+// TestRemove_stampsLastSeenOnDetach pins the retention semantics the iOS-sleep
+// resume depends on: the 60-minute window measures time since a client last
+// HELD the ledger, not time since the last keystroke. A session whose last
+// input was hours ago (a tab reading agent output) must survive a detach plus a
+// sub-window sleep — before the detach stamp it was reclaimed on the very next
+// key miss, and the returning client got a false ledger-loss / "server
+// restarted" banner.
+func TestRemove_stampsLastSeenOnDetach(t *testing.T) {
+	r := newClientRegistry(slog.Default())
+	ws := &websocket.Conn{}
+	state := r.Add(ws)
+	r.ResolveSession(state, "sid")
+	r.IncrementReceived(state, 10)
+
+	// Two hours of reading output with no typing: nothing refreshes lastSeen
+	// while the socket stays up, so the ledger ages past the GC window.
+	r.mu.Lock()
+	r.sessions["sid"].lastSeen = time.Now().Add(-2 * time.Hour)
+	r.mu.Unlock()
+
+	r.Remove(ws) // the screen goes to sleep and the socket drops
+
+	// The detach stamp is the whole fix: the clock restarts here, so the ledger
+	// now reads as freshly idle rather than two hours stale.
+	r.mu.Lock()
+	aged := time.Since(r.sessions["sid"].lastSeen)
+	r.mu.Unlock()
+	if aged > time.Minute {
+		t.Fatalf("detach left lastSeen %v old; want stamped to ~now", aged.Round(time.Second))
+	}
+
+	// A key miss elsewhere (another tab reconnecting) triggers the sweep 30
+	// minutes later — inside the window, measured from the detach.
+	r.mu.Lock()
+	r.sessions["sid"].lastSeen = time.Now().Add(-30 * time.Minute)
+	r.mu.Unlock()
+
+	r.ResolveSession(&clientState{}, "other") // opportunistic GC sweep
+
+	r.mu.Lock()
+	_, present := r.sessions["sid"]
+	r.mu.Unlock()
+	if !present {
+		t.Errorf("GC reclaimed a ledger detached only 30m ago; want it retained until 60m past the detach")
+	}
+
+	// And it still expires: past the window, measured from the detach.
+	r.mu.Lock()
+	r.sessions["sid"].lastSeen = time.Now().Add(-61 * time.Minute)
+	r.mu.Unlock()
+	r.ResolveSession(&clientState{}, "other2")
+	r.mu.Lock()
+	_, present = r.sessions["sid"]
+	r.mu.Unlock()
+	if present {
+		t.Errorf("GC retained a ledger detached 61m ago; want it reclaimed (the window must still bind)")
+	}
+}
+
 // TestResolveSession_createdFlagAndLastSeenRefresh pins the two ResolveSession
 // behaviors the ledger-loss protocol depends on: a key miss reports
 // created=true (handleResume turns that plus claimed sentBytes into the

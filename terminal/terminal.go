@@ -30,6 +30,7 @@ import (
 	"os/exec"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"time"
 	"unicode/utf8"
 
@@ -325,11 +326,24 @@ type Handler struct {
 	redrawLastData    time.Time
 	pendingClipboard  []byte
 	command           []string
-	cfg               handlerConfig
-	bootEpoch         int64
-	lastActivity      atomic.Int64
-	mu                sync.Mutex
-	started           atomic.Bool
+	// exitErr retains what cmd.Wait() reported when the process monitor reaped
+	// the child: nil for a clean exit, an *exec.ExitError for a non-zero or
+	// signalled one. Guarded by h.mu and written exactly once, BEFORE
+	// procExitCh closes, so Exited() == true implies this value is final (see
+	// the monitor in ensureStarted). Read through ExitError.
+	exitErr      error
+	cfg          handlerConfig
+	bootEpoch    int64
+	lastActivity atomic.Int64
+	mu           sync.Mutex
+	started      atomic.Bool
+	// shutdownRequested latches true when the SERVER asked this session to end
+	// (Shutdown, which is also what SessionManager.Close and the idle reaper
+	// call). It is the input that keeps a server-initiated teardown out of the
+	// crashed classification — see crashedExit. Atomic, not h.mu-guarded: the
+	// process monitor reads it after cmd.Wait() returns, and Shutdown holds h.mu
+	// while it stores.
+	shutdownRequested atomic.Bool
 	// sizeEstablished is latched true once the PTY has real dimensions (the
 	// eager start's default size, or a client resize) and never cleared: the
 	// flush builder emits nothing before it, so clients never see a frame
@@ -403,9 +417,18 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 // Shutdown cancels the readLoop and flushLoop goroutines and closes
 // the PTY. Safe to call even if the process was never started.
+//
+// It latches "the server ended this session", which the exit classification
+// reads: a child the server kills (SIGKILL via the cancelled context, or SIGHUP
+// from the PTY closing) exited because it was told to, and reporting that as a
+// crash would paint every routine restart red. See crashedExit.
 func (h *Handler) Shutdown() {
 	h.mu.Lock()
 	defer h.mu.Unlock()
+	// Stored before cancel() so the store is ordered ahead of the kill it
+	// triggers, and therefore ahead of the cmd.Wait() return the monitor
+	// classifies.
+	h.shutdownRequested.Store(true)
 	if h.healTimer != nil {
 		h.healTimer.Stop()
 	}
@@ -437,6 +460,83 @@ func (h *Handler) Exited() bool {
 	default:
 		return false
 	}
+}
+
+// ExitError returns what cmd.Wait() reported for the child: nil when the process
+// exited cleanly (status 0), was never started, or has not exited yet, and
+// otherwise the wait error — an *exec.ExitError for a non-zero or signalled
+// exit. Pair it with Exited to tell "not dead yet" from "died cleanly"; the
+// value is final once Exited reports true. Safe for concurrent use.
+//
+// This is the same error WithOnProcessExit's callback receives, retained so a
+// consumer that did not register one (or that reads state on its own schedule)
+// can still tell a clean exit from a crash. The engine's own status stream uses
+// it to report exited vs crashed (see crashedExit).
+func (h *Handler) ExitError() error {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.exitErr
+}
+
+// setExitError retains the reaped child's wait error. Called exactly once, by
+// the process monitor, before procExitCh closes.
+func (h *Handler) setExitError(werr error) {
+	h.mu.Lock()
+	h.exitErr = werr
+	h.mu.Unlock()
+}
+
+// exitOutcome reports whether the child has exited and, when it has, whether the
+// exit counts as a crash under crashedExit's rule. One call so the status sweep
+// reads liveness and outcome as a pair rather than deriving the second from a
+// second, later observation.
+func (h *Handler) exitOutcome() (exited, crashed bool) {
+	if !h.Exited() {
+		return false, false
+	}
+	return true, crashedExit(h.ExitError(), h.shutdownRequested.Load())
+}
+
+// crashedExit classifies a reaped child's exit: true means the program died in a
+// way an operator should see as a failure (StatusCrashed), false means it ended
+// normally (StatusExited).
+//
+// The rule, and why each case falls where it does:
+//
+//   - werr == nil — exit status 0. Clean, never a crash.
+//   - serverInitiated — the SERVER ended this session (Shutdown, and therefore
+//     SessionManager.Close and the idle reaper too). The child is killed by the
+//     cancelled context (SIGKILL) or hung up by the PTY closing, so its wait
+//     status is signalled through no fault of its own. Not a crash: classifying
+//     it as one would turn every routine server shutdown, every closed tab and
+//     every reap into a fleet of red dots — the single worst failure mode this
+//     boundary has, so the server's own intent outranks the wait status.
+//   - SIGHUP — the controlling terminal went away. The only thing that closes
+//     this session's PTY master is the engine itself (Shutdown, or the monitor
+//     after the child is already reaped), so a hangup means "the session ended",
+//     not "the program failed". Excluded independently of serverInitiated
+//     because the PTY close and the flag are set by the same teardown but
+//     observed through different mechanisms, and a hangup is not evidence of
+//     failure whichever way it arrived.
+//   - any other *exec.ExitError — a non-zero exit status or a terminating signal
+//     the program was not asked for (SIGSEGV, SIGKILL from an OOM killer,
+//     SIGTERM from outside). This is the crash case, and the only one.
+//   - any other error — Wait itself failed (a lost child, ErrWaitDelay without
+//     an exit status). We have no evidence about the program's own outcome, so
+//     the safe answer is the quiet one: not a crash. A crash claim needs
+//     positive evidence, because a false crash is the expensive direction.
+func crashedExit(werr error, serverInitiated bool) bool {
+	if werr == nil || serverInitiated {
+		return false
+	}
+	var ee *exec.ExitError
+	if !errors.As(werr, &ee) {
+		return false
+	}
+	if ws, ok := ee.Sys().(syscall.WaitStatus); ok && ws.Signaled() && ws.Signal() == syscall.SIGHUP {
+		return false
+	}
+	return true
 }
 
 // LastActivity returns the time of the most recent PTY output, or the zero time
@@ -472,20 +572,84 @@ func (h *Handler) Progress() int {
 	return h.screen.Progress
 }
 
-// statusSnapshot returns the status-relevant screen state — the OSC 9;4
-// progress state, the last OSC 9 notification message and its sequence, and
-// the OSC 0/2 window title — under a SINGLE lock acquisition, so the status
-// sweep's per-session snapshot is internally consistent. Reading the same
-// fields through the individual getters (Progress, Notification, Title) takes
-// the lock once per call, and a PTY chunk parsed between two of those calls
-// can pair a stale active progress with a fresh turn-end notification — the
-// inconsistent pairing computeStatus must not see (its fresh-latch precedence
-// guards the state machine; this getter removes the torn read).
-func (h *Handler) statusSnapshot() (progress int, notifMsg string, notifSeq uint64, title, derivedTitle string) {
+// ProgressValue returns the percentage carried by the session's last OSC 9;4
+// progress sequence: -1 when absent or unknown (no sequence seen, or a state
+// that carries no percentage), else 0-100. A consumer pairs it with Progress to
+// render a determinate bar; -1 is not 0%. Safe for concurrent use.
+//
+// The engine's own status sweep does not call this: it reads the same field
+// through statusSnapshot, which batches every status input under one lock. Use
+// this when you want the value on its own.
+func (h *Handler) ProgressValue() int {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	return h.screen.Progress, h.screen.Notification, h.screen.NotificationSeq,
-		h.screen.Title, h.inputTitle.title()
+	return h.screen.ProgressValue
+}
+
+// ScrollbackBounds returns the absolute-index bounds of this session's retained
+// scrollback history: committed is the index of the next line to be committed
+// (one past the newest committed line, and the absolute index of the current
+// top screen row), oldest is the index of the oldest line still retained.
+// committed-oldest is therefore the number of lines retained, and every index
+// in [oldest, committed) can still be replayed on resume; anything below oldest
+// has been evicted by the retention cap (WithScrollbackCapacity).
+//
+// Both are 0 for a session that has committed nothing yet. Indices are
+// monotonic for the life of the session and are never reused, so a consumer can
+// compare two observations to see how much history advanced or was evicted.
+//
+// These are the same two values the resume handshake reports to a client; this
+// accessor exists so a consumer can observe them without decoding a wire frame.
+// Read-only by design: history bounds are produced by the child's output and the
+// configured capacity, never set from outside.
+//
+// Returned as a pair under a SINGLE lock acquisition, for the same reason as
+// titles() and statusSnapshot: read through two calls, a commit landing in
+// between yields a pair that never existed (an oldest from after an eviction
+// beside a committed from before it), which a consumer would read as a
+// larger-than-real retained range. Safe for concurrent use.
+func (h *Handler) ScrollbackBounds() (committed, oldest uint64) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.scrollback.Committed(), h.scrollback.OldestIndex()
+}
+
+// screenStatus is one atomic read of the status-relevant screen state, returned
+// as a struct rather than a result list so the sweep can grow another status
+// input without either growing a longer tuple or taking the lock twice.
+type screenStatus struct {
+	notifMsg     string // the last OSC 9 notification message
+	title        string // the OSC 0/2 window title
+	derivedTitle string // the title derived from what the user typed
+	notifSeq     uint64 // increments per captured notification (a repeat is still new)
+	progress     int    // OSC 9;4 state: -1 none, 0 clear, 1 value, 2 error, 3 indeterminate, 4 warning
+	// progressValue is the OSC 9;4 percentage: -1 absent/unknown, else 0-100.
+	progressValue int
+}
+
+// statusSnapshot returns the status-relevant screen state — the OSC 9;4
+// progress state and its percentage, the last OSC 9 notification message and
+// its sequence, and the OSC 0/2 window title — under a SINGLE lock
+// acquisition, so the status sweep's per-session snapshot is internally
+// consistent. Reading the same fields through the individual getters
+// (Progress, ProgressValue, Notification, Title) takes the lock once per call,
+// and a PTY chunk parsed between two of those calls can pair a stale active
+// progress with a fresh turn-end notification — the inconsistent pairing
+// computeStatus must not see (its fresh-latch precedence guards the state
+// machine; this getter removes the torn read). Every field a sweep reads
+// belongs in here for that reason, the percentage included: a bar at 40% next
+// to a state that has already moved on is the same defect in visible form.
+func (h *Handler) statusSnapshot() screenStatus {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return screenStatus{
+		notifMsg:      h.screen.Notification,
+		title:         h.screen.Title,
+		derivedTitle:  h.inputTitle.title(),
+		notifSeq:      h.screen.NotificationSeq,
+		progress:      h.screen.Progress,
+		progressValue: h.screen.ProgressValue,
+	}
 }
 
 // observeInputTitle feeds one input chunk to the derived-title state machine, and
@@ -642,6 +806,11 @@ func (h *Handler) ensureStarted(cols, rows int) error {
 	// exit so the scheduler goroutine does not leak after the process dies.
 	go func() {
 		werr := cmd.Wait() // reap; werr carries the exit status
+		// Retain the outcome BEFORE procExitCh closes, so any reader that sees
+		// Exited() == true also sees the final exit error (the status sweep reads
+		// the pair through exitOutcome). Nothing here can panic — a mutex and one
+		// assignment — so it is safe ahead of the teardown defer below.
+		h.setExitError(werr)
 		// Guarantee client notification (procExitCh drives the 4001 close) and
 		// loop teardown even if the consumer onProcessExit callback panics; a
 		// callback panic must not crash the server or strand attached clients.

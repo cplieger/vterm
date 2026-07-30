@@ -1,0 +1,9 @@
+{
+  "schemaVersion": 1,
+  "generatedBy": "web/src/wire-manifest.ts",
+  "wireCompatibility": {
+    "protocolVersion": 4,
+    "minimumServerProtocolVersion": 3,
+    "incompatibleCloseCode": 4002
+  }
+}

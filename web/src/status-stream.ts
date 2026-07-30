@@ -19,7 +19,21 @@ import { nextBackoffDelay } from "./reconnect.js";
  *  remember. */
 export interface SessionInfo {
   readonly id: string;
-  readonly status: "working" | "idle" | "input" | "done" | "exited";
+  /** the session's current status. "working"/"idle"/"exited"/"crashed" are
+   *  derived by the server; "input"/"done" are latched from a classified OSC 9
+   *  notification; "failed" is OSC 9;4 progress state 2 and "warning" is state 4
+   *  (iTerm2 semantics), both of which PERSIST until the program changes the
+   *  progress state. "exited" and "crashed" split the session's end: "exited" is
+   *  an ordinary one (status 0, or any exit the server itself caused — a closed
+   *  session, the idle reaper, a server shutdown), "crashed" is a non-zero exit
+   *  status or a terminating signal the program was not asked for, so a routine
+   *  restart never renders as a failure. Neither is a progress state: they
+   *  outrank everything, and nothing clears them. A consumer must tolerate an
+   *  UNKNOWN status string from a newer server: the stream is parsed, not
+   *  validated, and an unrecognised value is forwarded rather than dropped
+   *  (forward compatibility across the wire floor). */
+  readonly status:
+    "working" | "idle" | "input" | "done" | "exited" | "crashed" | "failed" | "warning";
   readonly title: string;
   /** the raw client-derived automatic title (before the precedence baked into
    *  `title`); a consumer that treats the program's OSC window title as
@@ -46,6 +60,18 @@ export interface SessionInfo {
 export interface SessionStatus extends SessionInfo {
   /** true when the session is gone (closed or reaped); the consumer drops it. */
   readonly removed?: boolean;
+  /** the OSC 9;4 percentage: -1 when absent or unknown (no sequence seen, or a
+   *  state that carries none — clear/indeterminate), else 0-100. Paired with
+   *  `status` to render a determinate bar. */
+  readonly progressValue?: number;
+  /** the OSC 9 notification message, delivered to EVERY subscriber whether or
+   *  not the server has a status classifier installed. A notification is an
+   *  EVENT, not a state: it does not latch a status, so a consumer that wants a
+   *  status out of it decides that itself. */
+  readonly notification?: string;
+  /** the notification's sequence number (monotonic per session), so a repeated
+   *  message is still recognised as a new event. */
+  readonly notificationSeq?: number;
 }
 
 /** StatusStreamCallbacks are the consumer's hooks. Declared as function-typed

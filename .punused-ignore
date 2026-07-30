@@ -1,0 +1,205 @@
+# punused findings adjudicated for this repo. One literal substring per line,
+# matched against punused's output line; full-line `#` comments carry the
+# reason. Invalid-by-construction classes: `.kiro/steering/tools.md`.
+#
+# web-terminal-engine is a LIBRARY that ships a `main` package
+# (internal/e2etestserver), so cplieger/ci's app-mode detection ("a main package
+# exists") gates it on punused -- but its exported surface is a PUBLISHED Go
+# proxy API (github.com/cplieger/web-terminal-engine/v3), consumed by vibekit,
+# web-terminal-kiro and web-terminal-server. punused's own README states it "does
+# not detect references from outside of your project", and run.go asks gopls for
+# `textDocument/references` scoped to this module only, so EVERY symbol a
+# consumer repo calls reads as unused here. Triage therefore follows the library
+# rules in tools.md, not the app rules: nothing is deleted on punused's word.
+#
+# The EU1001 ("used in test only") vs EU1002 ("no reference found") split below
+# reflects only whether THIS repo's own tests happen to exercise the symbol --
+# run.go skips `_test.go` files when collecting declarations but still counts
+# references from them. It carries no information about consumer use.
+#
+# Patterns are symbol-only (no file:line), matching the nine sibling repos'
+# files, so they survive line shifts in an actively edited file. Each entry was
+# verified to match exactly one of the 29 findings.
+
+# --- Session-manager surface: published API, consumers web-terminal-kiro and
+# web-terminal-server. The calls live in another MODULE, invisible to punused.
+#
+# NewSessionManager / WithManagerLogger / WithStatusClassifier: built at
+# web-terminal-kiro/routes.go:123-125 and web-terminal-server/main.go:234-239.
+# MountAPI + WithCreateGate: web-terminal-kiro/routes.go:166 mounts the session
+# REST API behind a create gate; web-terminal-server/main.go:335 does the same
+# with webhttp.SessionCreateRateLimit.
+# WithIdleReaper: web-terminal-server/main.go:237 only (kiro runs no reaper).
+# (*SessionManager).Shutdown: drains every session on SIGTERM through
+# webhttp.Run's shutdown hook -- web-terminal-kiro/main.go:475 and :489,
+# web-terminal-server/main.go:296 and :304.
+function NewSessionManager
+function WithManagerLogger
+function WithStatusClassifier
+function WithCreateGate
+function WithIdleReaper
+method (*SessionManager).MountAPI
+method (*SessionManager).Shutdown
+
+# --- Status vocabulary: published API, consumer web-terminal-kiro. These are the
+# string constants its injected status classifier RETURNS
+# (web-terminal-kiro/routes.go:660 and :663), so the app's tab-status dots are
+# named by the engine's vocabulary rather than by duplicated literals.
+constant StatusInput
+constant StatusDone
+
+# --- Handler functional options: published API, all wired in a consumer's
+# session factory. punused sees only this repo's own option tests.
+#
+# WithWorkDir: vibekit/internal/hub/shell.go:47, web-terminal-kiro/routes.go:277,
+#   web-terminal-server/main.go:482.
+# WithScrollbackCapacity: web-terminal-kiro/routes.go:278 (5000, the client
+#   store's retention cap), web-terminal-server/main.go:478 (configurable).
+# WithKeepUnfocused: web-terminal-kiro/routes.go:279 -- load-bearing, it is what
+#   keeps kiro-cli emitting the OSC 9 notifications the status dots latch on
+#   (pinned by web-terminal-kiro/session_keep_unfocused_test.go:41).
+# WithCommandLogValue: web-terminal-kiro/routes.go:281 ("[redacted]", CWE-532).
+# WithEnv: web-terminal-kiro/routes.go:289 (kiro-cli version dir first on PATH).
+# WithInputTitle: web-terminal-kiro/routes.go:299; deliberately NOT set by
+#   web-terminal-server (its main.go:469 says so in a comment).
+# WithOnProcessExit: web-terminal-kiro/routes.go:313.
+function WithWorkDir
+function WithScrollbackCapacity
+function WithKeepUnfocused
+function WithCommandLogValue
+function WithEnv
+function WithInputTitle
+function WithOnProcessExit
+
+# --- Wire-compatibility rule: published API, consumed by all three repos'
+# `scripts/wirecheck/main.go` (vibekit:56, web-terminal-kiro:55,
+# web-terminal-server:54) -- non-test code in each. The engine owns the
+# compatibility VERDICT so the three clients cannot drift from it; each
+# wirecheck tool asks the engine rather than reimplementing the rule.
+function WirePairIncompatibility
+
+# --- Embedded struct types (invalid by construction). vt/screen.go:78-79 embed
+# ParserState (vt/types.go:83) and CursorState (vt/screen.go:208) into Screen.
+# Both have entirely unexported members, reached through the outer type:
+# s.pState at vt/parse.go:29, s.oscBuf at vt/osc.go:84, s.curX/s.curY across
+# vt/csi.go. punused asks gopls for references at the EMBED identifier, which
+# resolves to the field, and a promoted-member access is not a reference to the
+# field -- so satisfying this finding would mean writing s.ParserState.pState
+# everywhere, which is strictly worse Go. Proof of the mechanism: the third
+# embed on the same lines, altScreenState (vt/screen.go:217), is identical in
+# every respect except its lowercase initial, and punused does not report it.
+field ParserState
+field CursorState
+
+# --- Exported methods on an UNEXPORTED type. scrollbackRing (terminal/
+# scrollback.go:22) is reachable only through Handler.scrollback, an unexported
+# field (terminal/terminal.go:312), so no consumer can name the type or reach
+# these methods -- exportedness is a red herring here (tools.md). Both are live
+# in-repo observation points for real behavior, not accessors under test:
+# Len is how TestED3ClearsScrollbackRing (terminal/scrollback_clear_test.go:16)
+# proves CSI 3 J empties the ring while committed stays monotonic -- the
+# regression guard for the resize-duplication bug -- and how the fuzz invariant
+# at terminal/scrollback_fuzz_test.go:44 checks retention against capacity.
+# Lines is the ring-order oracle for terminal/scrollback_test.go:24,41,66 and
+# the commit checks at terminal/terminal_test.go:329 and
+# terminal/flush_scheduler_test.go:233. Reading r.count/r.buf directly instead
+# would reimplement the ring's index arithmetic inside its own tests.
+method (*scrollbackRing).Len
+method (*scrollbackRing).Lines
+
+# --- Test-support harness in an internal/ package. internal/esctest drives the
+# esctest2 VT conformance suite (GPL-2.0, never vendored: fetched via
+# scripts/esctest.sh, located by ESCTEST2_DIR). Run is called by
+# TestConformance (internal/esctest/harness_test.go:53), which asserts the
+# failing set equals the checked-in known-deviations allowlist -- the top
+# conformance tier. `internal/` puts it outside the published API by
+# construction, and the package has no importer, so EU1001 is its correct
+# terminal state; the export is kept because the package doc is written around
+# `Run` as the harness entry point. NOTE: `function Run` is a broad pattern --
+# it is the only `func Run` in the module today, so re-check this entry if
+# another package gains one.
+function Run
+
+# ============================================================================
+# PUBLISHED API WITH NO FLEET CONSUMER -- awaiting a user decision.
+#
+# Every symbol below is on the published v3 surface with zero references in
+# vibekit, web-terminal-kiro or web-terminal-server (verified by bare-identifier
+# grep across the fleet, plus `deadcode -test ./...` for the EU1002 four).
+# Removing any of them is a semver-MAJOR break for out-of-fleet importers on the
+# Go proxy, so none is deleted here. They are whitelisted with that reason and
+# reported for a decision.
+# ============================================================================
+
+# WithAcceptOptions (terminal/terminal.go:230) -- websocket.AcceptOptions
+# injection. No caller: web-terminal-kiro/routes_test.go:527,533 only MENTION it
+# in prose, asserting that the app deliberately does NOT set it (so the engine's
+# same-origin default holds). Covered in-repo by
+# TestNewHandler_WithAcceptOptions (terminal/terminal_options_test.go:110).
+function WithAcceptOptions
+
+# WithTheme (terminal/terminal.go:258) -- the Handler-level OSC 10/11/12 theme
+# option. Not exercised anywhere, not even by this repo's tests, hence EU1002.
+# Do not confuse it with vt.WithTheme (vt/screen.go:243), which is live
+# (terminal/terminal.go:362, internal/esctest/harness.go:135): the Handler
+# option is the only unused one, and the entry below would also cover the vt
+# one if that ever went unused, because both print as `function WithTheme`.
+function WithTheme
+
+# (*Handler).Title (terminal/terminal.go:424) -- the engine's own session
+# manager does not use it: List() reads titles through the unexported
+# h.titles() instead (terminal/session_manager.go:328; the doc comment at :293
+# still names "Title" but the code does not call it). Covered in-repo by
+# TestHandlerTitle (terminal/title_test.go:5). The one consumer hit for `Title`
+# is web-terminal-kiro/routes_test.go:639 reading the `title` JSON field off
+# SessionInfo, not calling this method.
+method (*Handler).Title
+
+# (*Handler).LastActivity (terminal/terminal.go:445),
+# (*Handler).Notification (terminal/terminal.go:457) and
+# (*Handler).ProgressValue (terminal/terminal.go:483) -- public read accessors
+# with no reference at all, in or out of this repo (EU1002, confirmed by
+# `deadcode -test ./...`). The engine's own status path does not go through
+# them: statusSnapshot() (terminal/terminal.go:509) batches
+# screen.Progress/ProgressValue/Notification/NotificationSeq/Title under one
+# lock, and idle-vs-working-vs-failed is decided from OSC 9;4 progress and the
+# notification latch (terminal/events.go, computeStatus + progressStatus), never
+# from a timestamp. LastActivity's own doc comment claiming "the status stream
+# uses it" is stale -- the status stream reads the h.lastActivity field directly.
+# ProgressValue is the OSC 9;4 percentage accessor, kept as the standalone read
+# beside Progress() for a consumer that wants the value without the sweep.
+method (*Handler).LastActivity
+method (*Handler).Notification
+method (*Handler).ProgressValue
+
+# (*Screen).RenderViewport (vt/screen.go:452) -- whole-screen ANSI dump. Its doc
+# comment cites "tests and the legacy debug endpoint"; the debug endpoint no
+# longer exists in any consumer, so tests are the only remaining use:
+# TestRenderViewport (vt/debug_test.go:62) plus the SGR run-emission trio at
+# vt/screen_test.go:46,58,72, which pin that one SGR sequence opens each row and
+# that a style change re-emits mid-row.
+method (*Screen).RenderViewport
+
+# (*Screen).RowString (vt/screen.go:486) -- row text extraction, and the
+# observation point for the render-golden conformance tier:
+# TestRenderGoldenBehavior (terminal/render_golden_test.go:419) asserts the
+# engine's grid against an authored SPEC grid at :431, so this method is how
+# "does the emulator match the VT spec" is measured. Also the read oracle for
+# scroll/margin, REP, ED3, autowrap and OSC-abort assertions across
+# vt/csi_test.go:207,221,442, vt/ed3_test.go:24,38, vt/features_test.go:135,153,
+# vt/audit_fixes_test.go:203-279, vt/osc_test.go:56,94 and vt/parse_test.go:96,
+# 121,296. Strong keep regardless of the consumer question.
+method (*Screen).RowString
+
+
+# (*Handler).ScrollbackBounds -- public read accessor for a session's retained
+# scrollback bounds (committed / oldest absolute index), added so a consumer can
+# observe them without decoding the private resumeAck frame layout.
+# web-terminal-kiro's session_scrollback_test.go currently reads those two values
+# by hard-coding the frame's msg type, byte offsets 17/25 and min length 33; this
+# accessor is the supported replacement, so the reference lives in another MODULE
+# and is invisible to punused (library rules in tools.md). Covered in-repo by
+# TestScrollbackBounds and TestScrollbackBounds_concurrent
+# (terminal/scrollback_bounds_test.go), the latter under -race for the locking
+# half of the contract.
+method (*Handler).ScrollbackBounds

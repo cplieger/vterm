@@ -179,11 +179,13 @@ const (
 // from the TS half's WIRE_PROTOCOL_VERSION / MIN_SUPPORTED_SERVER_WIRE_VERSION.
 //
 // Returns "" when both declared floors admit the pairing; otherwise a
-// human-readable reason naming the violated floor, the two revisions, and
-// which half is behind. A caller decorates that with its own remediation
-// (which pin to bump is the consumer's build-layout knowledge, not the
-// engine's). Both floors are EXCLUSIVE bounds: a revision exactly at the
-// peer's floor is compatible, matching the runtime checks.
+// human-readable reason naming the violated floor or the self-inconsistent
+// half, the relevant revisions, and which half is behind. A caller decorates
+// that with its own remediation (which pin to bump is the consumer's build-
+// layout knowledge, not the engine's). Both CROSS-side floors are EXCLUSIVE
+// bounds: a revision exactly at the peer's floor is compatible, matching the
+// runtime checks. The WITHIN-side floor is inclusive: a half may declare a
+// floor equal to its own revision (it just refuses every older peer).
 //
 // Deliberately stricter than runtime on version-silent input: a
 // non-positive argument is a caller error (it cannot be distinguished from
@@ -193,7 +195,26 @@ const (
 //
 // Higher-than-known revisions are compatible here, as at runtime: a future
 // revision alone does not prove its compatible baseline is unusable.
+//
+// Each half is also checked for internal coherence: a half's minimum-supported-
+// peer floor may not exceed its own revision, because such a build could not
+// talk to a peer of its own revision. This is a BEHAVIOUR CHANGE relative to
+// earlier releases (the check was added after v3.2.1): a pair whose halves are
+// individually incoherent (e.g. clientRev 4 with clientMinServer 5) was
+// previously judged on the cross-side floors alone and could be reported
+// compatible; it is now reported incompatible. No correctly extracted pair of
+// real released artifacts changes verdict — the engine's own constants have
+// always satisfied the invariant (rev 4, floor 3 on both halves) — so a gate
+// that starts failing here is reading garbage, which is exactly the outcome
+// intended.
 func WirePairIncompatibility(serverRev, serverMinClient, clientRev, clientMinServer int) string {
+	// Case order is load-bearing. Positivity first (a missing constant is the
+	// coarsest garbage), then each half's SELF-consistency, and only then the
+	// cross-side floors. Self-inconsistency must precede the cross-side
+	// verdicts because a garbage half otherwise yields a confident, misleading
+	// skew diagnosis ("the Go half is behind, bump your pin") for input that
+	// describes no real pairing at all — sending the caller to change a version
+	// pin when the actual defect is in how it read the numbers.
 	switch {
 	case serverRev <= 0 || serverMinClient <= 0:
 		return fmt.Sprintf(
@@ -203,6 +224,14 @@ func WirePairIncompatibility(serverRev, serverMinClient, clientRev, clientMinSer
 		return fmt.Sprintf(
 			"client wire revisions must be positive (got rev %d, min server %d)",
 			clientRev, clientMinServer)
+	case serverMinClient > serverRev:
+		return fmt.Sprintf(
+			"the Go server half is self-inconsistent: it demands client revision >= %d while itself speaking revision %d, so it could not talk to a client of its own build; these two numbers cannot both come from one released artifact, so treat this as corrupt or mis-extracted input (re-check how the constants were read) rather than a version skew to fix by bumping a pin",
+			serverMinClient, serverRev)
+	case clientMinServer > clientRev:
+		return fmt.Sprintf(
+			"the TS client half is self-inconsistent: it demands server revision >= %d while itself speaking revision %d, so it could not talk to a server of its own build; these two numbers cannot both come from one released artifact, so treat this as corrupt or mis-extracted input (re-check how the constants were read) rather than a version skew to fix by bumping a pin",
+			clientMinServer, clientRev)
 	case serverRev < clientMinServer:
 		return fmt.Sprintf(
 			"Go server wire revision %d is below the TS client's minimum supported server revision %d (the Go half is behind)",

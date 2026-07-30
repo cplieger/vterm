@@ -123,9 +123,11 @@ export interface ResumeAckMessage {
    * claimed sent bytes: the input ledger was reclaimed (idle GC / cap
    * eviction), so the server cannot vouch for any previously sent input.
    * The connection module responds deterministically with its designed loss
-   * semantic — drop the outbox and notify (`onServerRestart`) — instead of
-   * replaying possibly-duplicate input. Absent on older servers (the
-   * `received === 0 && bytesAcked > 0` heuristic remains as their fallback).
+   * semantic — drop the outbox rather than replay possibly-duplicate input —
+   * and notifies (`onServerRestart`) only when that outbox actually held
+   * unacked bytes; a fully-acked session lost nothing and resets silently.
+   * Absent on older servers (the `received === 0 && bytesAcked > 0` heuristic
+   * remains as their fallback).
    */
   ledgerLost?: boolean;
 }

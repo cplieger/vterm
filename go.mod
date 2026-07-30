@@ -4,7 +4,7 @@ go 1.26.5
 
 require (
 	github.com/coder/websocket v1.8.15
-	github.com/cplieger/runesafe v1.2.1
+	github.com/cplieger/runesafe v1.3.0
 	github.com/creack/pty v1.1.24
 )
 

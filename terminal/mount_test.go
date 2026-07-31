@@ -1,10 +1,12 @@
 package terminal
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 )
 
 // mountStubs builds a mux wired through MountSessionRoutes with three named
@@ -132,4 +134,132 @@ func TestMountAPIWiresManagerHandlers(t *testing.T) {
 	if rec2.Code != http.StatusUpgradeRequired {
 		t.Errorf("GET %s?session=nope = %d, want 426 (upgrade required, matching the known-session answer)", WSPath, rec2.Code)
 	}
+}
+
+// TestMountSessionRoutesNoStore pins the cache policy at the MOUNT, which is the
+// half RESTHandler's own wrapper cannot reach.
+//
+// A create gate wraps the REST handler (see WithCreateGate), so a refusal is
+// written BY the gate and the REST handler never runs. The gate refuses on the
+// same token-bearing paths as every other response, with the same cache-key
+// exposure, so the mount wraps OUTSIDE the gate. The scope half matters as much:
+// ws is a WebSocket handshake and events states its own stricter policy, so
+// neither may be touched.
+func TestMountSessionRoutesNoStore(t *testing.T) {
+	// refuseGate is the shape of a real throttle: it answers 429 itself and
+	// never calls through, so nothing downstream can set the header for it.
+	refused := 0
+	refuseGate := func(_ http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			refused++
+			http.Error(w, "too many requests", http.StatusTooManyRequests)
+		})
+	}
+
+	t.Run("gate refusal carries the header", func(t *testing.T) {
+		mux, hits := mountStubs(t, WithCreateGate(refuseGate))
+		rec := httptest.NewRecorder()
+		mux.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, SessionsPath, nil))
+
+		if rec.Code != http.StatusTooManyRequests || refused != 1 {
+			t.Fatalf("POST %s = %d with %d refusals, want 429 and 1", SessionsPath, rec.Code, refused)
+		}
+		if hits["rest"] != 0 {
+			t.Fatalf("the gate called through (%d rest hits), so this case would not test the gate's own response", hits["rest"])
+		}
+		if cc := rec.Result().Header.Get("Cache-Control"); !hasDirective(cc, "no-store") {
+			t.Errorf("gate refusal Cache-Control = %q, want no-store: a refusal lands on a token-bearing path too", cc)
+		}
+	})
+
+	t.Run("gate refusal on the subtree carries the header", func(t *testing.T) {
+		mux, _ := mountStubs(t, WithCreateGate(refuseGate))
+		path := SessionsSubtreePath + "some-id"
+		rec := httptest.NewRecorder()
+		mux.ServeHTTP(rec, httptest.NewRequest(http.MethodDelete, path, nil))
+		if cc := rec.Result().Header.Get("Cache-Control"); !hasDirective(cc, "no-store") {
+			t.Errorf("DELETE %s Cache-Control = %q, want no-store (the gate wraps both REST mounts)", path, cc)
+		}
+	})
+
+	// The stubs write a bare 200 and set no header of their own, so whatever the
+	// REST rows carry came from the mount rather than from a handler.
+	t.Run("both REST mounts carry the header without a gate", func(t *testing.T) {
+		for _, tc := range []struct{ method, path string }{
+			{http.MethodPost, SessionsPath},
+			{http.MethodGet, SessionsPath},
+			{http.MethodDelete, SessionsSubtreePath + "some-id"},
+			{http.MethodPut, SessionsSubtreePath + "some-id/title"},
+		} {
+			mux, _ := mountStubs(t)
+			rec := httptest.NewRecorder()
+			mux.ServeHTTP(rec, httptest.NewRequest(tc.method, tc.path, nil))
+			if cc := rec.Result().Header.Get("Cache-Control"); !hasDirective(cc, "no-store") {
+				t.Errorf("%s %s Cache-Control = %q, want no-store", tc.method, tc.path, cc)
+			}
+		}
+	})
+
+	// Scope: the mount must not reach past the REST handler. Asserted against
+	// stubs, so a value here could only have come from the mount.
+	t.Run("ws and events are not wrapped", func(t *testing.T) {
+		for _, tc := range []struct{ name, path string }{
+			{"ws", WSPath},
+			{"events", SessionEventsPath},
+		} {
+			mux, _ := mountStubs(t)
+			rec := httptest.NewRecorder()
+			mux.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, tc.path, nil))
+			if cc := rec.Result().Header.Get("Cache-Control"); cc != "" {
+				t.Errorf("%s Cache-Control = %q, want empty: the mount wraps only the REST handler", tc.name, cc)
+			}
+		}
+	})
+}
+
+// TestMountAPINoStoreOnRealHandlers is the convenience-path counterpart: through
+// MountAPI, with the manager's real handlers, the REST surface states the policy
+// and the SSE stream keeps its own stricter value rather than inheriting it.
+func TestMountAPINoStoreOnRealHandlers(t *testing.T) {
+	mgr := NewSessionManager(catFactory)
+	t.Cleanup(mgr.Shutdown)
+	mux := http.NewServeMux()
+	mgr.MountAPI(mux)
+
+	t.Run("REST 405 on a session path", func(t *testing.T) {
+		path := SessionsSubtreePath + "some-id"
+		rec := httptest.NewRecorder()
+		mux.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, path, nil))
+		if rec.Code != http.StatusMethodNotAllowed {
+			t.Fatalf("GET %s = %d, want 405", path, rec.Code)
+		}
+		if cc := rec.Result().Header.Get("Cache-Control"); !hasDirective(cc, "no-store") {
+			t.Errorf("Cache-Control = %q, want no-store", cc)
+		}
+	})
+
+	// The SSE stream sets "no-cache, no-store" itself (writeSSEHeaders). Pinned
+	// here because the mount deliberately does not wrap events: if it ever did,
+	// the wrapper's no-store would land first and the conventional no-cache
+	// middleboxes sniff for would be lost.
+	t.Run("SSE keeps its own policy", func(t *testing.T) {
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+		srv := httptest.NewServer(mux)
+		t.Cleanup(srv.Close)
+
+		req, _ := http.NewRequestWithContext(ctx, http.MethodGet, srv.URL+SessionEventsPath, nil)
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatalf("GET events: %v", err)
+		}
+		defer resp.Body.Close()
+		cc := resp.Header.Get("Cache-Control")
+		if !hasDirective(cc, "no-store") {
+			t.Errorf("events Cache-Control = %q, want no-store", cc)
+		}
+		if !hasDirective(cc, "no-cache") {
+			t.Errorf("events Cache-Control = %q, want the conventional SSE no-cache retained: the mount must not overwrite it with a bare no-store", cc)
+		}
+	})
 }

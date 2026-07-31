@@ -28,6 +28,57 @@ const (
 	SessionEventsPath = "/api/sessions/events"
 )
 
+// The cache policy the session REST surface states, and the header it states it
+// on. One spelling for the whole package so the wrapper below and writeJSON
+// cannot drift apart into two different answers.
+const (
+	cacheControlHeader = "Cache-Control"
+	noStorePolicy      = "no-store"
+)
+
+// withNoStore states the session REST surface's cache policy on the response
+// header map BEFORE h runs. It is applied at two sites — inside RESTHandler
+// (upstream of the inner mux) and in MountSessionRoutes (upstream of a create
+// gate) — because neither alone covers everything; see MountSessionRoutes.
+//
+// What is at risk here is the cache KEY, not the body. Every session REST path
+// past the collection carries a session id as a path segment, and that id IS the
+// capability the /ws attach and resume present (the reason LogID exists and the
+// reason writeJSON refuses to let the two JSON bodies be stored). The responses
+// this wrapper newly covers carry no credential in their bodies at all — the
+// inner mux's 404 and 405 are net/http's constant error text, a path-cleaning
+// redirect is a Location header, a gate refusal is the consumer's throttle body.
+// The exposure is that a cache retains an ENTRY keyed by a token-bearing URL,
+// which RFC 9110 §15.1 invites by listing 404 and 405 among the statuses a cache
+// may reuse heuristically when the response carries no explicit freshness
+// information — and with no directive at all, those responses carried none.
+//
+// Setting the header here rather than in each handler settles the ordering
+// requirement STRUCTURALLY: the value is in the map before any handler can call
+// WriteHeader, after which a late Set is silently dropped and a wrapper that
+// looks correct does nothing. This site cannot be missed either — it is upstream
+// of every route in the mux, of every http.Error those routes reach, and of the
+// responses the mux synthesizes for a path or method it does not serve, which no
+// handler is invoked to write.
+//
+// A value already present is left exactly as it is. That is the deliberate
+// escape hatch, and it is why the policy needs no opt-out MountOption: a
+// consumer that wants a different answer — a stricter "no-store, no-cache,
+// must-revalidate", or genuinely wanting one of these routes cached — says so by
+// setting the header in its own outer middleware, which then stays that header's
+// single writer. The package cannot rank a stricter value against a weaker one
+// without parsing directives, so it treats any present value as intentional.
+// writeJSON is the one deliberate exception and overwrites: its two bodies
+// CONTAIN the id, so their prohibition is not the consumer's to relax.
+func withNoStore(h http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if w.Header().Get(cacheControlHeader) == "" {
+			w.Header().Set(cacheControlHeader, noStorePolicy)
+		}
+		h.ServeHTTP(w, r)
+	})
+}
+
 // MountOption configures MountSessionRoutes.
 type MountOption func(*mountConfig)
 
@@ -76,6 +127,11 @@ func WithCreateGate(mw func(http.Handler) http.Handler) MountOption {
 // subtree mount (its internal patterns span /api/sessions and
 // /api/sessions/{id}...), and the SSE path, being more specific than the
 // subtree, routes to events rather than the REST DELETE /{id} pattern.
+//
+// The REST mounts are wrapped in the surface's cache policy (withNoStore),
+// outside any create gate, so every response on a token-bearing path states
+// Cache-Control — including the ones no handler writes. ws and events are not
+// wrapped: one is a handshake, the other sets its own stricter value.
 func MountSessionRoutes(mux *http.ServeMux, ws, rest, events http.Handler, opts ...MountOption) {
 	var c mountConfig
 	for _, o := range opts {
@@ -86,6 +142,17 @@ func MountSessionRoutes(mux *http.ServeMux, ws, rest, events http.Handler, opts 
 	if c.createGate != nil {
 		rest = c.createGate(rest)
 	}
+	// Outside the gate, deliberately. A gate refusal (webhttp's 429) is written
+	// BY the gate and never reaches the REST handler, so RESTHandler's own
+	// withNoStore cannot cover it — and a refusal lands on the same token-bearing
+	// paths as everything else, with the same cache-key exposure. Wrapping the
+	// gated handler covers both it and everything it delegates to. Applied
+	// unconditionally, so a consumer inherits the policy by bumping the engine
+	// rather than by remembering an option; RESTHandler has already set the
+	// header by the time the inner copy runs, which that copy then leaves alone.
+	// Only rest is wrapped: ws is a WebSocket handshake, and events sets its own
+	// stricter "no-cache, no-store" (see writeSSEHeaders).
+	rest = withNoStore(rest)
 	mux.Handle(WSPath, ws)
 	mux.Handle(SessionsPath, rest)
 	mux.Handle(SessionsSubtreePath, rest)

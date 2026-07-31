@@ -18,6 +18,18 @@ func catFactory(string) *Handler {
 	return NewHandler([]string{"/bin/cat"}, WithLogger(nil))
 }
 
+// hasDirective reports whether a Cache-Control value carries the named
+// directive, tolerating either ordering and surrounding whitespace so the cache
+// tests pin the POLICY rather than one exact spelling of the header.
+func hasDirective(header, want string) bool {
+	for part := range strings.SplitSeq(header, ",") {
+		if strings.EqualFold(strings.TrimSpace(part), want) {
+			return true
+		}
+	}
+	return false
+}
+
 func TestSessionManagerCreateListClose(t *testing.T) {
 	m := NewSessionManager(catFactory)
 	t.Cleanup(m.Shutdown)
@@ -442,18 +454,6 @@ func TestSessionSurfaceRefusesCaching(t *testing.T) {
 	m := NewSessionManager(catFactory)
 	t.Cleanup(m.Shutdown)
 
-	// hasDirective reports whether a Cache-Control value carries the named
-	// directive, tolerating either ordering and surrounding whitespace so the
-	// test pins the POLICY rather than one exact spelling of the header.
-	hasDirective := func(header, want string) bool {
-		for part := range strings.SplitSeq(header, ",") {
-			if strings.EqualFold(strings.TrimSpace(part), want) {
-				return true
-			}
-		}
-		return false
-	}
-
 	t.Run("REST", func(t *testing.T) {
 		srv := httptest.NewServer(m.RESTHandler())
 		t.Cleanup(srv.Close)
@@ -510,4 +510,235 @@ func TestSessionSurfaceRefusesCaching(t *testing.T) {
 			t.Errorf("events Cache-Control = %q, want the conventional SSE no-cache retained alongside no-store", cc)
 		}
 	})
+}
+
+// snapHeader returns the response header as a CLIENT would see it: the snapshot
+// httptest takes when WriteHeader runs, not the live map.
+//
+// Every cache assertion below reads through this rather than rec.Header(),
+// because the live map keeps accepting writes after the status line is sent
+// while the wire response does not. A wrapper that set the header AFTER calling
+// the next handler would still show up in rec.Header() and pass, which is
+// exactly how a header wrapper looks correct and does nothing.
+func snapHeader(rec *httptest.ResponseRecorder) http.Header {
+	return rec.Result().Header
+}
+
+// TestSessionRESTNoStoreCoversEveryResponse pins the cache policy on the
+// session REST responses that carry NO session id in their body — which is every
+// response except the two writeJSON bodies TestSessionSurfaceRefusesCaching
+// already covers.
+//
+// What these responses expose is the cache KEY, not the body: each of these URLs
+// carries a session id as a path segment, and that id is the /ws attach + resume
+// capability. A 404 or 405 with no cache directive at all is heuristically
+// cacheable under RFC 9110 §15.1, so a cache could retain an entry keyed by a
+// live token while the body itself is only net/http's constant error text.
+//
+// The synthesized rows are the point of the test. The inner mux writes its own
+// 404, 405 and path-cleaning redirect with no handler involved, so nothing in
+// the handler table could have covered them.
+func TestSessionRESTNoStoreCoversEveryResponse(t *testing.T) {
+	m := NewSessionManager(catFactory)
+	t.Cleanup(m.Shutdown)
+	h := m.RESTHandler()
+
+	// liveID creates a session for ONE case to act on, so a case that closes or
+	// renames its target cannot disturb another's.
+	liveID := func(t *testing.T) string {
+		t.Helper()
+		id, err := m.Create()
+		if err != nil {
+			t.Fatalf("Create: %v", err)
+		}
+		t.Cleanup(func() { m.Close(id) })
+		return id
+	}
+
+	// The two path shapes the table needs: a fixed collection path, and a
+	// subtree path under a session created for that one case. Keeping them as
+	// helpers lets every row below stay on one line.
+	fixed := func(p string) func(*testing.T) string {
+		return func(*testing.T) string { return p }
+	}
+	sub := func(suffix string) func(*testing.T) string {
+		return func(t *testing.T) string { return SessionsSubtreePath + liveID(t) + suffix }
+	}
+	const titleBody = `{"title":"x"}`
+
+	cases := []struct {
+		// path builds the request target, taking a fresh session id when the
+		// route needs one.
+		path       func(*testing.T) string
+		name       string
+		method     string
+		body       string
+		wantStatus int
+	}{
+		// The six REST method routes the mount contract declares.
+		{name: "create", method: http.MethodPost, wantStatus: http.StatusCreated, path: fixed(SessionsPath)},
+		{name: "list", method: http.MethodGet, wantStatus: http.StatusOK, path: fixed(SessionsPath)},
+		{name: "close", method: http.MethodDelete, wantStatus: http.StatusNoContent, path: sub("")},
+		{name: "set title", method: http.MethodPut, body: titleBody, wantStatus: http.StatusNoContent, path: sub("/title")},
+		{name: "set pinned title", method: http.MethodPut, body: titleBody, wantStatus: http.StatusNoContent, path: sub("/pinned-title")},
+		{name: "clear pinned title", method: http.MethodDelete, wantStatus: http.StatusNoContent, path: sub("/pinned-title")},
+
+		// Handler-written refusals on a token-bearing path.
+		{name: "close, unknown id (404)", method: http.MethodDelete, wantStatus: http.StatusNotFound, path: fixed(SessionsSubtreePath + "deadbeef")},
+		{name: "set title, undecodable body (400)", method: http.MethodPut, body: "not json", wantStatus: http.StatusBadRequest, path: sub("/title")},
+
+		// The inner mux's SYNTHESIZED responses: no handler runs for these, so
+		// only a wrapper upstream of the mux can carry the header.
+		{name: "mux 404, subtree root", method: http.MethodGet, wantStatus: http.StatusNotFound, path: fixed(SessionsSubtreePath)},
+		{name: "mux 404, unserved depth", method: http.MethodDelete, wantStatus: http.StatusNotFound, path: sub("/title/extra")},
+		{name: "mux 405, unserved method on a session path", method: http.MethodGet, wantStatus: http.StatusMethodNotAllowed, path: sub("")},
+		{name: "mux 405, unserved method on the collection", method: http.MethodPatch, wantStatus: http.StatusMethodNotAllowed, path: fixed(SessionsPath)},
+		// A doubled slash is not a clean path, so the mux answers with a
+		// redirect whose Location echoes the cleaned, still token-bearing URL.
+		{name: "mux path-cleaning redirect", method: http.MethodDelete, wantStatus: http.StatusTemporaryRedirect, path: func(t *testing.T) string { return SessionsSubtreePath + "/" + liveID(t) }},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			path := tc.path(t)
+			rec := httptest.NewRecorder()
+			h.ServeHTTP(rec, httptest.NewRequest(tc.method, path, strings.NewReader(tc.body)))
+
+			// The status is asserted so a route that stops answering the way
+			// this test assumes fails loudly instead of silently passing the
+			// header check on some other response.
+			if rec.Code != tc.wantStatus {
+				t.Errorf("%s %s = %d, want %d", tc.method, path, rec.Code, tc.wantStatus)
+			}
+			if cc := snapHeader(rec).Get("Cache-Control"); !hasDirective(cc, "no-store") {
+				t.Errorf("%s %s Cache-Control = %q, want no-store: the URL carries a live session id", tc.method, path, cc)
+			}
+		})
+	}
+}
+
+// TestSessionRESTNoStorePrecedence pins WHO wins when a Cache-Control is already
+// on the response, which is the reason the policy needs no opt-out option.
+//
+// The two halves differ deliberately. The wrapper YIELDS: the responses it
+// covers carry no credential, only a sensitive URL, so an outer stack that
+// states a policy stays that header's single writer — that is the documented
+// escape hatch for a consumer wanting something stricter, or genuinely wanting a
+// route cached. writeJSON OVERWRITES: its bodies contain the session id itself,
+// so that prohibition is not the consumer's to relax.
+func TestSessionRESTNoStorePrecedence(t *testing.T) {
+	m := NewSessionManager(catFactory)
+	t.Cleanup(m.Shutdown)
+
+	const outer = "max-age=60"
+	// preset is the outer consumer: a wrapper that states its own policy before
+	// the engine's handler ever runs, exactly as a middleware chain would.
+	preset := func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Cache-Control", outer)
+			next.ServeHTTP(w, r)
+		})
+	}
+	h := preset(m.RESTHandler())
+
+	t.Run("wrapper preserves an outer value", func(t *testing.T) {
+		// A 405 is a wrapper-only response: no handler runs, so the value on it
+		// is whichever of the two the precedence rule picked.
+		id, err := m.Create()
+		if err != nil {
+			t.Fatalf("Create: %v", err)
+		}
+		t.Cleanup(func() { m.Close(id) })
+
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, SessionsSubtreePath+id, nil))
+		if rec.Code != http.StatusMethodNotAllowed {
+			t.Fatalf("GET %s = %d, want 405 (the wrapper-only response this case needs)", SessionsSubtreePath+id, rec.Code)
+		}
+		if got := snapHeader(rec).Get("Cache-Control"); got != outer {
+			t.Errorf("Cache-Control = %q, want the outer %q preserved: an already-set value is the deliberate override", got, outer)
+		}
+	})
+
+	t.Run("writeJSON overrides an outer value", func(t *testing.T) {
+		// GET /api/sessions lists every live id, so the engine's prohibition
+		// wins here even though the same outer middleware asked for caching.
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, SessionsPath, nil))
+		if rec.Code != http.StatusOK {
+			t.Fatalf("GET %s = %d, want 200", SessionsPath, rec.Code)
+		}
+		if cc := snapHeader(rec).Get("Cache-Control"); !hasDirective(cc, "no-store") {
+			t.Errorf("Cache-Control = %q, want no-store: this body lists live session ids, so an outer max-age must not win", cc)
+		}
+	})
+}
+
+// firstWriteHeader records the response header as it stood when the handler
+// first committed the response, whichever call did it: an explicit WriteHeader,
+// or a Write that implies a 200.
+type firstWriteHeader struct {
+	http.ResponseWriter
+	// snap is the header at commit time, nil until the response is committed.
+	snap http.Header
+}
+
+func (f *firstWriteHeader) WriteHeader(status int) {
+	if f.snap == nil {
+		f.snap = f.Header().Clone()
+	}
+	f.ResponseWriter.WriteHeader(status)
+}
+
+func (f *firstWriteHeader) Write(b []byte) (int, error) {
+	if f.snap == nil {
+		f.snap = f.Header().Clone()
+	}
+	return f.ResponseWriter.Write(b)
+}
+
+// TestSessionRESTNoStoreSetBeforeBody pins the ORDERING the policy depends on:
+// the header is in the map before the handler commits the response.
+//
+// This is the failure mode that makes a header wrapper look correct and do
+// nothing. net/http sends the header map as it stood when the response was
+// committed and silently ignores later mutations, so a wrapper that set the
+// value after calling the next handler would change the in-memory map — and be
+// visible to a test reading it — while sending no header on the wire at all.
+func TestSessionRESTNoStoreSetBeforeBody(t *testing.T) {
+	m := NewSessionManager(catFactory)
+	t.Cleanup(m.Shutdown)
+	h := m.RESTHandler()
+
+	// One response of each shape: a body written by a handler, a body written by
+	// the mux with no handler involved, and a bodyless 204.
+	cases := []struct {
+		name, method, path string
+	}{
+		{"handler-written body", http.MethodGet, SessionsPath},
+		{"mux-synthesized body", http.MethodGet, SessionsSubtreePath},
+		{"bodyless 204", http.MethodDelete, ""}, // path filled in below
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			path := tc.path
+			if path == "" {
+				id, err := m.Create()
+				if err != nil {
+					t.Fatalf("Create: %v", err)
+				}
+				t.Cleanup(func() { m.Close(id) })
+				path = SessionsSubtreePath + id
+			}
+			fw := &firstWriteHeader{ResponseWriter: httptest.NewRecorder()}
+			h.ServeHTTP(fw, httptest.NewRequest(tc.method, path, nil))
+
+			if fw.snap == nil {
+				t.Fatalf("%s %s committed no response, so this test would assert nothing", tc.method, path)
+			}
+			if cc := fw.snap.Get("Cache-Control"); !hasDirective(cc, "no-store") {
+				t.Errorf("Cache-Control at commit time = %q, want no-store: a header set after the response is committed is dropped on the wire", cc)
+			}
+		})
+	}
 }

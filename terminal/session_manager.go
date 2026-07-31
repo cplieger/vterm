@@ -484,6 +484,17 @@ func (m *SessionManager) WebSocketHandler() http.Handler {
 // Its internal patterns are absolute, so it only functions on the SessionsPath +
 // SessionsSubtreePath mounts — MountSessionRoutes / MountAPI perform them
 // (the route-set contract lives there); exported so consumer tests can stub it.
+//
+// Every response the returned handler produces states Cache-Control: no-store
+// unless the header is already set (see withNoStore). The wrapper sits upstream
+// of the mux rather than in the handlers so it also covers the responses the mux
+// SYNTHESIZES — a 404 for an unserved path, a 405 for a method a path does not
+// serve, a path-cleaning redirect — which are exactly the responses no handler
+// is invoked to write, and which land on paths carrying a session id. Wrapping
+// here rather than only at the mount also means a consumer that mounts this
+// handler itself, without MountSessionRoutes, still gets the policy; the create
+// gate is the one thing this site cannot reach, which is why MountSessionRoutes
+// wraps again outside it.
 func (m *SessionManager) RESTHandler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /api/sessions", m.handleCreate)
@@ -492,7 +503,7 @@ func (m *SessionManager) RESTHandler() http.Handler {
 	mux.HandleFunc("PUT /api/sessions/{id}/title", m.handleSetTitle)
 	mux.HandleFunc("PUT /api/sessions/{id}/pinned-title", m.handleSetPinnedTitle)
 	mux.HandleFunc("DELETE /api/sessions/{id}/pinned-title", m.handleClearPinnedTitle)
-	return mux
+	return withNoStore(mux)
 }
 
 func (m *SessionManager) handleCreate(w http.ResponseWriter, _ *http.Request) {
@@ -725,10 +736,17 @@ func newSessionID() (string, error) {
 // default lives here. A consumer may still add a broader policy of its own (kiro
 // covers its /api/tools and /api/health routes the same way); setting the same
 // header twice is idempotent.
+//
+// This is the surface's one UNCONDITIONAL setter, and the difference from
+// withNoStore is deliberate: that wrapper yields to a Cache-Control an outer
+// consumer already set, because the responses it covers carry no credential and
+// only their URL is sensitive. These two bodies CONTAIN the id, so their
+// prohibition is not the consumer's to relax, and the value is written whatever
+// an outer stack asked for.
 func writeJSON(w http.ResponseWriter, status int, v any) {
 	h := w.Header()
 	h.Set("Content-Type", "application/json")
-	h.Set("Cache-Control", "no-store")
+	h.Set(cacheControlHeader, noStorePolicy)
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(v) // #nosec G104 -- client hangup is not actionable
 }

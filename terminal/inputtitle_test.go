@@ -74,12 +74,13 @@ func TestInputTitleDeriverLatch(t *testing.T) {
 	if got := feed("newline submits\n"); got != "newline submits" {
 		t.Errorf("newline submit = %q", got)
 	}
-	// Two lines in ONE chunk fold into one logical message rather than submitting
-	// twice, even with control bytes between them: foldNewline scans the whole
-	// remainder for printable content, which is what keeps a pasted block's START
-	// in the title. (See TestInputTitleDeriverMultilinePaste for the paste cases.)
-	if got := feed("first part\r\x01second part\r"); got != "first part second part" {
-		t.Errorf("two lines in one chunk = %q, want them folded", got)
+	// Two lines in ONE chunk: the first line is eligible on its own, so it SUBMITS
+	// rather than folding forward. Folding an eligible line would discard the
+	// submission and leave the session on its automatic name permanently, which is
+	// the failure this direction rules out (see foldNewline). The folding path is
+	// still exercised by TestInputTitleDeriverMultilinePaste.
+	if got := feed("first part\r\x01second part\r"); got != "first part" {
+		t.Errorf("two lines in one chunk = %q, want the first ELIGIBLE line to submit", got)
 	}
 }
 
@@ -95,6 +96,11 @@ func TestInputTitleDeriverLineEditing(t *testing.T) {
 			[]string{"caf\u00e9x", "\x7f", "\x7f", "\r"}, "caf",
 		},
 		"ctrl-c cancels the line":     {[]string{"abandon this", "\x03", "the real one\r"}, "the real one"},
+		"ctrl-u kills the line":       {[]string{"abandon this", "\x15", "the real one\r"}, "the real one"},
+		"ctrl-w kills the last word":  {[]string{"keep this wrongword", "\x17", "right\r"}, "keep this right"},
+		"ctrl-w eats trailing spaces": {[]string{"keep this wrong   ", "\x17", "right\r"}, "keep this right"},
+		"ctrl-w on a one-word line":   {[]string{"only", "\x17", "the real one\r"}, "the real one"},
+		"ctrl-w keeps whole runes":    {[]string{"caf\u00e9 na\u00efve", "\x17", "x\u00e9\r"}, "caf\u00e9 x\u00e9"},
 		"ctrl-h backspaces":           {[]string{"oopsX", "\x08", "\r"}, "oops"},
 		"backspace on an empty line":  {[]string{"\x7f", "\x7f", "still fine\r"}, "still fine"},
 		"control bytes are ignored":   {[]string{"tab\there\r"}, "tabhere"},
@@ -133,6 +139,25 @@ func TestInputTitleDeriverEscapeSequences(t *testing.T) {
 		"esc then a literal bracket": {[]string{"\x1b", "[123] a real message\r"}, "[123] a real message"},
 		// A CSI arriving in the same chunk as text is still parsed.
 		"csi inline with text": {[]string{"real\x1b[C message\r"}, "real message"},
+		// A lone ESC is the Escape KEY, and Escape discards the composer's line in
+		// the agent shell this derives titles for. THE REPORTED BUG: without this,
+		// the abandoned `/` fused onto the next prompt and the session was named
+		// "/I see a new /title command".
+		"lone esc discards the line": {
+			[]string{"/", "\x1b", "I see a new /title command\r"}, "I see a new /title command",
+		},
+		"lone esc discards a whole abandoned line": {
+			[]string{"abandon this", "\x1b", "the real one\r"}, "the real one",
+		},
+		// ESC at the END of a chunk that also carried text is the same event.
+		"trailing esc in a text chunk discards": {
+			[]string{"abandon this\x1b", "the real one\r"}, "the real one",
+		},
+		// A chunk ending mid-CSI is a SPLIT sequence, not Escape: it must not
+		// discard the line it interrupted. ("A" then reads as content, because the
+		// scanner resets per chunk by design — see observe. What matters here is
+		// that "before" survived.)
+		"split csi does not discard": {[]string{"before\x1b[", "A", "after\r"}, "beforeAafter"},
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -154,9 +179,16 @@ func TestInputTitleDeriverMultilinePaste(t *testing.T) {
 	if got != "first line second line" {
 		t.Errorf("bracketed paste = %q, want the whole message", got)
 	}
-	// No guards, one event: trailing content marks the newline as a soft break.
-	if got := feed("first line\nsecond line\r"); got != "first line second line" {
+	// No guards, one event: the lookahead only folds while the line so far could
+	// not be a title, so a short first line still pulls the rest of the block in.
+	if got := feed("hi\nthe rest of the pasted block\r"); got != "hi the rest of the pasted block" {
 		t.Errorf("unbracketed paste = %q, want the whole message", got)
+	}
+	// But an ELIGIBLE first line submits instead of folding: losing a submission
+	// costs the session its name for good, while a first-line title only reads
+	// shorter (see foldNewline).
+	if got := feed("first line\nsecond line\r"); got != "first line" {
+		t.Errorf("unbracketed paste with an eligible first line = %q, want that line", got)
 	}
 	// A human pressing Enter sends the newline as the END of its own event, so it
 	// submits rather than folding.
@@ -207,6 +239,12 @@ func FuzzInputTitleDeriver(f *testing.F) {
 	f.Add([]byte("\xff\xfe\r"))
 	f.Add([]byte("caf\xc3\xa9\x7f\r"))
 	f.Add([]byte{0x00, 0x03, 0x0d})
+	// The discard keys, whose job is to keep abandoned text from fusing onto the
+	// next prompt: Escape (the reported "/I see a new /title command"), Ctrl-U,
+	// Ctrl-W.
+	f.Add([]byte("/\x1bI see a new /title command\r"))
+	f.Add([]byte("abandon\x15the real one\r"))
+	f.Add([]byte("keep this wrong\x17right\r"))
 
 	f.Fuzz(func(t *testing.T, data []byte) {
 		d := &inputTitleDeriver{}

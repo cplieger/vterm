@@ -61,11 +61,20 @@ func isEligibleTitle(line string) bool {
 // reconstructs what the user typed well enough to recognise a submitted line,
 // then LATCHES the first eligible one for the life of the session.
 //
-// It deliberately models only what a title needs — printable runs, backspace,
-// Ctrl-C, and enough escape-sequence structure not to be fooled by arrow keys or
-// a bracketed paste. It is not a terminal emulator and must never become one:
-// everything it cannot model it ignores, which costs at worst a slightly wrong
-// title on an exotic input.
+// It deliberately models only what a title needs — printable runs, the four keys
+// that discard text (backspace, Ctrl-C, Ctrl-U, Ctrl-W), Escape, and enough
+// escape-sequence structure not to be fooled by arrow keys or a bracketed paste.
+// It is not a terminal emulator and must never become one: everything it cannot
+// model it ignores, which costs at worst a slightly wrong title on an exotic
+// input.
+//
+// The discard keys are the load-bearing half. A byte this type appends but the
+// program's own composer removed does not merely make the title inexact, it
+// CONCATENATES two things the user never typed together: the observed failure was
+// a session named `/I see a new /title command` after the user typed `/`, pressed
+// Escape to dismiss the slash-command menu, and then typed their real prompt.
+// Anything else unmodelled costs an approximation; an unmodelled discard costs a
+// wrong name that then latches for the session's life.
 //
 // Not safe for concurrent use; the Handler owns one per session under h.mu.
 type inputTitleDeriver struct {
@@ -193,6 +202,17 @@ func (d *inputTitleDeriver) observe(chunk []byte) {
 			return
 		}
 	}
+	// A chunk that ENDS on a bare ESC carried the Escape KEY, not a truncated
+	// sequence: one chunk is one input event, so nothing was going to follow it.
+	// (A chunk ending mid-CSI is a genuinely split sequence and is left alone.)
+	// Escape is what discards the composer's line in the agent shell this derives
+	// titles for, so discard ours too — otherwise the abandoned text fuses onto
+	// whatever is typed next. escSeen is unreachable except at end-of-chunk: any
+	// byte after ESC leaves the state machine, which is why this reads the state
+	// here rather than in step.
+	if esc.state == escSeen {
+		d.cancelLine()
+	}
 }
 
 // step consumes one CONTENT byte (one the escape scanner did not claim) and
@@ -206,8 +226,10 @@ func (d *inputTitleDeriver) step(chunk []byte, i int, b byte) string {
 		return d.submit()
 	case b == 0x7f || b == 0x08:
 		d.backspace()
-	case b == 0x03:
-		d.line = d.line[:0] // Ctrl-C cancels the line
+	case b == 0x03 || b == 0x15:
+		d.cancelLine() // Ctrl-C abandons the line, Ctrl-U kills it back to the start
+	case b == 0x17:
+		d.killWord() // Ctrl-W
 	case b >= 0x20:
 		d.line = append(d.line, b) // printable ASCII or a UTF-8 byte
 	}
@@ -223,9 +245,20 @@ func (d *inputTitleDeriver) step(chunk []byte, i int, b byte) string {
 // bracketed-paste guards — an agent shell that keeps a pasted multi-line message
 // as a single prompt) delivers text + newline + text together. Without this, such
 // a paste left only its LAST line as the title.
+//
+// The lookahead is only consulted while the line so far could NOT be a title on
+// its own, because the two inputs it is asked to tell apart are byte-identical: a
+// newline mid-paste and a client that put Enter in the same frame as the
+// keystrokes after it. With no signal to separate them, the fold direction is
+// chosen by consequence rather than by guess — folding an ELIGIBLE line discards
+// a submission outright and the session keeps its automatic name for good, while
+// submitting a paste's first line only makes the title shorter than it could have
+// been. A short name beats no name, and every view truncates the label anyway.
+// So an eligible line always submits, and the lookahead keeps doing its job for
+// the pasted block whose first line is too short to name anything.
 func (d *inputTitleDeriver) foldNewline(chunk []byte, i int) bool {
 	soft := d.inPaste
-	if !soft {
+	if !soft && !isEligibleTitle(strings.TrimSpace(string(d.line))) {
 		for _, nb := range chunk[i+1:] {
 			if nb >= 0x20 {
 				soft = true
@@ -254,6 +287,26 @@ func (d *inputTitleDeriver) submit() string {
 	}
 	d.latched = sanitizeTitle(line, maxDerivedTitleRunes)
 	return d.latched
+}
+
+// cancelLine discards the line under construction. Three inputs reach it —
+// Ctrl-C, Ctrl-U (kill-line), and the Escape key — because all three mean "forget
+// what I was typing", and a discard this type misses fuses the abandoned text
+// onto whatever is typed next.
+func (d *inputTitleDeriver) cancelLine() {
+	d.line = d.line[:0]
+}
+
+// killWord removes the trailing word (Ctrl-W): the trailing spaces first, then
+// the run of non-space bytes before them. Byte-wise is rune-safe here because it
+// stops only at 0x20, which can never be a UTF-8 continuation byte.
+func (d *inputTitleDeriver) killWord() {
+	for len(d.line) > 0 && d.line[len(d.line)-1] == ' ' {
+		d.line = d.line[:len(d.line)-1]
+	}
+	for len(d.line) > 0 && d.line[len(d.line)-1] != ' ' {
+		d.line = d.line[:len(d.line)-1]
+	}
 }
 
 // backspace removes one whole codepoint: pop the UTF-8 continuation bytes, then

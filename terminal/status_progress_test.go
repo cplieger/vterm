@@ -148,10 +148,15 @@ func TestComputeStatusFreshNotificationOutranksProgressState(t *testing.T) {
 
 // TestComputeStatusNewProgressStateSupersedesStaleLatch is the other half of the
 // precedence rule: a progress state reported in a LATER sweep than the latch is
-// the program's current word and supersedes it. The existing rule already does
-// this for the active states; the brief's error and warning states are states in
-// exactly the same sense, so a stale "done" must not mask a build that has since
-// failed.
+// the program's current word and supersedes it — when it CONTRADICTS the latch.
+// The active states do (nothing is running while a turn is done or blocked), and
+// so does the error state, an outcome that must not stay masked by a stale "done"
+// when a build has since failed.
+//
+// State 4 is the exception and has its own test below: it is the paused state,
+// which asserts the same thing a needs-input latch does and nothing that a
+// finished turn denies, so it is not a rival claim. It was in this table until
+// that was measured — see progressSupersedesLatch.
 func TestComputeStatusNewProgressStateSupersedesStaleLatch(t *testing.T) {
 	cases := []struct {
 		name     string
@@ -159,8 +164,8 @@ func TestComputeStatusNewProgressStateSupersedesStaleLatch(t *testing.T) {
 		want     string
 	}{
 		{name: "error state supersedes stale done", progress: 2, want: StatusFailed},
-		{name: "warning state supersedes stale done", progress: 4, want: StatusWarning},
 		{name: "active state supersedes stale done", progress: 3, want: StatusWorking},
+		{name: "determinate state supersedes stale done", progress: 1, want: StatusWorking},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -183,6 +188,82 @@ func TestComputeStatusNewProgressStateSupersedesStaleLatch(t *testing.T) {
 				t.Errorf("latch = %q, want cleared by the new progress state", tr.latched)
 			}
 		})
+	}
+}
+
+// TestComputeStatusPausedStateDoesNotStealLatch pins the state-4 exception
+// against the shapes that produced it. kiro-cli sets progress state 4 for two
+// things, and BOTH coexist with a latch it posted itself in the same breath:
+// `4;100` while an approval is pending (the same claim as "Permission required"),
+// and `4;<context-usage>` once idle above 60% (parked alongside "Response
+// complete"). State 4 persists until the program changes it, so a state-4 report
+// allowed to clear a latch takes the tab one sweep — 250ms — after the
+// notification and keeps it for the whole wait or the whole idle period.
+//
+// Held across several sweeps deliberately: the bug was never in the first sweep,
+// which the fresh-latch rule already covered.
+func TestComputeStatusPausedStateDoesNotStealLatch(t *testing.T) {
+	cases := []struct {
+		name     string
+		msg      string
+		value    int
+		want     string
+		resumeTo int // the state the program moves to, which MUST clear the latch
+		resumed  string
+	}{
+		{
+			name: "approval pending keeps needs-input", msg: "Permission required",
+			value: 100, want: StatusInput, resumeTo: 3, resumed: StatusWorking,
+		},
+		{
+			name: "parked context usage keeps done", msg: "Response complete",
+			value: 72, want: StatusDone, resumeTo: 3, resumed: StatusWorking,
+		},
+		{
+			name: "a failure still supersedes", msg: "Response complete",
+			value: 72, want: StatusDone, resumeTo: 2, resumed: StatusFailed,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			m := NewSessionManager(catFactory, WithStatusClassifier(inputClassifier))
+			t.Cleanup(m.Shutdown)
+			tr := &statusTracker{}
+
+			for sweep := 1; sweep <= 4; sweep++ {
+				in := &statusRaw{progress: 4, progressValue: tc.value, notifMsg: tc.msg, notifSeq: 1}
+				if st := m.computeStatus(in, tr); st != tc.want {
+					t.Fatalf("sweep %d: status = %q, want %q", sweep, st, tc.want)
+				}
+			}
+			// A climbing percentage is still the same state, so it must not
+			// re-open the question either (kiro-cli's context usage grows).
+			in := &statusRaw{progress: 4, progressValue: tc.value + 5, notifMsg: tc.msg, notifSeq: 1}
+			if st := m.computeStatus(in, tr); st != tc.want {
+				t.Errorf("after the percentage moves: status = %q, want %q", st, tc.want)
+			}
+			// The latch is not stuck: the program leaving state 4 clears it.
+			in = &statusRaw{progress: tc.resumeTo, progressValue: -1, notifMsg: tc.msg, notifSeq: 1}
+			if st := m.computeStatus(in, tr); st != tc.resumed {
+				t.Errorf("after resuming to state %d: status = %q, want %q", tc.resumeTo, st, tc.resumed)
+			}
+			if tr.latched != "" {
+				t.Errorf("latch = %q, want cleared once the program left state 4", tr.latched)
+			}
+		})
+	}
+}
+
+// TestComputeStatusPausedStateStandsAloneWithoutLatch guards the other side of
+// the exception: state 4 is still a status in its own right. With no latch to
+// defer to, a paused report is the session's status exactly as before.
+func TestComputeStatusPausedStateStandsAloneWithoutLatch(t *testing.T) {
+	m := NewSessionManager(catFactory, WithStatusClassifier(inputClassifier))
+	t.Cleanup(m.Shutdown)
+	tr := &statusTracker{}
+	in := &statusRaw{progress: 4, progressValue: 40, notifMsg: "", notifSeq: 0}
+	if st := m.computeStatus(in, tr); st != StatusWarning {
+		t.Errorf("status = %q, want %q", st, StatusWarning)
 	}
 }
 

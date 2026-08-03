@@ -7,7 +7,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/coder/websocket"
 	"github.com/cplieger/web-terminal-engine/v3/vt"
 )
 
@@ -17,7 +16,7 @@ import (
 
 // TestNewHandler_appliesDefaults verifies that calling NewHandler with only a
 // command produces the documented defaults: scrollbackCapacity=1000,
-// logger=slog.Default(), no AcceptOptions, no onProcessExit, no workDir, no
+// logger=slog.Default(), no origin policy, no onProcessExit, no workDir, no
 // extra env (TERM/COLORTERM are injected at spawn time, not stored in cfg).
 func TestNewHandler_appliesDefaults(t *testing.T) {
 	h := NewHandler([]string{"/bin/sh"})
@@ -28,8 +27,8 @@ func TestNewHandler_appliesDefaults(t *testing.T) {
 	if h.cfg.logger != slog.Default() {
 		t.Fatal("default logger is not slog.Default()")
 	}
-	if h.cfg.acceptOptions != nil {
-		t.Fatal("default acceptOptions should be nil")
+	if h.cfg.originPolicy != nil {
+		t.Fatal("default originPolicy should be nil (same-origin only)")
 	}
 	if h.cfg.onProcessExit != nil {
 		t.Fatal("default onProcessExit should be nil")
@@ -106,12 +105,15 @@ func TestNewHandler_WithEnv(t *testing.T) {
 	}
 }
 
-// TestNewHandler_WithAcceptOptions verifies websocket accept options thread.
-func TestNewHandler_WithAcceptOptions(t *testing.T) {
-	opts := &websocket.AcceptOptions{InsecureSkipVerify: true}
-	h := NewHandler([]string{"/bin/sh"}, WithAcceptOptions(opts))
-	if h.cfg.acceptOptions != opts {
-		t.Fatal("WithAcceptOptions did not thread options")
+// TestNewHandler_WithOriginPolicy verifies the origin policy threads.
+func TestNewHandler_WithOriginPolicy(t *testing.T) {
+	p, invalid := NewOriginPolicy("https://embed.example.com")
+	if len(invalid) != 0 {
+		t.Fatalf("invalid = %v, want none", invalid)
+	}
+	h := NewHandler([]string{"/bin/sh"}, WithOriginPolicy(p))
+	if h.cfg.originPolicy != p {
+		t.Fatal("WithOriginPolicy did not thread the policy")
 	}
 }
 

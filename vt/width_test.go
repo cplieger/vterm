@@ -1,6 +1,13 @@
 package vt
 
-import "testing"
+import (
+	"fmt"
+	"slices"
+	"strconv"
+	"strings"
+	"testing"
+	"unicode"
+)
 
 func TestRuneWidth(t *testing.T) {
 	tests := []struct {
@@ -181,4 +188,56 @@ func TestWideRangesSortedNonOverlapping(t *testing.T) {
 				i, iv.first, iv.last, i-1, wideRanges[i-1].first, wideRanges[i-1].last)
 		}
 	}
+}
+
+// TestTablesNotBehindStdlibUnicode guards the one drift the generated tables
+// cannot self-report. runeWidth answers from TWO Unicode sources: the
+// generated wideRanges/emojiRanges (pinned to tablesUnicodeVersion by
+// scripts/gen-width-tables.py) and the stdlib's own Mn/Me/Cf tables, which
+// track whatever UCD release the toolchain ships. The tables LEADING the
+// stdlib is the normal, harmless state — they are generated from the newest
+// UCD long before a Go release picks it up, so a codepoint can be wide before
+// it is categorized. The tables TRAILING the stdlib is not: the stdlib would
+// then know a codepoint the width tables have never seen, and a rune assigned
+// in the newer release could be classified zero-width by one half while the
+// other half still treats it as unassigned-and-narrow.
+//
+// Nothing else notices, because the generator records its UCD release only in
+// a comment. Failure here means one action: bump UNICODE_VERSION in
+// scripts/gen-width-tables.py, re-run it, and re-run ./vt/... plus the
+// display-conformance tiers.
+func TestTablesNotBehindStdlibUnicode(t *testing.T) {
+	tables, err := parseUnicodeVersion(tablesUnicodeVersion)
+	if err != nil {
+		t.Fatalf("tablesUnicodeVersion %q: %v", tablesUnicodeVersion, err)
+	}
+	stdlib, err := parseUnicodeVersion(unicode.Version)
+	if err != nil {
+		t.Fatalf("unicode.Version %q: %v", unicode.Version, err)
+	}
+	if slices.Compare(tables[:], stdlib[:]) < 0 {
+		t.Errorf("generated width tables are at UCD %s but the toolchain's unicode package is at %s: "+
+			"the tables must never trail the stdlib. Bump UNICODE_VERSION in "+
+			"scripts/gen-width-tables.py, re-run it, then re-run ./vt/... and the "+
+			"display-conformance tiers.", tablesUnicodeVersion, unicode.Version)
+	}
+}
+
+// parseUnicodeVersion splits a "major.minor.patch" UCD version into comparable
+// components. Both inputs are compile-time constants from trusted sources, so
+// a parse failure is a bug in one of them, not untrusted input.
+func parseUnicodeVersion(v string) ([3]int, error) {
+	var out [3]int
+	parts := strings.Split(v, ".")
+	if len(parts) != len(out) {
+		return out, fmt.Errorf("want 3 dot-separated components, got %d", len(parts))
+	}
+	for i, p := range parts {
+		n, err := strconv.Atoi(p)
+		if err != nil {
+			return out, fmt.Errorf("component %d (%q): %w", i, p, err)
+		}
+		out[i] = n
+	}
+	return out, nil
 }

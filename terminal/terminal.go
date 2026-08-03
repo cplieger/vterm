@@ -149,13 +149,19 @@ type Option func(*handlerConfig)
 
 // handlerConfig holds optional configuration applied via functional options.
 type handlerConfig struct {
-	logger             *slog.Logger
-	acceptOptions      *websocket.AcceptOptions
-	onProcessExit      func(error)
-	theme              *vt.Theme
+	logger        *slog.Logger
+	originPolicy  *OriginPolicy
+	onProcessExit func(error)
+	theme         *vt.Theme
+	// containment/containmentID/containSample configure per-session process
+	// containment (WithContainment, WithContainmentSampleInterval). A nil
+	// containment disables it, which is the default.
+	containment        *Containment
+	containmentID      string
 	workDir            string
 	commandLogValue    string
 	env                []string
+	containSample      time.Duration
 	scrollbackCapacity int
 	keepUnfocused      bool
 	inputTitle         bool
@@ -227,9 +233,23 @@ func WithScrollbackCapacity(n int) Option {
 	}
 }
 
-// WithAcceptOptions sets WebSocket accept options (e.g. allowed origins).
-func WithAcceptOptions(o *websocket.AcceptOptions) Option {
-	return func(c *handlerConfig) { c.acceptOptions = o }
+// WithOriginPolicy widens the browser origins allowed to open this handler's
+// WebSocket beyond same-origin. Build the policy with NewOriginPolicy; a nil
+// policy (the default) means same-origin only.
+//
+// Pass the SAME policy to WithManagerOriginPolicy when the handler is served
+// through a SessionManager, so a widened origin also reaches the manager's
+// unknown-session socket. See OriginPolicy for why this gate exists at all: an
+// app-level cross-origin middleware never sees a WebSocket handshake.
+//
+// It replaced WithAcceptOptions, which handed consumers the dependency's whole
+// AcceptOptions struct: of its seven fields exactly one (OriginPatterns) was
+// useful here, one (InsecureSkipVerify) was a footgun, and the rest were dead
+// (Subprotocols — the engine's client negotiates none) or actively harmful
+// (CompressionMode would re-deflate per client the payload dispatchFrame encodes
+// once; OnPingReceived/OnPongReceived can break the adaptive-RTO ping loop).
+func WithOriginPolicy(p *OriginPolicy) Option {
+	return func(c *handlerConfig) { c.originPolicy = p }
 }
 
 // WithOnProcessExit registers a callback invoked when the child process exits.
@@ -313,6 +333,15 @@ type Handler struct {
 	scrollback *scrollbackRing
 	cancel     context.CancelFunc
 	ptmx       *os.File
+	// contain is this session's cgroup when containment is enabled, nil
+	// otherwise. Read WITHOUT the lock by the process monitor and the cost
+	// sampler, which is safe only because both are created by the `go` statements
+	// in ensureStarted AFTER this write: goroutine creation is synchronized before
+	// the goroutine runs. Holding h.mu at the write is not what makes those reads
+	// safe, since neither reader takes it. Any NEW reader outside those two
+	// goroutines needs h.mu or an atomic, including anything added to Shutdown.
+	// (It is also reassigned to nil on the start-failure path below.)
+	contain    *sessionCgroup
 	procExitCh chan struct{}
 	// dirty is the flush scheduler's wakeup: 1-buffered so any number of
 	// markDirty pokes coalesce into one pending signal. flushLoop sleeps on
@@ -780,8 +809,14 @@ func (h *Handler) ensureStarted(cols, rows int) error {
 	if rows < 1 {
 		rows = defaultRows
 	}
+	h.contain = h.beginContainment(cmd)
 	ptmx, err := pty.StartWithSize(cmd, &pty.Winsize{Cols: uint16(cols), Rows: uint16(rows)})
+	// The cgroup fd is only needed at clone time; holding it would leak one
+	// descriptor per session. Released on the failure path too.
+	h.contain.releaseFD()
 	if err != nil {
+		h.contain.teardown()
+		h.contain = nil
 		return err
 	}
 	h.ptmx = ptmx
@@ -800,6 +835,9 @@ func (h *Handler) ensureStarted(cols, rows int) error {
 	go h.readLoop(ctx)
 	// Flush scheduler — sends screen updates to all clients.
 	go h.flushLoop(ctx)
+	// Periodic per-session cost line, when the consumer asked for one. Stopped
+	// explicitly by the monitor before teardown, not just by ctx.
+	stopSampler := h.startCostSampler(ctx)
 	// Process monitor — reaps the child (so it does not linger as a
 	// zombie), fires the documented onProcessExit callback with the
 	// exit status, and cancels the read/flush loops on natural child
@@ -832,13 +870,30 @@ func (h *Handler) ensureStarted(cols, rows int) error {
 				h.cfg.logger.Error("terminal: onProcessExit callback panicked", "panic", r)
 			}
 		}()
+		// Containment teardown is owned HERE, and only here. Shutdown does not
+		// run it: Shutdown holds h.mu, and cancelling the context kills the head
+		// process, so this Wait returns and teardown happens on that path too.
+		// One owner plus the handle's own sync.Once means a crash-then-close
+		// sequence cannot double-run it.
+		// Stop sampling before the cgroup is removed, then tear down.
+		stopSampler()
+		h.contain.teardown()
+
 		// Symmetric with the "process started" INFO above so operators see the
 		// session lifecycle end and its exit status in the logs, not just the
 		// start. werr is nil on a clean (exit 0) shutdown; a child exiting
 		// non-zero is a normal session end, not a server fault, so this stays
 		// INFO (avoids WARN-spam on ordinary command exits).
+		//
+		// mem_peak_bytes/tasks_peak are the session's true high-water marks
+		// (cgroup memory.peak/pids.peak), not a sample, and they stay readable
+		// after the members are gone. tasks_peak counts TASKS, not processes:
+		// the pids controller reports TIDs. Zero when containment is off, so the
+		// line keeps its shape either way.
+		memPeak, tasksPeak := h.contain.peaks()
 		h.cfg.logger.Info("terminal: process exited",
-			"pid", cmd.Process.Pid, "error", werr)
+			"pid", cmd.Process.Pid, "error", werr,
+			"mem_peak_bytes", memPeak, "tasks_peak", tasksPeak)
 		if h.cfg.onProcessExit != nil {
 			h.cfg.onProcessExit(werr)
 		}
@@ -1267,7 +1322,7 @@ type controlMsg struct {
 // handleWS upgrades to WebSocket, spawns the configured command in a
 // PTY, and bridges bytes both ways until either side closes.
 func (h *Handler) handleWS(w http.ResponseWriter, r *http.Request) {
-	ws, err := websocket.Accept(w, r, h.cfg.acceptOptions)
+	ws, err := acceptWS(w, r, h.cfg.originPolicy)
 	if err != nil {
 		h.cfg.logger.Warn("terminal: ws accept", "error", err)
 		return
@@ -1322,8 +1377,9 @@ func (h *Handler) handleWS(w http.ResponseWriter, r *http.Request) {
 // clientReadLoop pumps one client's messages until the socket dies or a
 // protocol violation closes it.
 //
-// v4 typed-framing state (docs/wire-v4-typed-framing.md §4): a binary
-// bootstrap resume declaring protocolVersion >= 4 ARMS the connection; the
+// v4 typed-framing state (the negotiation contract is WireProtocolVersion's
+// doc comment in wire_binary.go): a binary bootstrap resume declaring
+// protocolVersion >= 4 ARMS the connection; the
 // first valid recognized TEXT control on an armed connection LATCHES typed
 // mode (text = control, binary = full-alphabet PTY input). Until the latch,
 // binary frames keep exact v3 semantics — the 0x00 sentinel plus the
@@ -1398,8 +1454,8 @@ func (h *Handler) handleBinaryFrame(ws *websocket.Conn, state *clientState, msg 
 	return armed, true
 }
 
-// handleTextControl applies the v4 text-frame policy
-// (docs/wire-v4-typed-framing.md §4) to one text message: text is only ever a
+// handleTextControl applies the v4 text-frame policy (see
+// WireProtocolVersion in wire_binary.go) to one text message: text is only ever a
 // control channel, it can never become PTY input, and anything that is not a
 // valid control on an armed connection closes the connection rather than
 // risking framing-state poison. Returns the updated (armed, latched) state and

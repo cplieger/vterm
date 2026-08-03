@@ -25,8 +25,6 @@ import (
 	"strings"
 	"sync"
 	"time"
-
-	"github.com/coder/websocket"
 )
 
 // SessionInfo is the public description of one session, returned by List and
@@ -92,9 +90,10 @@ const (
 type ManagerOption func(*managerConfig)
 
 type managerConfig struct {
-	logger     *slog.Logger
-	classifier func(string) (string, bool)
-	idleWindow time.Duration
+	logger       *slog.Logger
+	originPolicy *OriginPolicy
+	classifier   func(string) (string, bool)
+	idleWindow   time.Duration
 }
 
 // WithIdleReaper enables the ownership-keyed idle reaper: when no client (WS or
@@ -110,6 +109,17 @@ func WithIdleReaper(d time.Duration) ManagerOption {
 // WithManagerLogger sets the logger. A nil logger discards output.
 func WithManagerLogger(l *slog.Logger) ManagerOption {
 	return func(c *managerConfig) { c.logger = l }
+}
+
+// WithManagerOriginPolicy widens the browser origins allowed to reach the
+// manager's WebSocket route beyond same-origin. Pass the same policy the
+// per-session handlers get via WithOriginPolicy: the manager owns the
+// unknown-session upgrade (the one that answers close code 4004), so a policy
+// set on only one of the two leaves a widened origin working for a live session
+// and failing for a reaped one. A nil policy (the default) means same-origin
+// only.
+func WithManagerOriginPolicy(p *OriginPolicy) ManagerOption {
+	return func(c *managerConfig) { c.originPolicy = p }
 }
 
 // WithStatusClassifier maps an OSC 9 notification message to a session status
@@ -194,6 +204,7 @@ func effectiveTitle(src *titleSources) string {
 type SessionManager struct {
 	factory       func(id string) *Handler
 	logger        *slog.Logger
+	originPolicy  *OriginPolicy
 	sessions      map[string]*session
 	trackers      map[string]*statusTracker
 	subs          map[chan statusEvent]struct{}
@@ -226,14 +237,15 @@ func NewSessionManager(factory func(id string) *Handler, opts ...ManagerOption) 
 		cfg.logger = slog.New(slog.DiscardHandler)
 	}
 	m := &SessionManager{
-		factory:    factory,
-		logger:     cfg.logger,
-		sessions:   make(map[string]*session),
-		trackers:   make(map[string]*statusTracker),
-		subs:       make(map[chan statusEvent]struct{}),
-		classifier: cfg.classifier,
-		idleSince:  time.Now(),
-		idleWindow: cfg.idleWindow,
+		factory:      factory,
+		logger:       cfg.logger,
+		originPolicy: cfg.originPolicy,
+		sessions:     make(map[string]*session),
+		trackers:     make(map[string]*statusTracker),
+		subs:         make(map[chan statusEvent]struct{}),
+		classifier:   cfg.classifier,
+		idleSince:    time.Now(),
+		idleWindow:   cfg.idleWindow,
 	}
 	if m.idleWindow > 0 {
 		ctx, cancel := context.WithCancel(context.Background())
@@ -459,15 +471,17 @@ func (m *SessionManager) WebSocketHandler() http.Handler {
 			// routes to its ended state — a pre-upgrade 404 is unreadable
 			// from browser JS (an opaque code-1006 failure) and condemned
 			// clients to an endless reconnect loop against a session that
-			// will never exist. nil AcceptOptions keep coder/websocket's
-			// same-origin default, matching the fleet's live posture (no
-			// consumer sets WithAcceptOptions). A non-WebSocket GET gets
-			// Accept's own 426 — the same answer the known-session path
-			// gives, so a plain probe can no longer distinguish session
-			// existence (the old 404-vs-426 oracle).
-			ws, err := websocket.Accept(w, r, nil)
+			// will never exist. The upgrade goes through acceptWS so this path
+			// applies the SAME origin policy as a live session's socket
+			// (WithManagerOriginPolicy); it used to hardcode nil options, which
+			// silently ignored a configured allowlist here and answered a
+			// legitimately-embedded client 403 instead of the readable 4004.
+			// A non-WebSocket GET gets Accept's own 426 — the same answer the
+			// known-session path gives, so a plain probe can no longer
+			// distinguish session existence (the old 404-vs-426 oracle).
+			ws, err := acceptWS(w, r, m.originPolicy)
 			if err != nil {
-				return // Accept already wrote its error response (e.g. 426)
+				return // acceptWS or Accept already wrote the response (403/426)
 			}
 			_ = ws.Close(statusUnknownSession, "unknown session")
 			return

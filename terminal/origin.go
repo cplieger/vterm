@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/coder/websocket"
+	"github.com/cplieger/runesafe"
 )
 
 // OriginPolicy is the set of browser origins allowed to open a terminal
@@ -196,7 +197,58 @@ func acceptWS(w http.ResponseWriter, r *http.Request, p *OriginPolicy) (*websock
 	if !p.Allows(r) {
 		http.Error(w, http.StatusText(http.StatusForbidden), http.StatusForbidden)
 		return nil, fmt.Errorf("terminal: origin %q is not allowed for host %q",
-			r.Header.Get("Origin"), r.Host)
+			logSafeHeader(r.Header.Get("Origin")), logSafeHeader(r.Host))
 	}
 	return websocket.Accept(w, r, p.acceptOptions())
+}
+
+// maxLoggedOriginBytes bounds one request-supplied value in the refusal error.
+// A legitimate origin is a scheme, a host and maybe a port, so 128 bytes is
+// generous for every real one while refusing to carry an arbitrarily long
+// header into the logs.
+const maxLoggedOriginBytes = 128
+
+// logSafeHeader prepares a request-supplied header value to appear in the
+// refusal error above, which the two callers log.
+//
+// Both values it guards — Origin and Host — are chosen by whoever made the
+// request, and the error is built at the one moment nobody trusts them: the
+// refusal. Sanitizing HERE rather than at the log sites is the construction-time
+// boundary this fleet uses for error-class text (runesafe.md, "Adoption rules"):
+// the error is safe from the moment it exists, so no present or future caller
+// can reach an unsanitized form of it.
+//
+// SanitizeSingleLineBounded is the log-bound preset: runesafe's four unsafe
+// classes become spaces, CR and LF included, and the result is capped on a rune
+// boundary.
+//
+// Which part of that is load-bearing depends on the sink, and both obvious
+// answers are wrong, so both are worth stating.
+//
+// CR/LF record forgery (CWE-117) is NOT reachable through this path at all:
+// net/http's own header parser ends a header value at CRLF, so Origin and Host
+// cannot contain either byte to begin with, and its client refuses to send one.
+// Stripping them is defence in depth for a front end that is not net/http.
+//
+// The rune classes that ARE reachable — everything net/http's
+// validHeaderValueByte permits from 0x80 up, so C1 controls (U+009B is a
+// single-byte CSI introducer to a terminal reading the log), the Bidi_Control
+// set (U+202E reorders the line in a viewer) and U+2028/U+2029 — are already
+// neutralized on TODAY's sink by the caller's %q, whose strconv quoting escapes
+// them. That is measured, not assumed: removing this call leaves the rune
+// assertions in TestAcceptWSRefusalIsLogSafe passing. They matter for a sink
+// that does NOT quote, which is the case runesafe exists for (slog's JSONHandler
+// emits C1 raw), and that is why the class stripping stays rather than being
+// deleted as redundant.
+//
+// What this call buys on the current sink is the CAP. A header value has no
+// useful bound, and one refused handshake should not write a multi-kilobyte log
+// line; %q does nothing about length. TestAcceptWSRefusalIsLogSafe fails on that
+// assertion alone with the sanitizer removed.
+//
+// The %q in the caller stays regardless: it is a second, independent escape, and
+// it makes the substituted spaces visible rather than letting them merge into
+// the sentence.
+func logSafeHeader(v string) string {
+	return runesafe.SanitizeSingleLineBounded(v, maxLoggedOriginBytes)
 }

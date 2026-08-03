@@ -71,6 +71,30 @@ function WithEnv
 function WithInputTitle
 function WithOnProcessExit
 
+# --- Per-session process containment: published API, consumer
+# web-terminal-kiro, wired in the same effort that added it here (its
+# composition root calls NewContainment and its session factory passes
+# WithContainment + WithContainmentSampleInterval). The calls live in another
+# MODULE, invisible to punused.
+#
+# Two ordering notes, both load-bearing for this gate rather than for the code:
+#
+# WithContainmentSampleInterval MUST stay above WithContainment. The gate
+# matches literal substrings and breaks on the first hit in file order, so the
+# shorter pattern would otherwise claim both findings and this one would be
+# reported as a stale entry matching nothing.
+#
+# `function NewContainment` deliberately covers TWO findings, one per build:
+# containment_linux.go's real constructor (EU1001, exercised by this repo's own
+# tests) and containment_other.go's non-Linux stub (EU1002, unreferenced
+# anywhere by design). The stub and its `struct Containment` exist so the
+# package compiles off Linux, where cgroups do not; they are a permanent
+# no-consumer surface rather than a pending decision.
+function WithContainmentSampleInterval
+function WithContainment
+function NewContainment
+struct Containment
+
 # --- Wire-compatibility rule: published API, consumed by all three repos'
 # `scripts/wirecheck/main.go` (vibekit:56, web-terminal-kiro:55,
 # web-terminal-server:54) -- non-test code in each. The engine owns the
@@ -131,12 +155,22 @@ function Run
 # reported for a decision.
 # ============================================================================
 
-# WithAcceptOptions (terminal/terminal.go:230) -- websocket.AcceptOptions
-# injection. No caller: web-terminal-kiro/routes_test.go:527,533 only MENTION it
-# in prose, asserting that the app deliberately does NOT set it (so the engine's
-# same-origin default holds). Covered in-repo by
-# TestNewHandler_WithAcceptOptions (terminal/terminal_options_test.go:110).
-function WithAcceptOptions
+# NewOriginPolicy, WithOriginPolicy and WithManagerOriginPolicy -- the
+# cross-origin widening surface, successor to the removed WithAcceptOptions
+# (which sat here for the same reason). Still no fleet caller, and that is the
+# CORRECT posture rather than an oversight: every consumer serves its terminal
+# same-origin, so all three deliberately rely on the same-origin default and
+# web-terminal-kiro/routes_test.go asserts in prose that the app does not widen
+# it. The API exists because the default cannot be widened any other way and
+# net/http.CrossOriginProtection cannot do it (a WS handshake is a GET, which it
+# treats as safe). Covered in-repo by TestNewHandler_WithOriginPolicy
+# (terminal/terminal_options_test.go) and terminal/origin_test.go.
+#
+# WithOriginPolicy is NOT a substring of WithManagerOriginPolicy, so the two
+# entries claim one finding each regardless of order.
+function NewOriginPolicy
+function WithManagerOriginPolicy
+function WithOriginPolicy
 
 # WithTheme (terminal/terminal.go:258) -- the Handler-level OSC 10/11/12 theme
 # option. Not exercised anywhere, not even by this repo's tests, hence EU1002.

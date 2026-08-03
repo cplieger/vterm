@@ -1031,7 +1031,7 @@ describe("connection: ledger-loss signal, ackOnly trimming, wire-version surface
   });
 });
 
-describe("connection: v4 typed-framing negotiation (docs/wire-v4-typed-framing.md)", () => {
+describe("connection: v4 typed-framing negotiation (see WIRE_PROTOCOL_VERSION in wire-compatibility.ts)", () => {
   // Pins the client half of the three-phase handshake: binary bootstrap
   // resume first on every socket (F4), text `upgrade` as the FIRST message
   // after proof and before any retransmit (F1), text controls only after

@@ -115,7 +115,7 @@ export interface ResumeAckMessage {
    * `onWireVersionMismatch` so the UI can offer a reload. Versions inside
    * the range are normal pairings (a v3 server just means the socket stays
    * in sentinel mode); a value >= 4 additionally triggers the typed-framing
-   * upgrade (docs/wire-v4-typed-framing.md).
+   * upgrade (see WIRE_PROTOCOL_VERSION in wire-compatibility.ts).
    */
   serverWireVersion?: number;
   /**
@@ -232,7 +232,8 @@ export type ControlMessage =
     }
   | { type: "ping" }
   /**
-   * v4 typed-framing transition (docs/wire-v4-typed-framing.md §4): the first
+   * v4 typed-framing transition (see WIRE_PROTOCOL_VERSION in
+   * wire-compatibility.ts): the first
    * TEXT message a client sends after the resumeAck proves the server speaks
    * wire revision >= 4. Receiving it latches the server's connection to typed
    * mode (text = control, binary = full-alphabet PTY input); otherwise a no-op.

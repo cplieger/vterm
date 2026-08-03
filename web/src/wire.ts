@@ -13,7 +13,7 @@
 // in v3 mode (sendInputFrames splits leading NULs into solitary frames), so
 // in practice the reserved channel only ever carries real controls.
 //
-// v4 framing (docs/wire-v4-typed-framing.md) retires the sentinel once a
+// v4 framing (see WIRE_PROTOCOL_VERSION in wire-compatibility.ts) retires the sentinel once a
 // socket upgrades: control messages travel as WebSocket TEXT frames and
 // binary frames are full-alphabet PTY input. This module's controlFrame stays
 // the encoding for the v3 bootstrap (every socket's first resume) and for

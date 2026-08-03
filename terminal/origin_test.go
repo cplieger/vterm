@@ -1,7 +1,9 @@
 package terminal
 
 import (
+	"bytes"
 	"context"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -400,4 +402,126 @@ func TestAcceptWSIsTheOnlyUpgradePath(t *testing.T) {
 			"Route every upgrade through acceptWS instead, so the origin policy "+
 			"cannot be skipped or silently ignored.", found, want)
 	}
+}
+
+// TestAcceptWSRefusalIsLogSafe guards the refusal path's log line. acceptWS
+// builds its error from two request-supplied values, Origin and Host, and both
+// callers log that error.
+//
+// The hostile input is deliberately the REACHABLE set, not the textbook one.
+// CR/LF record forgery cannot arrive this way: net/http's header parser ends a
+// value at CRLF and its client refuses to send one, so a case built around
+// "\r\nlevel=ERROR" fails on the dial and proves nothing. What net/http passes
+// through is every byte from 0x80 up, plus unbounded length.
+//
+// Only the BOUND assertion below is non-vacuous on this sink, and that is worth
+// knowing rather than hiding: the caller's %q already escapes the C1, bidi and
+// U+2028 runes for a TextHandler, so removing the sanitizer leaves the rune
+// checks green and fails on length alone (verified by doing exactly that). The
+// rune checks are kept as the guard for a sink that does not quote; the direct,
+// non-vacuous coverage of the class stripping is TestLogSafeHeader.
+//
+// Driven end to end rather than by calling logSafeHeader directly, because the
+// property is "nothing unsanitized reaches the logger" and only the full path
+// shows that. The logger is the handler's own (WithLogger), so nothing here
+// touches the global default and the test needs no serialization.
+func TestAcceptWSRefusalIsLogSafe(t *testing.T) {
+	var buf bytes.Buffer
+	h := NewHandler([]string{"/bin/cat"},
+		WithLogger(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn}))))
+	defer h.Shutdown()
+
+	mux := http.NewServeMux()
+	mux.Handle("/ws", h)
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+	wsURL := "ws" + strings.TrimPrefix(srv.URL, "http") + "/ws"
+
+	unsafeRunes := []rune{'\u009b', '\u202e', '\u2028'}
+	hostile := "https://evil.example" + string(unsafeRunes) + strings.Repeat("A", 4096)
+
+	ws, status, err := dialWithOrigin(t, wsURL, hostile)
+	if err == nil {
+		ws.Close(websocket.StatusNormalClosure, "")
+		t.Fatal("dial from a hostile origin succeeded")
+	}
+	if status != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403 (err: %v)", status, err)
+	}
+
+	logged := buf.String()
+	if logged == "" {
+		t.Fatal("the refusal logged nothing, so this test proves nothing about its content")
+	}
+	// slog writes exactly one trailing newline per record, so a second one means
+	// a record was forged.
+	if n := strings.Count(logged, "\n"); n != 1 {
+		t.Errorf("log holds %d newlines, want exactly 1 (a forged record got through):\n%q", n, logged)
+	}
+	for _, r := range unsafeRunes {
+		if strings.ContainsRune(logged, r) {
+			t.Errorf("log carries unsafe rune %U verbatim:\n%q", r, logged)
+		}
+	}
+	// The cap bounds the line: 4096 'A's cannot all survive.
+	if strings.Contains(logged, strings.Repeat("A", maxLoggedOriginBytes+4)) {
+		t.Errorf("log line is not bounded by maxLoggedOriginBytes=%d:\n%q",
+			maxLoggedOriginBytes, logged)
+	}
+}
+
+// TestLogSafeHeader covers the sanitizer directly, which is where the rune-class
+// half of the contract can actually be observed. Asserting it through the log
+// line cannot: slog's TextHandler quotes the value, so an unsanitized C1 or bidi
+// rune shows up escaped either way (see TestAcceptWSRefusalIsLogSafe).
+func TestLogSafeHeader(t *testing.T) {
+	t.Parallel()
+
+	tests := map[string]struct {
+		in   string
+		want string
+	}{
+		"ordinary origin is untouched": {
+			in:   "https://embed.example.com:8443",
+			want: "https://embed.example.com:8443",
+		},
+		"C1 introducer becomes a space": {
+			in:   "https://a\u009bb",
+			want: "https://a b",
+		},
+		"bidi override becomes a space": {
+			in:   "https://a\u202eb",
+			want: "https://a b",
+		},
+		"JS line terminator becomes a space": {
+			in:   "https://a\u2028b",
+			want: "https://a b",
+		},
+		"CR and LF become spaces": {
+			in:   "https://a\r\nlevel=ERROR",
+			want: "https://a  level=ERROR",
+		},
+		"empty stays empty": {in: "", want: ""},
+	}
+	for name, tc := range tests {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			if got := logSafeHeader(tc.in); got != tc.want {
+				t.Errorf("logSafeHeader(%q) = %q, want %q", tc.in, got, tc.want)
+			}
+		})
+	}
+
+	t.Run("over-long input is capped with a marker", func(t *testing.T) {
+		t.Parallel()
+		got := logSafeHeader(strings.Repeat("A", 4096))
+		// The preset places its "..." marker OUTSIDE the cap, so the bound is
+		// maxLoggedOriginBytes plus the marker (runesafe.md, API).
+		if len(got) > maxLoggedOriginBytes+3 {
+			t.Errorf("len = %d, want <= %d", len(got), maxLoggedOriginBytes+3)
+		}
+		if !strings.HasSuffix(got, "...") {
+			t.Errorf("got %q, want a truncation marker suffix", got)
+		}
+	})
 }

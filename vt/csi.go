@@ -1273,17 +1273,29 @@ func (s *Screen) deleteColumns(n int) {
 	}
 }
 
-func (s *Screen) insertLines(n int) {
+// prepareLineShift applies the prologue IL and DL share. Both refuse outside
+// the scroll region or the horizontal margins, move the cursor to the left
+// margin, clear any deferred wrap, and clamp the count to the rows remaining
+// between the cursor and the bottom of the region. Returns the active margins,
+// whether they span the full width, the clamped count, and ok=false when the
+// operation does not apply. The row-shifting loops stay in each caller: their
+// direction is the only thing that differs and it is what the esctest2
+// conformance suite pins, so it is deliberately not parameterised behind a flag.
+func (s *Screen) prepareLineShift(n int) (left, right, count int, fullWidth, ok bool) {
 	if s.curY < s.scrollTop || s.curY > s.scrollBottom || !s.withinHMargins(s.curX) {
-		return
+		return 0, 0, 0, false, false
 	}
-	left, right := s.leftBound(), s.rightBound()
-	fullWidth := left == 0 && right == s.Width-1
-	// IL moves the cursor to the left margin and clears any deferred wrap.
+	left, right = s.leftBound(), s.rightBound()
 	s.curX = left
 	s.pendingWrap = false
-	avail := s.scrollBottom - s.curY + 1
-	n = min(n, avail)
+	return left, right, min(n, s.scrollBottom-s.curY+1), left == 0 && right == s.Width-1, true
+}
+
+func (s *Screen) insertLines(n int) {
+	left, right, n, fullWidth, ok := s.prepareLineShift(n)
+	if !ok {
+		return
+	}
 	for range n {
 		if fullWidth {
 			for y := s.scrollBottom; y > s.curY; y-- {
@@ -1302,16 +1314,10 @@ func (s *Screen) insertLines(n int) {
 }
 
 func (s *Screen) deleteLines(n int) {
-	if s.curY < s.scrollTop || s.curY > s.scrollBottom || !s.withinHMargins(s.curX) {
+	left, right, n, fullWidth, ok := s.prepareLineShift(n)
+	if !ok {
 		return
 	}
-	left, right := s.leftBound(), s.rightBound()
-	fullWidth := left == 0 && right == s.Width-1
-	// DL moves the cursor to the left margin and clears any deferred wrap.
-	s.curX = left
-	s.pendingWrap = false
-	avail := s.scrollBottom - s.curY + 1
-	n = min(n, avail)
 	for range n {
 		if fullWidth {
 			for y := s.curY; y < s.scrollBottom; y++ {

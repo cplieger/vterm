@@ -1,6 +1,10 @@
 # Go
 /vendor/
 
+# e2e test-server build artifact (tests run `go run ./internal/e2etestserver`;
+# a committed binary is a Scorecard BinaryArtifacts finding)
+web/e2e/testserver/
+
 # Go workspace
 go.work
 go.work.sum

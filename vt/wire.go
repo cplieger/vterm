@@ -160,14 +160,130 @@ type linkSpan struct {
 	endCol   int
 }
 
-// chainRows assembles the soft-wrap chain containing screen row y from the
-// live grid, prefixed by the retained drain tail when the chain begins in
-// already-drained history. It returns the chain's row texts and the index of
-// row y's text within them. The chain is bounded to maxAutolinkRows entries
-// biased to keep the focus row (older rows drop first).
-func (s *Screen) chainRows(y int) (texts []string, focus int) {
+// chainRow is one row's contribution to a joined chain: the text that takes
+// part in the URL scan, and the column of the row at which that text starts.
+// indent is 0 for the row that opens a chain and for a soft-wrap continuation
+// (the whole row is text); it is the width of the application's own
+// continuation indent on a hard-wrap continuation, whose leading blanks are
+// layout rather than content and must not enter the join.
+type chainRow struct {
+	text   string
+	indent int
+}
+
+// blankCell reports whether a cell occupies a column with no glyph: a written
+// space, or an unwritten cell (Ch == 0, which is also a wide glyph's second
+// half — a URL cannot contain one, so treating it as blank only ever declines
+// a join).
+func blankCell(c Cell) bool {
+	return c.Ch == 0 || c.Ch == ' '
+}
+
+// leadingBlankCells counts a row's leading blank columns.
+func leadingBlankCells(row []Cell) int {
+	n := 0
+	for n < len(row) && blankCell(row[n]) {
+		n++
+	}
+	return n
+}
+
+// hardWrapIndent reports the continuation indent when row cur continues row
+// prev as ONE logical line the APPLICATION wrapped itself, or -1 when cur
+// starts its own line.
+//
+// An Ink-style TUI (kiro-cli, the client this engine is built for, is one) lays
+// its own text out: it breaks at the terminal width, re-emits its indent on
+// every continuation, and writes each resulting row as a separate line. The
+// terminal therefore never autowraps and the soft-wrap chain never fires, so a
+// URL such output splits reaches the scanner as unrelated per-row fragments —
+// only the first row matches, with an href truncated at the break, and the rows
+// after it get no link at all. Recognise that shape, conservatively:
+//
+//   - prev must be FULL (a glyph in its last column), so the break happened at
+//     the right margin rather than because the line ended there;
+//   - both rows must open with the same non-empty blank run. Equality is what
+//     makes it a continuation indent rather than a coincidence, and requiring it
+//     non-empty keeps two ordinary full-width lines (a table, `ls` output) from
+//     joining, since an unindented pair is indistinguishable from them;
+//   - cur must carry a glyph after that indent (implied: the blank run is
+//     shorter than the row).
+//
+// A pair that passes still changes nothing unless a URL match actually crosses
+// the boundary, so a false positive costs a wrong href only where a URL ends
+// exactly at the right margin above an equally-indented line — which today
+// already yields an href truncated at that same column.
+func hardWrapIndent(prev, cur []Cell) int {
+	if len(prev) == 0 || len(prev) != len(cur) {
+		return -1
+	}
+	if blankCell(prev[len(prev)-1]) {
+		return -1
+	}
+	indent := leadingBlankCells(prev)
+	if indent == 0 || indent >= len(cur) || indent != leadingBlankCells(cur) {
+		return -1
+	}
+	return indent
+}
+
+// continuesRow reports whether screen row y continues row y-1 as one logical
+// line for the URL scan — a soft wrap, or an application hard wrap.
+//
+// The soft-wrap flag is checked first and wins: on a soft-wrapped row the
+// leading blanks ARE content (the application wrote them there), so treating
+// them as an indent and dropping them would join text across a real space.
+func (s *Screen) continuesRow(y int) bool {
+	if y <= 0 || y >= s.Height || y >= len(s.wrapped) {
+		return false
+	}
+	if s.wrapped[y] {
+		return true
+	}
+	return hardWrapIndent(s.Cells[y-1], s.Cells[y]) >= 0
+}
+
+// chainRowFor renders row r's contribution to a chain that opens at row start.
+func (s *Screen) chainRowFor(r, start int) chainRow {
+	row := chainRow{text: rowMatchText(s.Cells[r])}
+	softWrap := r < len(s.wrapped) && s.wrapped[r]
+	// A continuation that is not a soft wrap passed hardWrapIndent, so its
+	// leading blank run is the application's indent: layout, not content.
+	if r > start && !softWrap {
+		row.indent = leadingBlankCells(s.Cells[r])
+		row.text = string([]rune(row.text)[row.indent:])
+	}
+	return row
+}
+
+// boundChain caps a chain at maxAutolinkRows entries, dropping from whichever
+// end is farther from the focus row (older rows first on a tie).
+func boundChain(rows []chainRow, focus int) (bounded []chainRow, focusOut int) {
+	for len(rows) > maxAutolinkRows {
+		if focus > len(rows)-1-focus {
+			rows = rows[1:]
+			focus--
+		} else {
+			rows = rows[:len(rows)-1]
+		}
+	}
+	return rows, focus
+}
+
+// chainRows assembles the wrap chain containing screen row y from the live
+// grid, prefixed by the retained drain tail when the chain begins in
+// already-drained history. It returns the chain's rows and the index of row y
+// within them.
+//
+// The drain tail carries SOFT-wrap continuations only (drainTopRow retains it
+// on the wrapped flag), so a hard-wrapped chain whose first row has already
+// scrolled into history joins only its on-screen rows. That window is narrow in
+// practice: an application that lays out its own text emits the whole wrapped
+// run in one frame, so the rows below are present when the first one drains,
+// which is when its stamp is computed.
+func (s *Screen) chainRows(y int) (rows []chainRow, focus int) {
 	start := y
-	for start > 0 && start < len(s.wrapped) && s.wrapped[start] {
+	for start > 0 && s.continuesRow(start) {
 		start--
 	}
 	var tail []string
@@ -175,28 +291,20 @@ func (s *Screen) chainRows(y int) (texts []string, focus int) {
 		tail = s.drainTail // chain begins in drained history
 	}
 	end := y
-	for end+1 < s.Height && end+1 < len(s.wrapped) && s.wrapped[end+1] {
+	for end+1 < s.Height && s.continuesRow(end+1) {
 		end++
 	}
-	texts = make([]string, 0, len(tail)+(end-start+1))
-	texts = append(texts, tail...)
+	rows = make([]chainRow, 0, len(tail)+(end-start+1))
+	for _, text := range tail {
+		rows = append(rows, chainRow{text: text})
+	}
 	for r := start; r <= end; r++ {
-		texts = append(texts, rowMatchText(s.Cells[r]))
+		rows = append(rows, s.chainRowFor(r, start))
 	}
-	focus = len(tail) + (y - start)
-	// Bound the join, dropping from whichever end is farther from focus.
-	for len(texts) > maxAutolinkRows {
-		if focus > len(texts)-1-focus {
-			texts = texts[1:]
-			focus--
-		} else {
-			texts = texts[:len(texts)-1]
-		}
-	}
-	return texts, focus
+	return boundChain(rows, len(tail)+(y-start))
 }
 
-// stampAutolinks detects bare URLs in the soft-wrap chain containing row y and
+// stampAutolinks detects bare URLs in the wrap chain containing row y and
 // stamps the overlap with row y into the given runs: the affected cells get
 // the FULL matched URL in U plus the AttrAutolink bit, splitting runs at link
 // boundaries. Derived at render time, never stored into cells, so edits are
@@ -206,8 +314,8 @@ func (s *Screen) chainRows(y int) (texts []string, focus int) {
 // gets an anchor with the complete href, where the old client-side per-row
 // regex left row 2 unlinked and row 1's href truncated at the wrap column.
 func (s *Screen) stampAutolinks(y int, runs []WireRun) []WireRun {
-	texts, focus := s.chainRows(y)
-	spans := autolinkSpans(texts, focus)
+	rows, focus := s.chainRows(y)
+	spans := autolinkSpans(rows, focus)
 	if len(spans) == 0 {
 		return runs
 	}
@@ -216,20 +324,27 @@ func (s *Screen) stampAutolinks(y int, runs []WireRun) []WireRun {
 
 // autolinkSpans scans the joined chain text for URLs and maps each match's
 // overlap back onto the focus row's cell columns. Rows join without
-// separators: a wrapped row is by definition full-width, so its text abuts
-// the continuation exactly as typed.
-func autolinkSpans(texts []string, focus int) []linkSpan {
-	joined := strings.Join(texts, "")
+// separators: a soft-wrapped row is by definition full-width, so its text
+// abuts the continuation exactly as typed, and a hard-wrap continuation
+// contributes the text AFTER its indent for the same reason. The focus row's
+// own indent is added back when mapping an offset to a column.
+func autolinkSpans(rows []chainRow, focus int) []linkSpan {
+	var builder strings.Builder
+	for _, row := range rows {
+		builder.WriteString(row.text)
+	}
+	joined := builder.String()
 	if !strings.Contains(joined, "://") {
 		return nil
 	}
 	// Rune offset of the focus row within the joined text, and its length.
 	rowStart := 0
 	for i := range focus {
-		rowStart += len([]rune(texts[i]))
+		rowStart += len([]rune(rows[i].text))
 	}
-	rowLen := len([]rune(texts[focus]))
+	rowLen := len([]rune(rows[focus].text))
 	rowEnd := rowStart + rowLen
+	indent := rows[focus].indent
 
 	joinedRunes := []rune(joined)
 	var spans []linkSpan
@@ -243,8 +358,8 @@ func autolinkSpans(texts []string, focus int) []linkSpan {
 		}
 		spans = append(spans, linkSpan{
 			url:      string(joinedRunes[ms:me]),
-			startCol: max(ms, rowStart) - rowStart,
-			endCol:   min(me, rowEnd) - rowStart,
+			startCol: max(ms, rowStart) - rowStart + indent,
+			endCol:   min(me, rowEnd) - rowStart + indent,
 		})
 	}
 	return spans

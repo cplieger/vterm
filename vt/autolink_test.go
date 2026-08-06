@@ -253,3 +253,120 @@ func TestAutolinkWideCharBoundary(t *testing.T) {
 		t.Errorf("stamped %q, want the URL to stop before the wide glyph", joined)
 	}
 }
+
+// hardWrapLines writes each line as its own logical line (CR LF between them),
+// which is how an Ink-style TUI emits text it wrapped itself: the terminal never
+// autowraps, so no soft-wrap flag is recorded.
+func hardWrapLines(t *testing.T, s *Screen, lines ...string) {
+	t.Helper()
+	if _, err := s.Write([]byte(strings.Join(lines, "\r\n"))); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+}
+
+// TestAutolinkAppHardWrapJoined pins the reported phone bug, measured live in
+// web-terminal-kiro at 41 columns: kiro-cli wraps a long URL itself, re-emitting
+// an 8-column indent on each continuation, so the terminal sees three separate
+// full-width lines. Every row must carry an anchor with the WHOLE href — before
+// the indent-aware join, row 0 got an href truncated at the break
+// ("https://github.com/cplieger/.kiro", which silently opened the repo instead
+// of the job) and rows 1 and 2 got no anchor at all, hence no underline.
+func TestAutolinkAppHardWrapJoined(t *testing.T) {
+	const url = "https://github.com/cplieger/.kiro/actions/runs/31094602847/job/92593457519"
+	s := New(6, 41)
+	hardWrapLines(t, s,
+		"        https://github.com/cplieger/.kiro", // 8 + 33 = 41, exactly full
+		"        /actions/runs/31094602847/job/925", // 8 + 33 = 41, exactly full
+		"        93457519",
+	)
+	var joined strings.Builder
+	for y := range 3 {
+		stamped, part := collectLinks(s.RenderRowWire(y))
+		if len(stamped) == 0 {
+			t.Errorf("row %d has no autolink; a hard-wrapped URL must be linked on every row", y)
+		}
+		for _, r := range stamped {
+			if r.U != url {
+				t.Errorf("row %d href = %q, want the FULL url %q", y, r.U, url)
+			}
+		}
+		joined.WriteString(part)
+	}
+	if joined.String() != url {
+		t.Errorf("stamped text across rows = %q, want exactly %q", joined.String(), url)
+	}
+	// The indent is layout, not link text: the anchor must start at column 8.
+	for _, r := range s.RenderRowWire(1) {
+		if r.A&AttrAutolink != 0 && strings.HasPrefix(r.T, " ") {
+			t.Errorf("continuation indent stamped as link text in run %q", r.T)
+		}
+	}
+}
+
+// TestAutolinkHardWrapRejects covers the three refusals that keep the
+// indent-aware join from gluing unrelated lines. Each case writes a first line
+// whose URL would extend if the join fired, and asserts the href stops there and
+// the following line is not linked.
+func TestAutolinkHardWrapRejects(t *testing.T) {
+	cases := map[string]struct {
+		first, second, want string
+	}{
+		// A short first line means the break was the line ending, not the margin.
+		"first line not full": {
+			first:  "        https://ex.com/aaa",
+			second: "        bbb/ccc",
+			want:   "https://ex.com/aaa",
+		},
+		// Different indents are two independent lines that happen to be adjacent.
+		"indent mismatch": {
+			first:  "        https://ex.com/aaaaaaaaaaaaaaaaaa", // 8 + 33 = 41, exactly full
+			second: "    bbb/ccc",
+			want:   "https://ex.com/aaaaaaaaaaaaaaaaaa",
+		},
+		// Two unindented full lines are indistinguishable from table or ls output.
+		"no indent": {
+			first:  "https://ex.com/aaaaaaaaaaaaaaaaaaaaaaaaaa", // 41, exactly full
+			second: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+			want:   "https://ex.com/aaaaaaaaaaaaaaaaaaaaaaaaaa",
+		},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			s := New(6, 41)
+			hardWrapLines(t, s, tc.first, tc.second)
+			_, joined0 := collectLinks(s.RenderRowWire(0))
+			stamped1, joined1 := collectLinks(s.RenderRowWire(1))
+			if tc.want != "" && joined0 != tc.want {
+				t.Errorf("row 0 stamped %q, want %q", joined0, tc.want)
+			}
+			if len(stamped1) != 0 {
+				t.Errorf("row 1 stamped %q; these lines must not join", joined1)
+			}
+		})
+	}
+}
+
+// TestAutolinkSoftWrapIndentIsContent: on a SOFT-wrapped row the leading blanks
+// are text the application wrote, not a continuation indent, so they must stay
+// in the join and terminate the match. Dropping them (checking the hard-wrap
+// shape before the wrapped flag) would glue "…/ab" to "tail" and produce an href
+// nobody typed.
+func TestAutolinkSoftWrapIndentIsContent(t *testing.T) {
+	s := New(4, 20)
+	// 20 chars exactly fill row 0 (3-space indent + a 17-char URL), then the
+	// autowrap carries "   tail" onto row 1 with the same leading blank run.
+	if _, err := s.Write([]byte("   https://ex.com/ab" + "   tail")); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	if !s.wrapped[1] {
+		t.Fatal("row 1 is not marked as a soft wrap; the case under test did not arise")
+	}
+	_, joined0 := collectLinks(s.RenderRowWire(0))
+	if joined0 != "https://ex.com/ab" {
+		t.Errorf("row 0 href = %q, want the URL to stop at the space it wrapped onto", joined0)
+	}
+	stamped1, joined1 := collectLinks(s.RenderRowWire(1))
+	if len(stamped1) != 0 {
+		t.Errorf("row 1 stamped %q, want none: its content is whitespace then plain text", joined1)
+	}
+}

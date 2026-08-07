@@ -46,6 +46,24 @@
     "url": "git+https://github.com/cplieger/web-terminal-engine.git",
     "directory": "web"
   },
+  "homepage": "https://github.com/cplieger/web-terminal-engine",
+  "bugs": {
+    "url": "https://github.com/cplieger/web-terminal-engine/issues"
+  },
+  "author": "cplieger <917744+cplieger@users.noreply.github.com>",
+  "keywords": [
+    "terminal",
+    "terminal-emulator",
+    "vt100",
+    "vt220",
+    "vt500",
+    "ansi",
+    "escape-sequences",
+    "renderer",
+    "websocket",
+    "pty",
+    "typescript"
+  ],
   "files": [
     "src/",
     "!src/**/*.test.ts",

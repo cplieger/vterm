@@ -20,6 +20,7 @@ import (
 	"os/exec"
 	"slices"
 	"strconv"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -90,6 +91,65 @@ func waitForMembers(t *testing.T, s *sessionReap, n int) []int {
 	}
 }
 
+// sessionAndGroupOf reads a pid's session and process-group ids, tolerating a
+// process that exited mid-scan.
+//
+// Deliberately not the package's sidOf helper: that one calls t.Fatalf on an
+// unreadable stat file, which is correct for a one-shot assertion and wrong
+// inside a poll loop, where a member exiting between the scan and the read is
+// ordinary rather than a test failure.
+func sessionAndGroupOf(pid int) (sid, pgid int, ok bool) {
+	b, err := os.ReadFile("/proc/" + strconv.Itoa(pid) + "/stat")
+	if err != nil {
+		return 0, 0, false
+	}
+	s := string(b)
+	i := strings.LastIndexByte(s, ')')
+	if i < 0 {
+		return 0, 0, false
+	}
+	f := strings.Fields(s[i+1:])
+	if len(f) < 4 {
+		return 0, 0, false
+	}
+	pgid, err1 := strconv.Atoi(f[2])
+	sid, err2 := strconv.Atoi(f[3])
+	if err1 != nil || err2 != nil {
+		return 0, 0, false
+	}
+	return sid, pgid, true
+}
+
+// waitForEscapee polls until the domain spans at least two SESSIONS, which is the
+// condition these tests actually depend on.
+//
+// A member count is not that condition and cannot stand in for it: `setsid sleep`
+// forks first and calls setsid() only after the exec, so a scan can legitimately
+// see the whole tree while every member is still in the head's session. Counting
+// members and then reading sessions once passed locally and failed on a CI runner,
+// which is exactly the race this replaces.
+func waitForEscapee(t *testing.T, s *sessionReap) []int {
+	t.Helper()
+	deadline := time.Now().Add(15 * time.Second)
+	for {
+		members := reapFindByMarker(s.marker)
+		sessions := map[int]bool{}
+		for _, pid := range members {
+			if sid, _, ok := sessionAndGroupOf(pid); ok {
+				sessions[sid] = true
+			}
+		}
+		if len(sessions) >= 2 {
+			return members
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("the marked tree never spanned more than one session (%d members); the setsid escapee is the case this domain exists for, so the fixture is invalid",
+				len(members))
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+}
+
 // The load-bearing property: the marker crosses setsid(), so the domain spans a
 // tree that no process-group kill could reach in one call.
 func TestReapMarkerCrossesSetsid(t *testing.T) {
@@ -98,17 +158,20 @@ func TestReapMarkerCrossesSetsid(t *testing.T) {
 	s, _ := newTestReap(t)
 	head := startMarked(t, s, "setsid sleep 60 & sleep 60 & wait")
 
-	members := waitForMembers(t, s, 3)
+	members := waitForEscapee(t, s)
 
-	sessions := map[int]bool{}
-	for _, pid := range members {
-		sessions[sidOf(t, pid)] = true
-	}
-	if len(sessions) < 2 {
-		t.Fatalf("the marked tree spans %d session(s); the setsid escapee is the case this domain exists for, so the fixture is invalid", len(sessions))
-	}
 	if !slices.Contains(members, head.Process.Pid) {
 		t.Errorf("the head pid %d is not in its own domain", head.Process.Pid)
+	}
+	// A group kill would reach one group; the domain has to span more than one.
+	groups := map[int]bool{}
+	for _, pid := range members {
+		if _, pgid, ok := sessionAndGroupOf(pid); ok {
+			groups[pgid] = true
+		}
+	}
+	if len(groups) < 2 {
+		t.Errorf("the marked tree spans %d process group(s); a kill(-pgid) would have reached all of it, so the domain buys nothing here", len(groups))
 	}
 }
 
@@ -117,7 +180,7 @@ func TestReapTeardownReclaimsTheWholeTree(t *testing.T) {
 	requireSetsid(t)
 	s, rec := newTestReap(t)
 	head := startMarked(t, s, "setsid sleep 60 & sleep 60 & wait")
-	waitForMembers(t, s, 3)
+	waitForEscapee(t, s)
 
 	// Exactly what exec.CommandContext's default Cancel does: SIGKILL the head
 	// and nothing else. Everything still standing afterwards is an escapee.

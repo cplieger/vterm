@@ -165,6 +165,10 @@ type handlerConfig struct {
 	scrollbackCapacity int
 	keepUnfocused      bool
 	inputTitle         bool
+	// noReap opts out of reaping this session's process tree at teardown
+	// (WithoutSessionReap). Reaping is ON by default, unlike containment: it
+	// needs no host support, so there is nothing to degrade to.
+	noReap bool
 }
 
 // WithInputTitle enables the input-derived session title: the engine watches the
@@ -341,7 +345,11 @@ type Handler struct {
 	// safe, since neither reader takes it. Any NEW reader outside those two
 	// goroutines needs h.mu or an atomic, including anything added to Shutdown.
 	// (It is also reassigned to nil on the start-failure path below.)
-	contain    *sessionCgroup
+	contain *sessionCgroup
+	// reap is this session's marker reap domain, nil when the consumer opted
+	// out. Read under exactly the same rules as contain above: written here
+	// before the monitor goroutine is created, read only by that goroutine.
+	reap       *sessionReap
 	procExitCh chan struct{}
 	// dirty is the flush scheduler's wakeup: 1-buffered so any number of
 	// markDirty pokes coalesce into one pending signal. flushLoop sleeps on
@@ -783,26 +791,8 @@ func (h *Handler) ensureStarted(cols, rows int) error {
 	// block the monitor goroutine forever.
 	cmd.WaitDelay = 5 * time.Second
 	cmd.Dir = h.cfg.workDir
-	// Advertise a capable, well-known terminal identity so apps enable their
-	// full feature set. TERM/COLORTERM unlock 256-color + truecolor. TERM_PROGRAM
-	// iTerm.app (>= 3.6.6) is the single identity that unlocks OSC 9;4 progress
-	// for BOTH kiro-cli (allowlists iTerm.app/WezTerm/Windows Terminal) and
-	// Claude Code (iTerm.app >= 3.6.6), plus DEC 2026 synchronized output — all
-	// of which this engine implements. Capabilities it does NOT implement
-	// (inline images, the kitty IMAGE protocol, and the kitty keyboard flags
-	// beyond the implemented disambiguate subset — see vt/kitty.go and the
-	// README keyboard section) are consumed silently and never mis-rendered,
-	// so over-claiming degrades gracefully rather than corrupting the screen.
-	// h.cfg.env is appended last so a consumer's WithEnv can override any of
-	// these (last value wins).
-	env := append(os.Environ(),
-		"TERM=xterm-256color",
-		"COLORTERM=truecolor",
-		"TERM_PROGRAM=iTerm.app",
-		"TERM_PROGRAM_VERSION=3.6.6",
-	)
-	env = append(env, h.cfg.env...)
-	cmd.Env = env
+	h.reap = h.newSessionReap()
+	cmd.Env = h.childEnv(h.reap)
 	if cols < 1 {
 		cols = defaultCols
 	}
@@ -810,13 +800,17 @@ func (h *Handler) ensureStarted(cols, rows int) error {
 		rows = defaultRows
 	}
 	h.contain = h.beginContainment(cmd)
-	ptmx, err := pty.StartWithSize(cmd, &pty.Winsize{Cols: uint16(cols), Rows: uint16(rows)})
+	ptmx, err := startSessionPTY(cmd, cols, rows)
 	// The cgroup fd is only needed at clone time; holding it would leak one
 	// descriptor per session. Released on the failure path too.
 	h.contain.releaseFD()
 	if err != nil {
 		h.contain.teardown()
 		h.contain = nil
+		// A spawn that never produced a process has no tree to reap, but the
+		// domain is dropped anyway so a later teardown cannot scan for a marker
+		// nothing ever carried.
+		h.reap = nil
 		return err
 	}
 	h.ptmx = ptmx
@@ -828,8 +822,11 @@ func (h *Handler) ensureStarted(cols, rows int) error {
 	if h.cfg.commandLogValue != "" {
 		loggedCommand = h.cfg.commandLogValue
 	}
+	// Captured once: the monitor below needs it after cmd.Wait, where reading
+	// cmd.Process would race the exec package's own bookkeeping.
+	pid := cmd.Process.Pid
 	h.cfg.logger.Info("terminal: process started",
-		"pid", cmd.Process.Pid, "command", loggedCommand, "cols", cols, "rows", rows)
+		"pid", pid, "command", loggedCommand, "cols", cols, "rows", rows)
 
 	// PTY reader goroutine — feeds VT screen and notifies clients.
 	go h.readLoop(ctx)
@@ -844,11 +841,21 @@ func (h *Handler) ensureStarted(cols, rows int) error {
 	// exit so the scheduler goroutine does not leak after the process dies.
 	go func() {
 		werr := cmd.Wait() // reap; werr carries the exit status
+		// os/exec is done with this pid, so the zombie sweep may stop excluding
+		// it. One mutex, no allocation, and ahead of anything that can block.
+		spawnForget(pid)
 		// Retain the outcome BEFORE procExitCh closes, so any reader that sees
 		// Exited() == true also sees the final exit error (the status sweep reads
 		// the pair through exitOutcome). Nothing here can panic — a mutex and one
 		// assignment — so it is safe ahead of the teardown defer below.
 		h.setExitError(werr)
+		// Registered FIRST so LIFO runs it LAST: the marker reap walks /proc, and
+		// the client-visible exit broadcast (procExitCh, below) must not wait on a
+		// scan. Reclaiming a stranded tree a few milliseconds later costs nothing;
+		// delaying every session's 4001 close by a scan is user-visible, and it
+		// also moved Exited() late enough to break the attach-after-exit contract
+		// test that pins the replay-before-4001 grace.
+		defer h.reap.teardown()
 		// Guarantee client notification (procExitCh drives the 4001 close) and
 		// loop teardown even if the consumer onProcessExit callback panics; a
 		// callback panic must not crash the server or strand attached clients.
@@ -892,13 +899,69 @@ func (h *Handler) ensureStarted(cols, rows int) error {
 		// line keeps its shape either way.
 		memPeak, tasksPeak := h.contain.peaks()
 		h.cfg.logger.Info("terminal: process exited",
-			"pid", cmd.Process.Pid, "error", werr,
+			"pid", pid, "error", werr,
 			"mem_peak_bytes", memPeak, "tasks_peak", tasksPeak)
 		if h.cfg.onProcessExit != nil {
 			h.cfg.onProcessExit(werr)
 		}
 	}()
 	return nil
+}
+
+// childEnv assembles the environment for a session's process.
+//
+// Advertise a capable, well-known terminal identity so apps enable their full
+// feature set. TERM/COLORTERM unlock 256-color + truecolor. TERM_PROGRAM
+// iTerm.app (>= 3.6.6) is the single identity that unlocks OSC 9;4 progress for
+// BOTH kiro-cli (allowlists iTerm.app/WezTerm/Windows Terminal) and Claude Code
+// (iTerm.app >= 3.6.6), plus DEC 2026 synchronized output — all of which this
+// engine implements. Capabilities it does NOT implement (inline images, the kitty
+// IMAGE protocol, and the kitty keyboard flags beyond the implemented
+// disambiguate subset — see vt/kitty.go and the README keyboard section) are
+// consumed silently and never mis-rendered, so over-claiming degrades gracefully
+// rather than corrupting the screen.
+//
+// h.cfg.env is appended last so a consumer's WithEnv can override any of these
+// (last value wins).
+//
+// The reap marker is PREPENDED, ahead of even os.Environ(), so it sits at the
+// front of /proc/<pid>/environ and the reap scan can read a bounded prefix per
+// pid instead of a whole ARG_MAX environment (see reap.go). The consumer's own
+// env is stripped of that key first, because os/exec keeps the LAST value for a
+// repeated key and would otherwise let WithEnv replace the marker and silently
+// switch reaping off for the session.
+func (h *Handler) childEnv(reap *sessionReap) []string {
+	inherited := os.Environ()
+	consumer := stripReapMarker(h.cfg.env)
+	env := make([]string, 0, len(inherited)+len(consumer)+5)
+	if pair := reap.envPair(); pair != "" {
+		env = append(env, pair)
+	}
+	env = append(env, inherited...)
+	env = append(env,
+		"TERM=xterm-256color",
+		"COLORTERM=truecolor",
+		"TERM_PROGRAM=iTerm.app",
+		"TERM_PROGRAM_VERSION=3.6.6",
+	)
+	return append(env, consumer...)
+}
+
+// startSessionPTY forks the session's process on a new PTY and records its pid as
+// os/exec-owned.
+//
+// The spawn lock is held across the fork itself, not merely the registration:
+// the zombie sweep must never be able to see a child that exists but is not yet
+// recorded as owned, or it could collect the head's exit status out from under
+// cmd.Wait and turn every session's exit into an unknown one (see zombiereap.go).
+func startSessionPTY(cmd *exec.Cmd, cols, rows int) (*os.File, error) {
+	spawnLock()
+	defer spawnUnlock()
+	ptmx, err := pty.StartWithSize(cmd, &pty.Winsize{Cols: uint16(cols), Rows: uint16(rows)}) // #nosec G115 -- cols/rows are floored above and bounded by the client protocol
+	if err == nil && cmd.Process != nil {
+		spawnRegister(cmd.Process.Pid)
+	}
+	return ptmx, err
 }
 
 func (h *Handler) readLoop(ctx context.Context) {

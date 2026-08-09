@@ -237,3 +237,17 @@ method (*Screen).RowString
 # (terminal/scrollback_bounds_test.go), the latter under -race for the locking
 # half of the contract.
 method (*Handler).ScrollbackBounds
+
+
+# --- Session reaping and zombie reaping: published API, consumer
+# web-terminal-kiro, wired in the same effort that added them here (its
+# composition root calls StartZombieReaper). The calls live in another MODULE,
+# invisible to punused.
+#
+# WithoutSessionReap has NO consumer by design and is expected to keep none:
+# reaping is ON by default because an unreaped tree holds its memory for the
+# container's lifetime, so the option exists for the one consumer whose users
+# deliberately start work meant to outlive a tab. It is a published escape hatch,
+# not a pending wiring task.
+function WithoutSessionReap
+function StartZombieReaper

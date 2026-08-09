@@ -35,11 +35,18 @@ import (
 //     meaningful because the child is placed at clone time rather than migrated
 //     afterwards (cgroup v2 does not move existing charges on migration).
 //
-// It deliberately does NOT reap idle sessions, reap zombies, or impose a
-// per-session memory ceiling. A ceiling would make the kernel OOM-kill a live
-// session, and ending a session that a user might still be reading is exactly
-// what the session manager's idle reaper is for; that remains a separate, opt-in
-// decision (WithIdleReaper).
+// It deliberately does NOT reap idle sessions or impose a per-session memory
+// ceiling. A ceiling would make the kernel OOM-kill a live session, and ending a
+// session that a user might still be reading is exactly what the session
+// manager's idle reaper is for; that remains a separate, opt-in decision
+// (WithIdleReaper).
+//
+// Two SEPARATE features cover what this one does not, and keeping them apart is
+// what makes each answerable: reap.go reclaims a closed session's surviving tree
+// with no host support at all (on by default, and the boundary that works when
+// this one is unavailable), and zombiereap.go collects the exit statuses of
+// orphans re-parented onto a server that is its container's PID 1
+// (StartZombieReaper, opt-in from the composition root).
 
 // errContainmentUnsupported is returned by NewContainment on any platform or host
 // that cannot support the feature. Consumers should log it once and continue

@@ -1,27 +1,11 @@
 package terminal
 
 import (
-	"encoding/json"
-	"os"
 	"path/filepath"
 	"testing"
 
 	"github.com/coder/websocket"
 )
-
-// wireManifest mirrors web/wire-compatibility.json, the generated
-// language-neutral publication of the wire-compatibility constants. The struct
-// is deliberately written the way a THIRD-PARTY consumer would write it (parse
-// the schema version, reject an unknown shape, then read the payload), so this
-// test also demonstrates the documented consumption contract.
-type wireManifest struct {
-	WireCompatibility struct {
-		ProtocolVersion              int `json:"protocolVersion"`
-		MinimumServerProtocolVersion int `json:"minimumServerProtocolVersion"`
-		IncompatibleCloseCode        int `json:"incompatibleCloseCode"`
-	} `json:"wireCompatibility"`
-	SchemaVersion int `json:"schemaVersion"`
-}
 
 // TestWireManifestMatchesGoConstants is the Go leg of the manifest's three-way
 // conformance guard. The TS leg (web/src/wire-manifest.test.ts) proves the
@@ -41,30 +25,30 @@ type wireManifest struct {
 //	                                 published pair would refuse itself
 //	incompatibleCloseCode         == WireIncompatibleCloseCode
 func TestWireManifestMatchesGoConstants(t *testing.T) {
+	// Read through the EXPORTED decoder rather than a local mirror of the struct.
+	// That is what makes this drift guard cover the code consumers actually call:
+	// a schema change now fails here in the producer, not one image build at a
+	// time in three repos that each re-declared the shape.
 	path := filepath.Join("..", "web", "wire-compatibility.json")
-	data, err := os.ReadFile(path) // #nosec G304 -- fixed repo-relative test fixture
+	m, err := ReadWireManifest(path)
 	if err != nil {
-		t.Fatalf("read %s (regenerate with: cd web && UPDATE_GOLDEN=1 npx vitest --run src/wire-manifest.test.ts): %v", path, err)
-	}
-	var m wireManifest
-	if err := json.Unmarshal(data, &m); err != nil {
-		t.Fatalf("decode %s: %v", path, err)
+		t.Fatalf("ReadWireManifest(%s) (regenerate with: cd web && UPDATE_GOLDEN=1 npx vitest --run src/wire-manifest.test.ts): %v", path, err)
 	}
 
-	if m.SchemaVersion != 1 {
-		t.Fatalf("manifest schemaVersion = %d, want 1; a consumer rejects an unknown shape, so a bump is a breaking change that must be release-noted", m.SchemaVersion)
+	if m.SchemaVersion != WireManifestSchemaVersion {
+		t.Fatalf("manifest schemaVersion = %d, want %d; a consumer rejects an unknown shape, so a bump is a breaking change that must be release-noted", m.SchemaVersion, WireManifestSchemaVersion)
 	}
-	if m.WireCompatibility.ProtocolVersion != WireProtocolVersion {
+	if m.ProtocolVersion != WireProtocolVersion {
 		t.Errorf("manifest protocolVersion = %d, Go WireProtocolVersion = %d; the two halves must emit the same current revision (regenerate the manifest, or fix whichever constant is wrong)",
-			m.WireCompatibility.ProtocolVersion, WireProtocolVersion)
+			m.ProtocolVersion, WireProtocolVersion)
 	}
-	if websocket.StatusCode(m.WireCompatibility.IncompatibleCloseCode) != WireIncompatibleCloseCode {
+	if websocket.StatusCode(m.IncompatibleCloseCode) != WireIncompatibleCloseCode {
 		t.Errorf("manifest incompatibleCloseCode = %d, Go WireIncompatibleCloseCode = %d",
-			m.WireCompatibility.IncompatibleCloseCode, WireIncompatibleCloseCode)
+			m.IncompatibleCloseCode, WireIncompatibleCloseCode)
 	}
-	if m.WireCompatibility.MinimumServerProtocolVersion > WireProtocolVersion {
+	if m.MinimumServerProtocolVersion > WireProtocolVersion {
 		t.Errorf("manifest minimumServerProtocolVersion = %d exceeds the Go server's revision %d; the published pair would refuse itself",
-			m.WireCompatibility.MinimumServerProtocolVersion, WireProtocolVersion)
+			m.MinimumServerProtocolVersion, WireProtocolVersion)
 	}
 
 	// The manifest is exactly the input a consumer's release gate feeds to
@@ -73,7 +57,7 @@ func TestWireManifestMatchesGoConstants(t *testing.T) {
 	// real published numbers rather than on synthetic ones.
 	if got := WirePairIncompatibility(
 		WireProtocolVersion, MinSupportedClientWireVersion,
-		m.WireCompatibility.ProtocolVersion, m.WireCompatibility.MinimumServerProtocolVersion,
+		m.ProtocolVersion, m.MinimumServerProtocolVersion,
 	); got != "" {
 		t.Errorf("this server paired with the published manifest is incompatible: %s", got)
 	}

@@ -251,3 +251,16 @@ method (*Handler).ScrollbackBounds
 # not a pending wiring task.
 function WithoutSessionReap
 function StartZombieReaper
+
+
+# --- Wire-compatibility manifest decoder: published API, consumers are the three
+# family release gates (web-terminal-kiro, web-terminal-server, vibekit), which
+# live in other MODULES and are invisible to punused. The in-repo test that
+# exercises it is the manifest's Go conformance leg, not its only caller.
+#
+# It exists because the manifest is THIS engine's data format and all three gates
+# were hand-declaring its schema to read it (two were still scraping the
+# TypeScript with sed, which is the practice the manifest was published to end).
+# A format's producer owning its reader is the point; the engine already
+# maintained the mirror in a test.
+function ReadWireManifest

@@ -11,11 +11,13 @@
 //	csi.go     — CSI sequence dispatch + cell-level operations
 //	sgr.go     — SGR (color/attribute) parsing + ANSI emission helpers
 //	wire.go    — wire format: per-row style runs (WireRun) for the canvas renderer
+//	contrast.go — minimum-contrast floor over a run's resolved fg/bg pair
 //
 // Derived from github.com/tonistiigi/vt100 (MIT license, Docker BuildKit).
 package vt
 
 import (
+	"math"
 	"strings"
 	"time"
 )
@@ -105,6 +107,12 @@ type Screen struct {
 	// so a reader (the status layer) detects a fresh notification even when the
 	// message text repeats. Starts at 0 (no notification seen).
 	NotificationSeq uint64
+	// minContrast is the minimum WCAG contrast ratio enforced between a run's
+	// text and its background (contrast.go). 1 disables the floor and is the
+	// default; WithMinimumContrast raises it. Sits between two 8-byte-aligned
+	// fields on purpose: theme's 12 bytes pack against lastPrintedRune below it,
+	// so placing this float64 after theme would cost 8 bytes of padding.
+	minContrast float64
 	// theme holds the default fg/bg/cursor colors reported by OSC 10/11/12 and
 	// restored by OSC 110/111/112. Configurable via WithTheme; DefaultTheme()
 	// otherwise (a dark scheme matching web-terminal-ui).
@@ -263,10 +271,40 @@ func DefaultTheme() Theme {
 	}
 }
 
+// MinimumContrastOff disables the minimum-contrast floor. It is the default, so
+// the engine renders exactly the palette entry an application selected.
+const MinimumContrastOff = 1.0
+
+// WithMinimumContrast sets a floor on the WCAG contrast ratio between a run's
+// text and its background. A foreground below the floor is blended toward white
+// or black until it reaches it (see contrast.go); backgrounds are never changed,
+// and neither is a DEFAULT foreground, which the client's own CSS owns.
+//
+// The ratio is clamped to 1..21. 1 is off and the default, matching xterm.js's
+// minimumContrastRatio, so upgrading the engine never silently recolors an
+// existing consumer. 4.5 is the WCAG AA floor for body text and the value VS
+// Code applies to every integrated terminal; pass it when your client renders on
+// a dark background and your users read output they do not control.
+//
+// Reach for this in addition to, not instead of, a palette suited to your
+// background: the floor is what covers an application's OSC 4 overrides, the
+// dark corners of the 256-color cube, and truecolor an application picked blind.
+// The engine's own basic-16 default already clears 4.5:1 on black in 13 of 16
+// slots.
+func WithMinimumContrast(ratio float64) Option {
+	return func(s *Screen) {
+		if math.IsNaN(ratio) {
+			s.minContrast = MinimumContrastOff
+			return
+		}
+		s.minContrast = math.Min(21, math.Max(MinimumContrastOff, ratio))
+	}
+}
+
 // New creates a screen buffer of the given dimensions. Optional behavior (e.g.
 // the reported color theme) is configured via functional Option values.
 func New(rows, cols int, opts ...Option) *Screen {
-	s := &Screen{Height: rows, Width: cols, Cells: make([][]Cell, rows), wrapped: make([]bool, rows), scrollTop: 0, scrollBottom: rows - 1, rightMargin: cols - 1, conformanceLevel: 65, AutoWrap: true, CursorBlink: true, theme: DefaultTheme()}
+	s := &Screen{Height: rows, Width: cols, Cells: make([][]Cell, rows), wrapped: make([]bool, rows), scrollTop: 0, scrollBottom: rows - 1, rightMargin: cols - 1, conformanceLevel: 65, AutoWrap: true, CursorBlink: true, theme: DefaultTheme(), minContrast: MinimumContrastOff}
 	s.singleShft = -1
 	s.Progress = progressAbsent      // no OSC 9;4 progress seen yet
 	s.ProgressValue = progressAbsent // no OSC 9;4 percentage seen yet (absent/unknown)

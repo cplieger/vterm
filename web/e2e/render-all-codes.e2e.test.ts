@@ -17,7 +17,7 @@
 // Fresh headless Chromium per the chromium-sidecar steering doc (the shared
 // sidecar is debug-only). Out of the vitest battery; run `npm run test:e2e`.
 import { test, expect } from "@playwright/test";
-import { standard256, rgb, vga16 } from "../src/test-helpers/spec-colors.js";
+import { standard256, rgb, kitty16 } from "../src/test-helpers/spec-colors.js";
 import { bundleEngine, HARNESS, readGolden, frameBytesArray, waitForRows } from "./e2e-harness.js";
 
 // One row's dumped computed style (the styled first span carrying the glyph).
@@ -211,25 +211,25 @@ test.describe("all-codes display conformance (engine wire → real chromium → 
       }
     }
 
-    // --- Basic-16 palette. SPEC: the engine's default palette is the published
-    // VGA/ANSI 4-bit palette (spec-colors.ts `vga16`, derived independently of
+    // --- Basic-16 palette. SPEC: the engine's default palette is kitty's
+    // published default (spec-colors.ts `kitty16`, derived independently of
     // wire.go), so pin each slot to its exact RGB — fg 30-37 / 90-97 and bg
     // 40-47 / 100-107. This is the strong assertion a consistency-only check
     // was missing (16 distinct-but-wrong colors used to pass). Then re-assert
     // the ANSI consistency: SGR 38;5;n (n<16) addresses the SAME slot as 3n/9n. ---
     for (let n = 0; n < 8; n++) {
       expect
-        .soft(hexOrUndef(basicFg.get(30 + n)), `SGR 3${n} fg == VGA[${n}]`)
-        .toBe(hexStr(vga16[n]!));
+        .soft(hexOrUndef(basicFg.get(30 + n)), `SGR 3${n} fg == palette[${n}]`)
+        .toBe(hexStr(kitty16[n]!));
       expect
-        .soft(hexOrUndef(basicFg.get(90 + n)), `SGR 9${n} fg == VGA[${8 + n}]`)
-        .toBe(hexStr(vga16[8 + n]!));
+        .soft(hexOrUndef(basicFg.get(90 + n)), `SGR 9${n} fg == palette[${8 + n}]`)
+        .toBe(hexStr(kitty16[8 + n]!));
       expect
-        .soft(hexOrUndef(basicBg.get(40 + n)), `SGR 4${n} bg == VGA[${n}]`)
-        .toBe(hexStr(vga16[n]!));
+        .soft(hexOrUndef(basicBg.get(40 + n)), `SGR 4${n} bg == palette[${n}]`)
+        .toBe(hexStr(kitty16[n]!));
       expect
-        .soft(hexOrUndef(basicBg.get(100 + n)), `SGR 10${n} bg == VGA[${8 + n}]`)
-        .toBe(hexStr(vga16[8 + n]!));
+        .soft(hexOrUndef(basicBg.get(100 + n)), `SGR 10${n} bg == palette[${8 + n}]`)
+        .toBe(hexStr(kitty16[8 + n]!));
       assertSameSlot(basicFg.get(30 + n), idx256Fg.get(n), `SGR 3${n} == SGR 38;5;${n}`);
       assertSameSlot(basicFg.get(90 + n), idx256Fg.get(8 + n), `SGR 9${n} == SGR 38;5;${8 + n}`);
     }
@@ -312,13 +312,13 @@ function checkAttrOff(offCode: number, on: CellDump, off: CellDump, at: string):
 function checkDefaultColor(code: number, set: CellDump, def: CellDump, at: string): void {
   switch (code) {
     case 39: // default fg = theme text color
-      expect.soft(parseRGBOrNull(set.color), `${at}: set glyph fg is red`).toBe(vga16[1]!);
+      expect.soft(parseRGBOrNull(set.color), `${at}: set glyph fg is red`).toBe(kitty16[1]!);
       expect.soft(parseRGBOrNull(def.color), `${at}: 39 restores default fg`).toBe(DEFAULT_FG);
       break;
     case 49: // default bg = transparent (unset)
       expect
         .soft(parseRGBOrNull(set.backgroundColor), `${at}: set glyph bg is red`)
-        .toBe(vga16[1]!);
+        .toBe(kitty16[1]!);
       expect
         .soft(isTransparent(def.backgroundColor), `${at}: 49 restores transparent bg`)
         .toBe(true);

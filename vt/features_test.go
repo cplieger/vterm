@@ -31,8 +31,8 @@ func TestOSC4PaletteOverride(t *testing.T) {
 func TestOSC4Query(t *testing.T) {
 	s := New(2, 10)
 	s.Write([]byte("\x1b]4;1;?\x07"))
-	// Default palette index 1 is 0xaa0000; reported as 16-bit-per-channel.
-	want := "\x1b]4;1;rgb:aaaa/0000/0000\x1b\\"
+	// Default palette index 1 is 0xcc0403; reported as 16-bit-per-channel.
+	want := "\x1b]4;1;rgb:cccc/0404/0303\x1b\\"
 	if got := string(s.response); got != want {
 		t.Errorf("OSC 4 query = %q, want %q", got, want)
 	}
@@ -44,8 +44,8 @@ func TestOSC104Reset(t *testing.T) {
 	s.Write([]byte("\x1b]4;1;rgb:00/ff/00\x07"))
 	s.Write([]byte("\x1b]104;1\x07")) // reset index 1
 	s.Write([]byte("\x1b[31mX"))
-	if runs := s.RenderRowWire(0); len(runs) == 0 || runs[0].F != 0xaa0000 {
-		t.Errorf("after OSC 104 reset: run F = %#06x, want default 0xaa0000", runs[0].F)
+	if runs := s.RenderRowWire(0); len(runs) == 0 || runs[0].F != 0xcc0403 {
+		t.Errorf("after OSC 104 reset: run F = %#06x, want default 0xcc0403", runs[0].F)
 	}
 }
 

@@ -11,13 +11,13 @@
 //   - The 16 base colors (indices 0-15, SGR 30-37 / 90-97) are TERMINAL-DEFINED
 //     in the abstract (xterm, VGA, and Windows consoles all pick different RGB).
 //     They are a palette CHOICE, not a universal spec. This engine's documented
-//     choice is the classic VGA / ANSI 4-bit text palette (the "VGA" column of
-//     the ANSI-escape-code standard table), so `vga16` below pins those exact
-//     values from that published palette — independently of the engine's
-//     `wire.go` `basic16RGB`. The conformance test asserts the engine's default
-//     basic-16 EQUALS this published palette (a regression or an unintended
-//     palette change is a finding), and additionally that the 16 slots are
-//     mutually distinct and addressed consistently across SGR forms.
+//     choice is kitty's published default palette, so `kitty16` below pins those
+//     exact values from kitty's own `kitty/options/definition.py` —
+//     independently of the engine's `wire.go` `basic16RGB`. The conformance test
+//     asserts the engine's default basic-16 EQUALS that published palette (a
+//     regression or an unintended palette change is a finding), and additionally
+//     that the 16 slots are mutually distinct and addressed consistently across
+//     SGR forms.
 
 /**
  * cube256 returns the standard RGB for an xterm 256-color CUBE index (16-231).
@@ -71,30 +71,37 @@ export function rgb(r: number, g: number, b: number): number {
 }
 
 /**
- * vga16 is the classic VGA / ANSI 4-bit text palette — the RGB the base 16
- * colors (SGR 30-37 normal, 90-97 bright; and 40-47 / 100-107 as background)
- * resolve to. Index 0-7 are the normal colors, 8-15 the bright variants. These
- * are the widely-published "VGA" values (e.g. the VGA column of the ANSI
- * escape-code color table); authored here from that palette, NOT read from the
- * engine's wire.go. The engine documents this exact palette as its default, so
- * the conformance test pins each slot to `vga16[i]`; a drift is a finding.
+ * kitty16 is kitty's published default palette — the RGB the base 16 colors
+ * (SGR 30-37 normal, 90-97 bright; and 40-47 / 100-107 as background) resolve
+ * to. Index 0-7 are the normal colors, 8-15 the bright variants. Authored here
+ * from kitty's own `kitty/options/definition.py` (`color0`..`color15`), NOT read
+ * from the engine's wire.go. The engine documents this exact palette as its
+ * default, so the conformance test pins each slot to `kitty16[i]`; a drift is a
+ * finding.
+ *
+ * Why kitty and not the classic VGA table the engine used to resolve these to:
+ * kitty is the only widely-used terminal whose default background is also pure
+ * black, which is web-terminal-ui's default, so its slots are chosen against the
+ * background this engine renders on. The VGA table reads at 1.58:1 for blue on
+ * black, far under the WCAG AA floor of 4.5:1, and GNOME Terminal ships it as a
+ * legacy preset named "Linux Console" rather than a default.
  */
-export const vga16: readonly number[] = [
+export const kitty16: readonly number[] = [
   0x000000, // 0  black
-  0xaa0000, // 1  red
-  0x00aa00, // 2  green
-  0xaa5500, // 3  yellow/brown
-  0x0000aa, // 4  blue
-  0xaa00aa, // 5  magenta
-  0x00aaaa, // 6  cyan
-  0xaaaaaa, // 7  white/gray
-  0x555555, // 8  bright black
-  0xff5555, // 9  bright red
-  0x55ff55, // 10 bright green
-  0xffff55, // 11 bright yellow
-  0x5555ff, // 12 bright blue
-  0xff55ff, // 13 bright magenta
-  0x55ffff, // 14 bright cyan
+  0xcc0403, // 1  red
+  0x19cb00, // 2  green
+  0xcecb00, // 3  yellow
+  0x0d73cc, // 4  blue
+  0xcb1ed1, // 5  magenta
+  0x0dcdcd, // 6  cyan
+  0xdddddd, // 7  white
+  0x767676, // 8  bright black
+  0xf2201f, // 9  bright red
+  0x23fd00, // 10 bright green
+  0xfffd00, // 11 bright yellow
+  0x1a8fff, // 12 bright blue
+  0xfd28ff, // 13 bright magenta
+  0x14ffff, // 14 bright cyan
   0xffffff, // 15 bright white
 ];
 

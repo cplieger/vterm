@@ -18,7 +18,7 @@
     "@types/pngjs": "6.0.5",
     "@typescript/native": "npm:typescript@7.0.2",
     "@vitest/coverage-v8": "4.1.10",
-    "esbuild": "0.28.1",
+    "esbuild": "0.28.2",
     "eslint": "10.8.1",
     "fast-check": "4.9.0",
     "happy-dom": "20.11.2",

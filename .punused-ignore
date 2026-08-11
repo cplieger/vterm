@@ -33,6 +33,11 @@
 # (*SessionManager).Shutdown: drains every session on SIGTERM through
 # webhttp.Run's shutdown hook -- web-terminal-kiro/main.go:475 and :489,
 # web-terminal-server/main.go:296 and :304.
+# (*SessionManager).Create: the id-only public form of session creation, kept as
+# published API. From v3.9.0 this repo's own REST handler calls the unexported
+# create() instead, because handleCreate echoes the full SessionInfo it stored
+# rather than re-deriving it, so Create reads as test-only here. Deleting an
+# exported method of a published v3 module would be a semver-major break.
 function NewSessionManager
 function WithManagerLogger
 function WithStatusClassifier
@@ -40,6 +45,7 @@ function WithCreateGate
 function WithIdleReaper
 method (*SessionManager).MountAPI
 method (*SessionManager).Shutdown
+method (*SessionManager).Create
 
 # --- Status vocabulary: published API, consumer web-terminal-kiro. These are the
 # string constants its injected status classifier RETURNS

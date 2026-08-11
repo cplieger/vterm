@@ -17,10 +17,16 @@ const (
 	// GET (list). It is also the path a create gate throttles (see
 	// WithCreateGate).
 	SessionsPath = "/api/sessions"
-	// SessionsSubtreePath is the session REST subtree: DELETE /{id} (close)
-	// and PUT /{id}/title (set the client-fallback title). ServeMux treats the
-	// trailing-slash pattern as a distinct mount, so the REST handler is
-	// mounted at both SessionsPath and this subtree to receive every method.
+	// SessionsSubtreePath is the session REST subtree: DELETE /{id} (close),
+	// PUT /{id}/title (set the client-fallback title), PUT + DELETE
+	// /{id}/pinned-title (set / clear the user's name), and PUT /order (set the
+	// shared display order every viewer sees). ServeMux treats the trailing-slash
+	// pattern as a distinct mount, so the REST handler is mounted at both
+	// SessionsPath and this subtree to receive every method.
+	//
+	// /order is a literal segment where its siblings take an {id}. ServeMux
+	// prefers the more specific literal, and no session id can collide with it
+	// (ids are hex), so the two patterns cannot overlap.
 	SessionsSubtreePath = "/api/sessions/"
 	// SessionEventsPath is the session status stream (SSE) route. It is a more
 	// specific pattern than SessionsSubtreePath, so ServeMux routes it to the
@@ -112,7 +118,9 @@ func WithCreateGate(mw func(http.Handler) http.Handler) MountOption {
 //
 //	WSPath              -> ws     (terminal WebSocket, ?session=<id>)
 //	SessionsPath        -> rest   (POST create, GET list; create-gated)
-//	SessionsSubtreePath -> rest   (DELETE /{id}, PUT /{id}/title; create-gated)
+//	SessionsSubtreePath -> rest   (DELETE /{id}, PUT /{id}/title,
+//	                               PUT + DELETE /{id}/pinned-title,
+//	                               PUT /order; create-gated)
 //	SessionEventsPath   -> events (status SSE)
 //
 // Exactly these four mounts and no others: the engine's debug or future

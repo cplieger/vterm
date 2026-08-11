@@ -15,6 +15,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"slices"
+	"sync/atomic"
 	"time"
 )
 
@@ -48,6 +50,30 @@ const (
 // title. Removed=true signals the session is gone (closed or reaped) so the
 // client drops the tab.
 type statusEvent struct {
+	// Order is the session's position in the shared display order (see
+	// SessionInfo.Order). Carried on every status event for a LIVE session, so a
+	// reorder made by another client reaches this one, which is the read side of
+	// tab-order sync.
+	//
+	// A pointer, and omitted on a Removed event, because the session has left the
+	// order and has no position to report. A plain int could only say 0 there, and
+	// 0 is a real position at the FRONT of the strip: a consumer that reads fields
+	// before it checks Removed would be told the closing session just became the
+	// first tab. Present-and-zero and absent are different answers, so the wire
+	// has to be able to express both.
+	//
+	// This is the RAW rank, not a renumbered index. The two enumerations (List and
+	// snapshot) restate each position as its index in the sequence they serve,
+	// because a client builds a whole strip from them; a change set has no sequence
+	// to index into, so it cannot. The consequence is the window a client must
+	// respect: one reorder arrives as one event per moved session, so until the
+	// whole tick is applied two sessions can hold the same position. Apply the
+	// tick, then sort, and never derive an order you write back from a partly
+	// applied view (see SetSessionOrder).
+	//
+	// First in the struct so the GC's pointer-scan range does not have to reach
+	// past the scalar tail to find it (govet fieldalignment).
+	Order     *int      `json:"order,omitempty"`
 	CreatedAt time.Time `json:"createdAt"`
 	ID        string    `json:"id"`
 	Status    string    `json:"status"`
@@ -110,7 +136,12 @@ type statusTracker struct {
 	// first sweep also counts the percentage as changed — that sweep emits
 	// anyway, because the status itself moves off "".
 	lastProgressValue int
-	lastReports       bool // last emitted reportsActivity (to detect a false->true flip)
+	// lastOrder is the last emitted display position. Zero-valued at 0 for a
+	// brand-new tracker, same as lastProgressValue: that only means a session
+	// already at position 0 does not count its position as changed on its first
+	// sweep, which emits anyway because the status itself moves off "".
+	lastOrder   int
+	lastReports bool // last emitted reportsActivity (to detect a false->true flip)
 }
 
 // autoTitleConfirm is how long a foreground process must hold the terminal
@@ -208,7 +239,12 @@ type statusRaw struct {
 	// keeping pointer-bearing types ahead of scalar ones re-trips that linter.
 	autoProbe autoTitleProbe
 	notifSeq  uint64
-	progress  int
+	// order is the session's position in the shared display order. Unlike every
+	// other field here it is filled in PHASE 3, not phase 1: see the comment at
+	// that site. A reorder changes no handler state, so this is the only input that
+	// makes the sweep emit for it.
+	order    int
+	progress int
 	// progressValue is the OSC 9;4 percentage from the SAME snapshot as progress
 	// (-1 when absent or unknown, else 0-100).
 	progressValue int
@@ -275,16 +311,31 @@ func (m *SessionManager) diffStatuses() []statusEvent {
 	for i := range items {
 		items[i].read()
 	}
+	if hold := testDiffPhaseHold.Load(); hold != nil {
+		(*hold)()
+	}
 
 	// Phase 3: tracker state machine + change detection under m.mu.
 	var events []statusEvent
 	m.mu.Lock()
+	// The display order is read HERE, not in phase 1, and that placement is the
+	// whole point. It is manager-owned state, so a Close or a SetSessionOrder
+	// during phase 2 (which runs lock-free, and can block on a wedged handler
+	// getter) invalidates anything phase 1 captured. Emitting a position from that
+	// stale snapshot pushes clients an arrangement the server has already replaced
+	// — silently, because the tracker then records the stale value as delivered and
+	// the next sweep sees no change to correct. Reading it under this lock, in the
+	// same section that decides what to emit, is what makes an emitted position
+	// current by construction.
+	rank := m.rankLocked()
+	ordered := len(m.order)
 	for i := range items {
 		it := &items[i]
 		s, live := m.sessions[it.id]
 		if !live {
 			continue // closed while computing; the removed sweep below emits it
 		}
+		it.order = rankOf(rank, it.id, ordered)
 		if ev, changed := m.sweepSession(s, it); changed {
 			events = append(events, ev)
 		}
@@ -301,6 +352,14 @@ func (m *SessionManager) diffStatuses() []statusEvent {
 	m.mu.Unlock()
 	return events
 }
+
+// testDiffPhaseHold, when non-nil, is invoked by diffStatuses between phase 2 and
+// phase 3. Test-only (session_order_test.go): phase 2 runs lock-free and can block
+// on a wedged handler getter, so that gap is where manager state legitimately
+// changes underneath a sweep in flight, and holding the sweep open at exactly that
+// instant is the only way to drive the case deterministically. Atomic for the same
+// reason as testResumeBatchHold. Never set in production.
+var testDiffPhaseHold atomic.Pointer[func()]
 
 // sweepSession runs one session's tracker state machine and change detection
 // (diffStatuses phase 3), returning the event to broadcast and whether anything
@@ -337,10 +396,16 @@ func (m *SessionManager) sweepSession(s *session, it *statusRaw) (statusEvent, b
 	// same session until something else changed. The progress percentage is in
 	// here for the same reason: 10% -> 60% moves nothing else about the session,
 	// so without it a consumer's determinate bar would stay where it started.
+	// The display position is in here for the same reason and is the ONLY signal a
+	// reorder produces: SetSessionOrder touches no handler and no title, so
+	// without this the client that made the change would be the only one to see
+	// it. A close shifts every later position down one and so emits for each of
+	// those sessions, which is bounded by the tab count and costs one small frame
+	// each.
 	// A fresh notification always emits, since delivering the event IS the point.
 	if status == tr.lastStatus && title == tr.lastTitle && clientTitle == tr.lastClientTitle &&
 		pinnedTitle == tr.lastPinnedTitle && reports == tr.lastReports &&
-		it.progressValue == tr.lastProgressValue && !notifNew {
+		it.progressValue == tr.lastProgressValue && it.order == tr.lastOrder && !notifNew {
 		return statusEvent{}, false
 	}
 	tr.lastStatus = status
@@ -349,10 +414,14 @@ func (m *SessionManager) sweepSession(s *session, it *statusRaw) (statusEvent, b
 	tr.lastPinnedTitle = pinnedTitle
 	tr.lastReports = reports
 	tr.lastProgressValue = it.progressValue
+	tr.lastOrder = it.order
+	// A copy, not &it.order: it points into diffStatuses' phase-1 slice, and an
+	// event that outlives the sweep must not alias the sweep's own scratch state.
+	pos := it.order
 	ev := statusEvent{
 		ID: it.id, Status: status, Title: title, ClientTitle: clientTitle,
 		PinnedTitle: pinnedTitle, CreatedAt: it.createdAt, ReportsActivity: reports,
-		ProgressValue: it.progressValue,
+		ProgressValue: it.progressValue, Order: &pos,
 	}
 	// A notification rides along on the sweep that first observes it, and only
 	// that sweep: it is an event, so replaying it on a later status-only change
@@ -535,8 +604,9 @@ func (m *SessionManager) unsubscribe(ch chan statusEvent) {
 }
 
 // snapshot returns the current status of every session for the initial sync a
-// new subscriber receives, via the same refinedStatus read List serves (the two
-// sources must agree; see refinedStatus).
+// new subscriber receives, in compareSessionOrder, via the same refinedStatus
+// read List serves (the two sources must agree, on order as well as on status;
+// see refinedStatus and compareSessionOrder).
 //
 // Two-phase like diffStatuses and List: manager state under m.mu, handler
 // getters after it is released. The screen-derived inputs come from ONE
@@ -550,13 +620,17 @@ func (m *SessionManager) snapshot() []statusEvent {
 		lastStatus string
 		autoTitle  string
 		ev         statusEvent
+		rank       int
 		latched    bool
 	}
 	m.mu.Lock()
+	rank := m.rankLocked()
+	ordered := len(m.order)
 	items := make([]snapItem, 0, len(m.sessions))
 	for id, s := range m.sessions {
 		tr := m.trackers[id]
 		it := snapItem{
+			rank: rankOf(rank, id, ordered),
 			ev: statusEvent{
 				ID: id, ClientTitle: s.clientTitle, PinnedTitle: s.pinnedTitle,
 				CreatedAt: s.createdAt,
@@ -572,7 +646,7 @@ func (m *SessionManager) snapshot() []statusEvent {
 	}
 	m.mu.Unlock()
 
-	out := make([]statusEvent, 0, len(items))
+	out := make([]snapItem, 0, len(items))
 	for i := range items {
 		it := &items[i]
 		it.ev.Status = refinedStatus(it.lastStatus, it.handler)
@@ -583,9 +657,35 @@ func (m *SessionManager) snapshot() []statusEvent {
 		})
 		it.ev.ProgressValue = sc.progressValue
 		it.ev.ReportsActivity = sc.progress >= 0 || it.latched
-		out = append(out, it.ev)
+		out = append(out, *it)
 	}
-	return out
+	// Same order List serves, for the same reason it sorts at all: this is an
+	// ENUMERATION of the session set, and a client building a tab strip from it
+	// reads the sequence as the strip's order. Phase 1 ranged m.sessions, so
+	// without this the stream pushed a fresh random order on every connect.
+	//
+	// diffStatuses is deliberately NOT sorted this way: it returns a CHANGE SET,
+	// its removed events carry a zero createdAt, and a per-tick burst of
+	// independent state updates has no enumeration order to get right.
+	slices.SortFunc(out, func(a, b snapItem) int {
+		return compareSessionOrder(
+			sessionOrder{createdAt: a.ev.CreatedAt, id: a.ev.ID, rank: a.rank},
+			sessionOrder{createdAt: b.ev.CreatedAt, id: b.ev.ID, rank: b.rank},
+		)
+	})
+	// The published position is the index in THIS sequence, not the raw rank, so
+	// the field a client sorts by is 0-based, dense and unique whatever the
+	// manager's internal state happens to be. Deriving it from the rank map
+	// instead would let two sessions the order does not name (an invariant
+	// violation, hence unreachable — but the wire contract should not depend on
+	// that) both claim the same position.
+	evs := make([]statusEvent, 0, len(out))
+	for i := range out {
+		pos := i
+		out[i].ev.Order = &pos
+		evs = append(evs, out[i].ev)
+	}
+	return evs
 }
 
 // EventsHandler serves the status stream at SessionEventsPath

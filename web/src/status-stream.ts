@@ -9,7 +9,7 @@ import { nextBackoffDelay } from "./reconnect.js";
 
 /** SessionInfo is one session's wire shape: the JSON object the session REST
  *  API (GET/POST /api/sessions) returns per session. Mirrors the Go
- *  terminal.SessionInfo — the two are kept in lockstep by hand (single 7-field
+ *  terminal.SessionInfo — the two are kept in lockstep by hand (single 8-field
  *  type; flip to wiregen if this surface grows).
  *
  *  Three of the fields are title-shaped and they are not interchangeable:
@@ -46,6 +46,28 @@ export interface SessionInfo {
    *  empty means the session has no user-set name. */
   readonly pinnedTitle?: string;
   readonly createdAt: string;
+  /** the session's position in the display order every viewer of this server
+   *  shares: 0-based, dense, and unique across the live set. Order is a property
+   *  of the SESSION SET rather than of one browser, so two devices agree on the
+   *  arrangement and a reorder made on one appears on the other. Set it with
+   *  `PUT /api/sessions/order`, which takes every live id in the wanted order.
+   *
+   *  Sort by this FIELD, not by the sequence sessions arrived in. The REST list
+   *  and the status stream are both served in this order, but a consumer that
+   *  merges them (subscribing before its bootstrap list resolves, which is how to
+   *  avoid double-adopting a session) sees neither sequence intact.
+   *
+   *  Absent from a server before 3.9.0, and from a status event carrying
+   *  `removed` (the session has left the order). Treat absent as "this server has
+   *  no shared order" and fall back to `createdAt`; do not read it as position 0,
+   *  which belongs to a real session.
+   *
+   *  One reorder arrives as one status event PER MOVED SESSION, so until you have
+   *  applied a whole tick two sessions can hold the same position. Apply the tick,
+   *  then sort. And never derive an order you WRITE BACK from a partly applied
+   *  view: a list built from that hybrid still names the live set exactly, so the
+   *  server accepts it and it becomes the arrangement every device sees. */
+  readonly order?: number;
   /** true once the session has emitted a genuine activity signal — OSC 9;4
    *  progress (kiro-cli, Claude Code, …) or a classified OSC 9 notification.
    *  Sticky for the session's life. Consumers reveal the per-tab activity dot

@@ -15,13 +15,16 @@ package terminal
 // which is the persistence we need.
 
 import (
+	"cmp"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
+	"io"
 	"log/slog"
 	"net/http"
-	"sort"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -51,9 +54,28 @@ type SessionInfo struct {
 	// path. It outranks every automatic source in Title; it is also exposed raw
 	// so a UI can tell that a pin EXISTS (to offer the automatic name again)
 	// rather than only seeing its effect.
-	PinnedTitle     string `json:"pinnedTitle"`
-	Status          string `json:"status"`
-	ReportsActivity bool   `json:"reportsActivity"`
+	PinnedTitle string `json:"pinnedTitle"`
+	Status      string `json:"status"`
+	// Order is the session's position in the display order every viewer shares:
+	// 0-based, dense, and unique across the live set. It exists because the
+	// order is a property of the SESSION SET rather than of one browser, so two
+	// devices showing the same server agree on the arrangement, and a reorder
+	// made on one appears on the other.
+	//
+	// Read this FIELD to order a list, not the sequence the sessions arrived in.
+	// The REST list and the status stream are both served in this order, but a
+	// consumer that merges them (subscribing before its bootstrap list resolves,
+	// which is the way to avoid double-adopting a session) sees neither
+	// sequence intact.
+	//
+	// ABSENT on a status event carrying Removed: the session has left the order
+	// and has no position to report. The status stream's copy of this field is a
+	// pointer with omitempty for exactly that reason (see statusEvent.Order) —
+	// absent and present-and-zero are different answers, and 0 is the FRONT of the
+	// strip, so a consumer that read 0 there would be told a closing session had
+	// just become the first tab.
+	Order           int  `json:"order"`
+	ReportsActivity bool `json:"reportsActivity"`
 }
 
 // Session status values. The manager computes working/idle/exited from process
@@ -202,16 +224,30 @@ func effectiveTitle(src *titleSources) string {
 // terminal WebSocket, the REST session API, and (see events.go) the status
 // stream. Safe for concurrent use.
 type SessionManager struct {
-	factory       func(id string) *Handler
-	logger        *slog.Logger
-	originPolicy  *OriginPolicy
-	sessions      map[string]*session
-	trackers      map[string]*statusTracker
-	subs          map[chan statusEvent]struct{}
-	classifier    func(string) (string, bool)
-	reaperCancel  context.CancelFunc
-	sweepCancel   context.CancelFunc
-	idleSince     time.Time
+	factory      func(id string) *Handler
+	logger       *slog.Logger
+	originPolicy *OriginPolicy
+	sessions     map[string]*session
+	trackers     map[string]*statusTracker
+	subs         map[chan statusEvent]struct{}
+	classifier   func(string) (string, bool)
+	reaperCancel context.CancelFunc
+	sweepCancel  context.CancelFunc
+	idleSince    time.Time
+	// order is the display order every viewer shares: session ids, and exactly
+	// the keys of sessions. Maintained at the four sites that change the session
+	// set (create appends, Close removes, the reaper and Shutdown clear it) so a
+	// rank lookup never has to reconcile the two.
+	//
+	// A slice rather than a position field on session: a reorder then writes one
+	// value instead of renumbering every session, and there is no gap to reclaim
+	// when a session in the middle closes. It is not persisted, because it does
+	// not outlive what it orders — sessions are PTY children of this process.
+	//
+	// Placed last among the pointer-bearing fields on purpose: its trailing len
+	// and cap words are scalars, so ending the struct's pointer-scan range at its
+	// data pointer keeps 16 bytes out of the GC's scan (govet fieldalignment).
+	order         []string
 	mu            sync.Mutex
 	subsMu        sync.Mutex
 	idleWindow    time.Duration
@@ -264,11 +300,26 @@ func NewSessionManager(factory func(id string) *Handler, opts ...ManagerOption) 
 // Create starts a new session (eagerly spawning its process at a default size)
 // and returns its id.
 func (m *SessionManager) Create() (string, error) {
+	info, err := m.create()
+	return info.ID, err
+}
+
+// create is Create plus the SessionInfo describing what it stored, so
+// handleCreate can echo the values every later enumeration reports for this
+// session instead of re-deriving them.
+//
+// Both fields it carries beyond the id are ones a client sorts by, and both were
+// wrong when re-derived. A second time.Now() gave the newest tab a createdAt
+// matching neither List nor the status stream. A zero Order claimed position 0,
+// the FRONT of the strip, for the session just appended to the back — so a client
+// that trusted the 201 put its new tab first and then watched it jump when the
+// next status event corrected it.
+func (m *SessionManager) create() (SessionInfo, error) {
 	m.mu.Lock()
 	id, err := newSessionID()
 	if err != nil {
 		m.mu.Unlock()
-		return "", err
+		return SessionInfo{}, err
 	}
 	h := m.factory(id)
 	m.mu.Unlock()
@@ -277,23 +328,32 @@ func (m *SessionManager) Create() (string, error) {
 	// manager operations. A duplicate id is astronomically unlikely (128-bit
 	// random) so we do not re-check under the lock after start.
 	if err := h.StartEager(); err != nil {
-		return "", err
+		return SessionInfo{}, err
 	}
 
+	now := time.Now()
 	m.mu.Lock()
 	// Refresh the idle clock so the reaper cannot reap a session created while the
-	// manager is idle (activeClients == 0) before its first client attaches.
-	m.idleSince = time.Now()
+	// manager is idle (activeClients == 0) before its first client attaches. Same
+	// reading as createdAt: they describe one event, and two calls to time.Now()
+	// only invite a reader to wonder which is authoritative.
+	m.idleSince = now
 	// autoTitle starts at the command basename (the ladder's last rung): the
 	// sweep refines it to a foreground-process or cwd name, but a List served
 	// before the first sweep must still name the session.
-	m.sessions[id] = &session{id: id, handler: h, createdAt: time.Now(), autoTitle: h.commandBase()}
+	m.sessions[id] = &session{id: id, handler: h, createdAt: now, autoTitle: h.commandBase()}
+	// Newest session last, which is where a new tab belongs. A client that has
+	// arranged its tabs keeps that arrangement; only the new id moves.
+	m.order = append(m.order, id)
+	order := len(m.order) - 1
 	n := len(m.sessions)
 	m.created++
 	m.mu.Unlock()
 
 	m.logger.Info("session: created", "session", LogID(id), "sessions", n)
-	return id, nil
+	// A freshly eager-started session is idle until it produces output; the
+	// status stream corrects that within a tick if the process died instantly.
+	return SessionInfo{ID: id, Status: StatusIdle, CreatedAt: now, Order: order}, nil
 }
 
 // LogID returns a short, correlation-safe prefix of a session id for logs:
@@ -318,7 +378,128 @@ func LogID(id string) string {
 	return id
 }
 
-// List returns all sessions sorted by creation time.
+// sessionOrder is one session's sort key for an enumeration: its position in the
+// shared display order, plus the two keys that settle a stray (see
+// compareSessionOrder).
+type sessionOrder struct {
+	createdAt time.Time
+	id        string
+	rank      int
+}
+
+// compareSessionOrder is the one order the session set is served in: the shared
+// display order first, then oldest createdAt, then id.
+//
+// Both enumerations use it — List (GET /api/sessions) and snapshot (the status
+// stream's initial sync) — so the two can never report a different order for the
+// same set. Until 3.9.0 they did: snapshot ranged m.sessions and returned
+// unsorted, Go randomizes map iteration per range, and a client that placed tabs
+// in arrival order therefore got a different strip on every connect.
+//
+// The createdAt and id keys are NOT redundant behind rank. rankOf gives a
+// session missing from m.order a rank past the end, and these two then order
+// those strays deterministically instead of letting them alias onto position 0.
+// That state is an invariant violation rather than a reachable case (see the
+// order field), so this is how a desync degrades: stray sessions sort last, by
+// age, and the strip stays stable. The id key also makes the order total, which
+// is what lets a client treat it as a fact rather than a hint.
+func compareSessionOrder(a, b sessionOrder) int {
+	if a.rank != b.rank {
+		return cmp.Compare(a.rank, b.rank)
+	}
+	if c := a.createdAt.Compare(b.createdAt); c != 0 {
+		return c
+	}
+	return strings.Compare(a.id, b.id)
+}
+
+// rankLocked maps each ordered session id to its display position. Caller holds
+// m.mu.
+func (m *SessionManager) rankLocked() map[string]int {
+	rank := make(map[string]int, len(m.order))
+	for i, id := range m.order {
+		rank[id] = i
+	}
+	return rank
+}
+
+// rankOf reads a session's display position out of a rankLocked map, giving one
+// the order does not name a position past the end rather than the zero value,
+// which is position 0 and belongs to a real session.
+func rankOf(rank map[string]int, id string, ordered int) int {
+	if i, ok := rank[id]; ok {
+		return i
+	}
+	return ordered
+}
+
+// dropFromOrderLocked removes id from the display order, closing the gap so
+// positions stay dense. Caller holds m.mu; a no-op for an id not present.
+func (m *SessionManager) dropFromOrderLocked(id string) {
+	if i := slices.Index(m.order, id); i >= 0 {
+		m.order = slices.Delete(m.order, i, i+1)
+	}
+}
+
+// SetSessionOrder replaces the display order every viewer shares, and is the
+// whole write side of tab-order sync: the caller sends the complete list of live
+// session ids in the order it wants them shown, and the next status sweep pushes
+// each session's new position to every other client within a tick.
+//
+// The list must name the live session set EXACTLY — same length, every id live,
+// no duplicates — and the whole write is refused otherwise. That one check does
+// three jobs. It keeps positions dense and unique, which is what makes a
+// position meaningful at all. It makes the write atomic, so two viewers
+// reordering at once produce an arrangement one of them actually chose rather
+// than an interleaving of both. And it turns a stale view into a refusal a
+// client can react to: a caller that has not yet seen a session created or
+// closed elsewhere is told so, instead of silently dropping that session out of
+// the order or resurrecting a dead id into it.
+//
+// No revision or If-Match beyond that. The set check already detects every
+// disagreement about WHICH sessions exist, and for a disagreement about their
+// ORDER alone the outcome is the same either way: whoever wrote last chose the
+// arrangement. A revision would only let a client discover that before being
+// told, at the cost of a rebase problem (re-applying "move this tab to position
+// 3" onto a list that changed underneath) with no better answer at the end.
+//
+// One precondition the set check CANNOT enforce, and a caller has to hold to it:
+// the list must be derived from a fully applied view. A reorder reaches a client
+// as one status event per moved session, so a client that re-sorts mid-burst
+// briefly holds two sessions at one position; a list derived from that hybrid
+// still names the live set exactly, so it is accepted and becomes the arrangement
+// every device sees — an arrangement no user chose, and one that does not heal
+// because it is now the server's answer. Apply the whole tick, then derive
+// anything you send back.
+//
+// Returns false when the list does not match, which the HTTP layer reports as
+// 409. The ids are not otherwise validated because they do not need to be: an id
+// that is not a live session fails the membership check, so no untrusted value
+// reaches the order.
+func (m *SessionManager) SetSessionOrder(ids []string) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if len(ids) != len(m.sessions) {
+		return false
+	}
+	seen := make(map[string]struct{}, len(ids))
+	for _, id := range ids {
+		if _, live := m.sessions[id]; !live {
+			return false
+		}
+		if _, dup := seen[id]; dup {
+			return false
+		}
+		seen[id] = struct{}{}
+	}
+	// Cloned: the caller's slice is a decoded request body, and keeping it would
+	// let a later write through that same slice reorder the manager's state.
+	m.order = slices.Clone(ids)
+	return true
+}
+
+// List returns all sessions in compareSessionOrder: the shared display order,
+// then oldest first, then id.
 //
 // Two-phase like diffStatuses: manager state (session set, client titles,
 // tracker state) is captured under m.mu, then the handler getters (Title /
@@ -331,9 +512,12 @@ func (m *SessionManager) List() []SessionInfo {
 		lastStatus string
 		autoTitle  string
 		info       SessionInfo
+		rank       int
 		latched    bool
 	}
 	m.mu.Lock()
+	rank := m.rankLocked()
+	ordered := len(m.order)
 	items := make([]listItem, 0, len(m.sessions))
 	for _, s := range m.sessions {
 		it := listItem{
@@ -341,6 +525,11 @@ func (m *SessionManager) List() []SessionInfo {
 				ID: s.id, ClientTitle: s.clientTitle, PinnedTitle: s.pinnedTitle,
 				CreatedAt: s.createdAt,
 			},
+			// Held beside the info rather than in info.Order: the published field is
+			// the DENSE index assigned below, and one field carrying two meanings
+			// across a sort is how a future edit publishes raw ranks by accident.
+			// snapshot keeps the same split.
+			rank:      rankOf(rank, s.id, ordered),
 			handler:   s.handler,
 			autoTitle: s.autoTitle,
 		}
@@ -352,7 +541,6 @@ func (m *SessionManager) List() []SessionInfo {
 	}
 	m.mu.Unlock()
 
-	out := make([]SessionInfo, 0, len(items))
 	for i := range items {
 		it := &items[i]
 		it.info.Status = refinedStatus(it.lastStatus, it.handler)
@@ -364,9 +552,24 @@ func (m *SessionManager) List() []SessionInfo {
 		// reportsActivity mirrors the status stream: sticky once any OSC 9;4
 		// progress has been seen (Progress() >= 0), or a notification latched.
 		it.info.ReportsActivity = it.handler.Progress() >= 0 || it.latched
-		out = append(out, it.info)
 	}
-	sort.Slice(out, func(i, j int) bool { return out[i].CreatedAt.Before(out[j].CreatedAt) })
+	slices.SortFunc(items, func(a, b listItem) int {
+		return compareSessionOrder(
+			sessionOrder{createdAt: a.info.CreatedAt, id: a.info.ID, rank: a.rank},
+			sessionOrder{createdAt: b.info.CreatedAt, id: b.info.ID, rank: b.rank},
+		)
+	})
+	// The published position is the index in THIS sequence, and this is the only
+	// write to the field, so what a client sorts by is 0-based, dense and unique
+	// whatever the manager's internal state happens to be. Taking it from the rank
+	// map instead would let two sessions the order does not name (an invariant
+	// violation, hence unreachable — but a wire contract should not rest on that)
+	// both claim the same position.
+	out := make([]SessionInfo, 0, len(items))
+	for i := range items {
+		items[i].info.Order = i
+		out = append(out, items[i].info)
+	}
 	return out
 }
 
@@ -376,6 +579,7 @@ func (m *SessionManager) Close(id string) bool {
 	s, ok := m.sessions[id]
 	if ok {
 		delete(m.sessions, id)
+		m.dropFromOrderLocked(id)
 		m.closed++
 	}
 	m.mu.Unlock()
@@ -442,6 +646,7 @@ func (m *SessionManager) Shutdown() {
 		victims = append(victims, s)
 	}
 	m.sessions = make(map[string]*session)
+	m.order = nil
 	m.mu.Unlock()
 	for _, s := range victims {
 		s.handler.Shutdown()
@@ -492,9 +697,14 @@ func (m *SessionManager) WebSocketHandler() http.Handler {
 }
 
 // RESTHandler serves the session REST API: POST SessionsPath (create),
-// GET SessionsPath (list), DELETE /api/sessions/{id} (close),
+// GET SessionsPath (list), PUT /api/sessions/order (set the shared display
+// order), DELETE /api/sessions/{id} (close),
 // PUT /api/sessions/{id}/title (set the client-derived automatic title), and
 // PUT + DELETE /api/sessions/{id}/pinned-title (set / clear the user's name).
+//
+// The order route is a literal segment where the others take an {id}, which
+// ServeMux prefers over a wildcard, and no session id can collide with it
+// (ids are hex).
 // Its internal patterns are absolute, so it only functions on the SessionsPath +
 // SessionsSubtreePath mounts — MountSessionRoutes / MountAPI perform them
 // (the route-set contract lives there); exported so consumer tests can stub it.
@@ -513,6 +723,7 @@ func (m *SessionManager) RESTHandler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /api/sessions", m.handleCreate)
 	mux.HandleFunc("GET /api/sessions", m.handleList)
+	mux.HandleFunc("PUT /api/sessions/order", m.handleSetOrder)
 	mux.HandleFunc("DELETE /api/sessions/{id}", m.handleDelete)
 	mux.HandleFunc("PUT /api/sessions/{id}/title", m.handleSetTitle)
 	mux.HandleFunc("PUT /api/sessions/{id}/pinned-title", m.handleSetPinnedTitle)
@@ -521,19 +732,38 @@ func (m *SessionManager) RESTHandler() http.Handler {
 }
 
 func (m *SessionManager) handleCreate(w http.ResponseWriter, _ *http.Request) {
-	id, err := m.Create()
+	info, err := m.create()
 	if err != nil {
 		m.logger.Error("session: create failed", "error", err)
 		http.Error(w, "create failed", http.StatusInternalServerError)
 		return
 	}
-	// A freshly eager-started session is idle until it produces output; the
-	// status stream corrects this within a tick if the process died instantly.
-	writeJSON(w, http.StatusCreated, SessionInfo{ID: id, Status: StatusIdle, CreatedAt: time.Now()})
+	writeJSON(w, http.StatusCreated, info)
 }
 
 func (m *SessionManager) handleList(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, m.List())
+}
+
+// handleSetOrder serves PUT /api/sessions/order: the caller sends every live
+// session id in the order it wants them shown. 204 on success, 409 when the list
+// does not name the live set (see SetSessionOrder), 400 on a body this cannot
+// read.
+//
+// 409 rather than 404 or 400 for a set mismatch: the request is well formed and
+// the resource exists, the caller's view of the session set is simply behind. A
+// client answers it by re-listing and sending again, which is also what it does
+// when it learns of a session it had not seen.
+func (m *SessionManager) handleSetOrder(w http.ResponseWriter, r *http.Request) {
+	ids, ok := decodeOrderBody(w, r)
+	if !ok {
+		return
+	}
+	if m.SetSessionOrder(ids) {
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+	http.Error(w, "order must name every live session exactly once", http.StatusConflict)
 }
 
 func (m *SessionManager) handleDelete(w http.ResponseWriter, r *http.Request) {
@@ -598,6 +828,12 @@ func (m *SessionManager) handleClearPinnedTitle(w http.ResponseWriter, r *http.R
 // decodeTitleBody reads the shared {"title": "..."} envelope both title routes
 // use, writing the 400 itself on a body that is oversized or undecodable. The
 // returned string is RAW: each caller applies its own sanitize bound.
+// decodeTitleBody reads a title out of a PUT body. Deliberately laxer than
+// decodeOrderBody, which requires its field and refuses trailing data: tightening
+// this one turns a request a client gets away with today (trailing junk after a
+// valid title object) into a 400, which is a behaviour change to two shipped
+// routes and belongs in its own release rather than riding along with a new
+// feature. Worth doing; not here.
 func decodeTitleBody(w http.ResponseWriter, r *http.Request) (string, bool) {
 	r.Body = http.MaxBytesReader(w, r.Body, 4096)
 	var body struct {
@@ -608,6 +844,48 @@ func decodeTitleBody(w http.ResponseWriter, r *http.Request) (string, bool) {
 		return "", false
 	}
 	return body.Title, true
+}
+
+// maxOrderBodyBytes bounds the order request body. It carries one session id per
+// live session (a 32-char hex id plus JSON punctuation, so ~36 bytes each), and
+// SetSessionOrder refuses any list that is not exactly the live set, so this cap
+// only has to stop a flood from being DECODED before that check can refuse it.
+// 64 KiB leaves room for far more sessions than a machine will fork.
+const maxOrderBodyBytes = 64 * 1024
+
+// decodeOrderBody reads the id list out of a PUT /api/sessions/order body,
+// answering 400 itself when it cannot.
+//
+// The field must be PRESENT: a pointer, so a body that omits "order" or sends
+// null is a malformed request rather than an empty reorder. The difference is
+// visible only when no sessions are live, where an absent list would otherwise
+// match the empty live set and answer 204 — reporting success for a client bug
+// that sent the wrong shape. `{"order":[]}` against no sessions is still the
+// honest empty reorder and still succeeds.
+//
+// Trailing data is refused too. A single Decode stops at the end of the first
+// JSON value, so `{"order":[...]}{"order":[...]}` and `{...}garbage` would both
+// be accepted on the strength of the part that parsed, and the caller would
+// never learn that half its request was ignored.
+func decodeOrderBody(w http.ResponseWriter, r *http.Request) ([]string, bool) {
+	r.Body = http.MaxBytesReader(w, r.Body, maxOrderBodyBytes)
+	var body struct {
+		Order *[]string `json:"order"`
+	}
+	dec := json.NewDecoder(r.Body)
+	if err := dec.Decode(&body); err != nil {
+		http.Error(w, "invalid body", http.StatusBadRequest)
+		return nil, false
+	}
+	if body.Order == nil {
+		http.Error(w, "body must carry an order array", http.StatusBadRequest)
+		return nil, false
+	}
+	if err := dec.Decode(new(json.RawMessage)); !errors.Is(err, io.EOF) {
+		http.Error(w, "unexpected data after the body", http.StatusBadRequest)
+		return nil, false
+	}
+	return *body.Order, true
 }
 
 // Title-length bounds, per source. A client-derived title can legitimately be a
@@ -692,6 +970,7 @@ func (m *SessionManager) maybeReap() {
 		victims = append(victims, s)
 	}
 	m.sessions = make(map[string]*session)
+	m.order = nil
 	m.reaped += uint64(len(victims))
 	m.mu.Unlock()
 	for _, s := range victims {

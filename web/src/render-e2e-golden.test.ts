@@ -154,4 +154,36 @@ describe("cross-language display conformance (real sequences → engine → wire
       .join("");
     expect(headText + tailText).toBe(WRAPPED_URL);
   });
+
+  // rowText is the row exactly as it reaches the DOM — no normalizing trim,
+  // because trailing blanks are what these two cases are about.
+  function rowText(rowIndex: number): string {
+    return rowSpans(output, rowIndex)
+      .map((s) => s.textContent ?? "")
+      .join("");
+  }
+
+  it("a short row carries no trailing padding into the DOM", () => {
+    // The engine right-trims default-styled trailing blanks (vt's
+    // trimTrailingBlanks), so a one-glyph row ships one glyph instead of the
+    // 39 spaces a 40-column grid would pad it to. Those spaces used to be
+    // selectable and landed in every copy of the line.
+    expect(rowText(ROW.bold)).toBe("B");
+    expect(rowText(ROW.hyperlink)).toBe("L");
+    // The blank row the fixture parks below the content encodes to ZERO runs.
+    // It must still occupy a line: the renderer substitutes a single nbsp
+    // filler span, so a trimmed-to-nothing row keeps full line height instead
+    // of collapsing the grid.
+    const blank = rowSpans(output, 15);
+    expect(blank.length, "a fully blank row renders the filler span").toBe(1);
+    expect(blank[0]?.textContent).toBe("\u00a0");
+  });
+
+  it("a soft-wrapped row keeps its full width", () => {
+    // The trim's load-bearing guard, proven through the real wire: on a row
+    // that autowrapped onto the row below, trailing blanks are mid-line content
+    // of one logical line, so the row stays 40 columns wide. (Here the URL
+    // itself fills the row, so the assertion is the width.)
+    expect(rowText(ROW.autolinkWrapHead).length).toBe(40);
+  });
 });

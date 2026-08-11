@@ -58,6 +58,7 @@ describe("wire golden frames (Go encoder ↔ TS decoder contract)", () => {
     expect(m.oldestIndex).toBe(10);
     expect(m.serverWireVersion).toBe(4);
     expect(m.ledgerLost).toBe(false);
+    expect(m.historyPaging).toBe(false); // neither bit set
   });
 
   it("decodes the ledger-lost resumeAck frame", () => {
@@ -69,6 +70,25 @@ describe("wire golden frames (Go encoder ↔ TS decoder contract)", () => {
     expect(m.received).toBe(7);
     expect(m.serverWireVersion).toBe(4);
     expect(m.ledgerLost).toBe(true);
+    expect(m.historyPaging).toBe(false); // bit1 clear while bit0 is set
+  });
+
+  it("decodes the history-paging resumeAck frame", () => {
+    // The capability bit the whole demand-paged-scrollback feature turns on. Its
+    // Go generator says this fixture exists so "the pair pins that a client reads
+    // the bits separately" — and for a while the pinning half did not exist: it
+    // was the only one of the ten fixtures with no consumer test, so an ackFlags
+    // layout change would have failed loudly in Go and silently here, leaving
+    // paging switched off on the device it was built for.
+    const m = decodeWireBinary(load("resumeack-historypaging"));
+    expect(m?.type).toBe("resumeAck");
+    if (m?.type !== "resumeAck") {
+      return;
+    }
+    expect(m.serverWireVersion).toBe(4);
+    expect(m.historyPaging).toBe(true);
+    // Read SEPARATELY from bit0, which is the reason both fixtures exist.
+    expect(m.ledgerLost).toBe(false);
   });
 
   it("decodes the ackOnly frame", () => {

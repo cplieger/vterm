@@ -143,12 +143,16 @@ function decodeWireBinaryInner(buf: ArrayBuffer): ServerMessage | null {
     // Optional tails, length-gated for back-compat with older servers:
     //   >= 17 bytes: + serverEpoch (restart detection)
     //   >= 33 bytes: + committed + oldestIndex (resume gap detection)
-    //   >= 35 bytes: + serverWireVersion + ackFlags (bit0 = ledgerLost)
+    //   >= 35 bytes: + serverWireVersion + ackFlags (bit0 = ledgerLost,
+    //                  bit1 = historyPaging). Unknown bits are IGNORED, which
+    //                  is what lets the server add capabilities here without a
+    //                  protocol bump.
     let serverEpoch: number | undefined;
     let committed: number | undefined;
     let oldestIndex: number | undefined;
     let serverWireVersion: number | undefined;
     let ledgerLost: boolean | undefined;
+    let historyPaging: boolean | undefined;
     if (buf.byteLength >= 17) {
       serverEpoch = c.u64();
     }
@@ -160,6 +164,7 @@ function decodeWireBinaryInner(buf: ArrayBuffer): ServerMessage | null {
       serverWireVersion = c.u8();
       const ackFlags = c.u8();
       ledgerLost = (ackFlags & 1) !== 0;
+      historyPaging = (ackFlags & 2) !== 0;
     }
     const msg: ResumeAckMessage = { type: "resumeAck", received: inputAck };
     if (serverEpoch !== undefined) {
@@ -176,6 +181,9 @@ function decodeWireBinaryInner(buf: ArrayBuffer): ServerMessage | null {
     }
     if (ledgerLost !== undefined) {
       msg.ledgerLost = ledgerLost;
+    }
+    if (historyPaging !== undefined) {
+      msg.historyPaging = historyPaging;
     }
     return msg;
   }

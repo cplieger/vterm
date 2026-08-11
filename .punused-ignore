@@ -182,6 +182,20 @@ function WithOriginPolicy
 # one if that ever went unused, because both print as `function WithTheme`.
 function WithTheme
 
+# WithMinimumContrast -- the Handler-level minimum-contrast floor, the sibling of
+# WithTheme above. EU1001 rather than EU1002 because
+# TestWithMinimumContrastReachesTheScreen (terminal/contrast_option_test.go)
+# exercises it: the option is configured on the Handler and ENFORCED by the
+# screen, so the plumb-through in NewHandler is the one thing that can silently
+# break between them, and that is worth a test rather than only an entry here.
+# Real callers are consumers, in another MODULE: web-terminal-kiro/routes.go and
+# web-terminal-server/main.go both pass 4.5, the WCAG AA floor, because both
+# render on a pure-black background and a program can only name a palette SLOT.
+# As with WithTheme, this entry would also cover vt.WithMinimumContrast if that
+# ever went unused (both print as `function WithMinimumContrast`); today the vt
+# one is live, called from NewHandler.
+function WithMinimumContrast
+
 # (*Handler).Title (terminal/terminal.go:424) -- the engine's own session
 # manager does not use it: List() reads titles through the unexported
 # h.titles() instead (terminal/session_manager.go:328; the doc comment at :293

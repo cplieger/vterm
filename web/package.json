@@ -32,7 +32,7 @@
     "qs": "^6.15.2"
   },
   "description": "Browser terminal engine: VT500 screen buffer, DOM renderer, and binary wire protocol",
-  "license": "GPL-3.0-or-later",
+  "license": "MPL-2.0",
   "exports": {
     ".": "./src/index.ts",
     "./wire-compatibility.json": "./wire-compatibility.json"

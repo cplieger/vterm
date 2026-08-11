@@ -29,7 +29,7 @@ import {
 const wrap = document.getElementById("term") as HTMLElement;
 const out = document.getElementById("term-output") as HTMLElement;
 
-render.init({ output: out, termWrap: wrap });
+render.init({ output: out, termWrap: wrap }); // optional: maxLines (retained-line cap, default 5000)
 scroll.init({ scrollEl: wrap });
 mouse.init({
   send: (data) => ws.send(data),
@@ -77,7 +77,7 @@ document.addEventListener("keydown", (ev) => {
 
 ## API
 
-- **`render`** — DOM renderer driven by `ScreenMessage` / `ScrollMessage` frames. `init`, `handleScreen`, `handleScroll`, `updateFontMetrics`, `computeSize`, `getCursorPx`, `setPredictedCursor`, `resetScreen`, `resetScrollback`, `getHighestIndex`, `noteResumeBounds`, `updateReverseVideo`.
+- **`render`** — DOM renderer driven by `ScreenMessage` / `ScrollMessage` frames. `init` (accepts `maxLines`, the retained-line cap — memory-constrained consumers pass a smaller budget; history above the cap is evicted from the top in batches, and the live screen is never evicted, so a cap at or below the terminal height keeps the full screen with no scrollback), `handleScreen`, `handleScroll`, `updateFontMetrics`, `computeSize`, `getCursorPx`, `setPredictedCursor`, `resetScreen`, `resetScrollback`, `getHighestIndex`, `noteResumeBounds`, `updateReverseVideo`.
 - **`keyboard`** — Translates `KeyboardEvent` to terminal byte sequences. `mapKeyboardEvent`, `bracketTextForPaste`, `prepareTextForTerminal`, `ctrlByteFor`, plus the shared logical-key encodings (`plainCursorKeySeq`, `plainEscapeSeq`) the toolbar module reuses. Honors `applicationCursor`, `applicationKeypad`, `bracketedPaste`.
 - **`toolbar`** — On-screen mobile toolbar widget (moved out of `keyboard` in v3). `bindMobileToolbar({toolbar, send, ids?})` wires `pointerdown` handlers for an on-screen Ctrl/arrows/Tab/Enter/Esc toolbar (with sticky-Ctrl semantics and kitty/DECCKM-aware arrows byte-identical to the physical-key path), returning a `MobileToolbarController` exposing `applyStickyCtrl`, `setCtrlArmed`, `isCtrlArmed`, and `dispose`.
 - **`mouse`** — SGR 1006 mouse + focus reporting encoder. `init`, `encodeSGR`, `MouseInputHandler`. Auto-gates on `mouseMode > 0`.

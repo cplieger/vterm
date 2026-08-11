@@ -74,7 +74,9 @@ if (msg?.type === "screen") render.handleScreen(msg);
 - **`modes`**: DEC private mode state (synced from server's `ModesMessage`). `setModes`, `isBracketedPaste`, `isApplicationCursor`, `getMouseMode`, `isMouseSGR`, `isFocusReporting`, `isApplicationKeypad`, `isReverseVideo`, `getKeyboardFlags`.
 - **`decodeWireBinary(buf)`**: Top-level decoder for binary WebSocket frames; returns a `ServerMessage` or `null` for invalid/truncated frames.
 - **Wire compatibility metadata**: `WIRE_PROTOCOL_VERSION`, `MIN_SUPPORTED_SERVER_WIRE_VERSION`, `WIRE_INCOMPATIBLE_CLOSE_CODE`, and `WIRE_COMPATIBILITY` describe the TypeScript release's directional contract. The Go `terminal` package exposes the complementary `WireProtocolVersion`, `MinSupportedClientWireVersion`, and `WireIncompatibleCloseCode` constants. The same values also ship as a generated, language-neutral JSON artifact at the package root of every npm and JSR release (`wire-compatibility.json`, importable from npm as `@cplieger/web-terminal-engine/wire-compatibility.json`), so a Dockerfile or shell release gate can read them with `jq` instead of scraping TypeScript source; it is generated from `WIRE_COMPATIBILITY`, carries a `schemaVersion` a consumer must check, and is guarded by a regenerate-and-diff test plus a conformance test pinning it to both the TypeScript and the Go constants. Its consumer contract and what counts as a breaking change to it are documented in [web/README.md](web/README.md#wire-compatibility-manifest).
-- **`connection`**: Client → server WebSocket lifecycle, including socket ownership, exponential-backoff reconnect, and the resume/inputAck reliability layer (outbox + server-restart detection). Public methods are `init(callbacks)`, `connect`, `sendBinary`, `sendResize`, and `reconnectNow`; the `wsPath` callback option defaults to `"/ws"`. The module decodes frames and applies `modes.setModes` internally, so consumers only dispatch screen/scroll messages to `render`. It pairs with the Go `terminal` handler's resume protocol. `controlFrame` and `wsURL` are also exported for advanced use.
+- **`connection`**: Client → server WebSocket lifecycle, including socket ownership, exponential-backoff reconnect, and the resume/inputAck reliability layer (outbox + server-restart detection). Public methods are `init(callbacks)`, `connect`, `sendBinary`, `sendResize`, `reconnectNow`, and `requestHistory(fromAbs, maxLines)`; the `wsPath` callback option defaults to `"/ws"`. The module decodes frames and applies `modes.setModes` internally, so consumers only dispatch screen/scroll messages to `render`. It pairs with the Go `terminal` handler's resume protocol. `controlFrame` and `wsURL` are also exported for advanced use.
+- **Demand-paged scrollback**: a deep server ring stays reachable without the browser holding it. The server declares the capability in its resumeAck, bounds every reconnect's replay, and serves `history` requests for ranges the client asks for; the client keeps a small resident tail plus a disposable cache of the pages a reader actually visited. **It is off until a consumer wires it**, and it fails silently rather than loudly if half-wired, so the whole seam is worth doing at once: pass `requestHistory` and `historyBudget` to `render.init`, pass `onScrollPosition: () => render.maybeFetchHistory()` to `scroll.init` (the fetch trigger's only signal — `onUserScrollChange` fires on a follow/hold TOGGLE, so browsing an idle session would never fetch), and give `connection.init` the six store-and-viewport callbacks it declares (`getReplayMax`, `onHistoryReply`, `onResumeTransition`, `noteSolicited`, `clearSolicited`, `onHistoryRetry`). The consumer also owns the cache's inactivity TTL, because the engine has no notion of a page or a tab (`render.browseCacheSize`, `lastBrowseActivityMs`, `dropBrowseCache`). `@cplieger/web-terminal-ui` wires all of it; read `kernel.ts` as the reference.
+- **Scrollback persistence**: `LineStore.snapshot(serverEpoch, maxLines?)` returns the newest retained lines as plain, `structuredClone`-safe data (or `null` for an empty store, so a caller cannot overwrite a good snapshot with an empty one), and the static `LineStore.fromSnapshot(snap, maxLines?)` rehydrates one — returning `null`, never throwing and never half-restoring, because every failure has the same correct handling: start empty and take a full resume. It exists so a page the browser DISCARDED can resume with a delta instead of refilling its whole buffer over the wire, which is the normal case on iOS rather than an edge case. Storage is the consumer's; the engine only supplies the data (`@cplieger/web-terminal-ui` wires the lifecycle and the storage seam). The `serverEpoch` argument is required rather than optional and is the part to get right: absolute line indices only mean anything within one server process, so a restored store must be checked against the live server or it will present stale content as live AND then have the new session's low-index output refused by its own staleness guard. Read the epoch with `connection.serverEpochOf(sessionId)` when saving, and seed it back with `connection.adoptPersistedEpoch(sessionId, epoch)` BEFORE connecting, which routes a mismatch into the existing `onServerRestart` path. `connection.currentSessionId()` resolves the unmanaged single-terminal id (per-tab, `sessionStorage`-backed) for a consumer that needs a key for it.
 - **`connectStatusStream`** and the `SessionInfo` / `SessionStatus` / `StatusStream` types: The SSE client for `/api/sessions/events` that drives per-tab status. `SessionInfo` carries both the resolved `title` and the user's `pinnedTitle`. `LineStore` and `CONTROL_FRAME_PREFIX` are also exported, as are the `WS_PATH` / `SESSIONS_PATH` / `SESSION_EVENTS_PATH` route constants mirroring the Go `terminal` package's mount contract.
 - **Wire types**: `WireRun`, `ScreenMessage`, `ScrollMessage`, `ModesMessage`, `TitleMessage`, `ResumeAckMessage`, `ServerMessage`, and `ControlMessage` are re-exported from the package root.
 
@@ -114,11 +116,73 @@ language buys a subdomain tree and costs the `*` that means allow-everything, an
 to its own routes, and `Active()` reports whether anything beyond same-origin is
 permitted, for a startup log line.
 
+## Retained history
+
+Each session keeps the lines that scroll off its screen in an in-memory ring,
+addressed by absolute line index. That depth is how far back a user can scroll
+and what a reconnect can replay.
+
+`WithScrollbackCapacity(n)` sets it; the default is
+`terminal.DefaultScrollbackCapacity` (100000 lines, roughly 34 MB per session at
+the ceiling). The buffer GROWS as history is produced rather than being allocated
+at the ceiling, so a large capacity costs a short-lived session nothing — which is
+also why there is no "unlimited" sentinel: a number larger than any session will
+reach IS unlimited. `0` disables retention entirely (the live screen still works;
+nothing survives scrolling off).
+
+Consumers that expose the depth to an operator should use the engine's own name
+for the variable rather than inventing one, so that the apps sharing this handler
+cannot drift apart:
+
+| Symbol | Purpose |
+| --- | --- |
+| `ScrollbackEnvVar` | `WT_SCROLLBACK` — the variable name to read. The engine does NOT read it itself; the consumer does, and passes the option. |
+| `DefaultScrollbackCapacity` | The default, exported so a consumer can report the effective depth at startup without hardcoding it. |
+| `MinPagingCapacity` | The depth at or above which the handler declares demand-paged scrollback to the client. |
+| `ClampScrollbackCapacity(n)` | Turns an operator's number into the one to configure, plus a reason string when it had to change it. |
+
+`ClampScrollbackCapacity` exists because one range behaves opposite to intent: a
+depth between 1 and `MinPagingCapacity` is retained happily by the ring but is too
+shallow for the server to offer paged history, and a paging-capable client then
+falls back to holding its entire legacy buffer resident. Lowering the server
+number to save memory therefore spends more of it on the client, so that range is
+raised and explained rather than obeyed silently. `0` is passed through: a client
+cannot page against a server holding no history at all, so the inversion cannot
+arise there.
+
+## Environment variable names for consumers
+
+The engine reads no environment itself — a consumer parses its own configuration
+and passes options in. But the apps built on this engine are operated by the same
+people, so the ones that answer the same question use the same NAME, and that
+convention is documented here rather than in each app's README.
+
+The prefix is `WT_`. `WT_SCROLLBACK` is the engine's own (`ScrollbackEnvVar`
+above), and the rest are the names the first-party consumers settled on:
+web-terminal-server and web-terminal-kiro both read them, so an operator who runs
+one already knows the other, and a new consumer that adopts them inherits that.
+
+| Variable | What the consumer does with it |
+| --- | --- |
+| `WT_ADDR` | The listen address, `host:port`. |
+| `WT_WORKDIR` | The working directory for the process the PTY runs. |
+| `WT_SCROLLBACK` | Retained history depth — the engine's own variable; see above. |
+| `WT_ALLOWED_HOSTS` | Exact `Host` values to serve, as an anti-DNS-rebinding gate. Unset is permissive. |
+| `WT_TRUSTED_PROXIES` | CIDRs or IPs whose forwarded-for header may name the real client. |
+| `WT_LOG_LEVEL` | Log level at boot. |
+
+Two rules that make the set worth having. A name is shared only when the BEHAVIOUR
+is the same — a knob one app reads and another ignores is not shared, it is a
+coincidence, so give an app-specific knob an app-specific name. And nothing here
+is read by the engine, so adopting a name is a consumer decision; this table is a
+convention, not an interface, and there is no compatibility shim if a consumer
+picks differently.
+
 ## Wire Protocol
 
 The Go server and TypeScript client communicate over WebSocket frames rather than shared code. The authoritative byte-level definition is the code itself: the Go encoder (`terminal/wire_binary.go`), the Go `WireRun` types (`vt/wire.go`), and the TS decoder (`web/src/wire-binary.ts`). Round-trip fuzz tests and the `wire-golden/*.bin` fixtures keep those implementations aligned.
 
-- **Binary and typed framing.** Server → client frames are binary messages with little-endian integers. Since wire v4, client → server control messages (resize, resume, ping) are text frames containing bare JSON, while binary frames carry raw terminal input with the full byte alphabet. Every socket first sends a v3-compatible `0x00`-prefixed binary resume and upgrades only after the resumeAck proves a v4 server.
+- **Binary and typed framing.** Server → client frames are binary messages with little-endian integers. Since wire v4, client → server control messages (resize, resume, ping, upgrade, and the `history` page request) are text frames containing bare JSON, while binary frames carry raw terminal input with the full byte alphabet. A control sent in the wrong encoding is not a control: past the upgrade the server reads a binary frame as terminal input, so it lands in the program's stdin. Every socket first sends a v3-compatible `0x00`-prefixed binary resume and upgrades only after the resumeAck proves a v4 server.
 - **Absolute line indexing.** Every line receives a monotonic absolute index. Applying the same line is idempotent, resume aligns by index, eviction gaps are detectable, and a server epoch identifies restarts across reconnects.
 - **Compatibility revisions and directional floors.** The Go and TypeScript artifacts can be upgraded independently; package-version equality isn't required. Each side exports its current wire revision and its receiver floor (the constants listed in [API](#api)). Both sides currently emit revision 4 and accept declared peers from revision 3. Version-silent peers remain supported. A declared revision below the receiver's floor is refused with close code 4002; a higher revision warns but continues because it may retain the compatible baseline. TypeScript consumers can surface these outcomes with `onWireVersionMismatch` and `onWireIncompatible`. A definitive incompatibility blocks automatic reconnects until `disconnect()` clears the terminal state, normally after the stale half is updated and the page reloads. Frozen previous-revision fixtures and the previous published decoder test both compatibility directions.
 

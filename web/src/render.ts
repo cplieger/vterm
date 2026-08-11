@@ -234,6 +234,10 @@ function termPadding(): { padL: number; padT: number } {
 let flushDrainedThisPass = 0;
 let renderNoProgressStreak = 0;
 const MAX_RENDER_NO_PROGRESS_RETRIES = 3;
+// The stall canary's latch (see the reschedule rule near flushRender). Reset by
+// init, and by any flush that ends in a healthy state, so it suppresses a repeat
+// of ONE stall rather than every stall for the life of the process.
+let unnamedStallReported = false;
 // Whether the CURRENT flush performed a full reset (server restart / epoch
 // change). Read by restoreReadAnchor after the flush: a re-anchor across a
 // reset would match unrelated content from the new index space (R2 review).
@@ -339,6 +343,11 @@ export function init(opts: {
   }
   flushDrainedThisPass = 0;
   renderNoProgressStreak = 0;
+  // The stall canary latches so it cannot spam, and init is the attachment
+  // boundary, so the latch resets here with every other piece of pass state. A
+  // latch that survived would make the canary a once-per-PROCESS report, silent
+  // for every later attachment and for every genuinely new stall.
+  unnamedStallReported = false;
   // Attachment boundary: a view restore armed against the PREVIOUS surface must
   // not survive it, or its timer outlives teardown and writes scrollTop on a
   // detached element. Same discipline scroll.init applies to its own arms.
@@ -959,6 +968,104 @@ function scheduleFlush(): void {
   pendingFrame = requestAnimationFrame(flushRender);
 }
 
+/**
+ * The renderer's half of a scroll-position event. Wire this to
+ * `scroll.init({ onScrollPosition })` and nothing else: it is the ONE hook the
+ * renderer needs from a position change, so a consumer cannot half-wire it.
+ *
+ * Two jobs, in this order. Re-evaluate the demand-paging trigger, because the
+ * reader may have approached a gap. Then finish a drain that stopped with rows
+ * still queued, which is reachable on an idle session: the bounded error path in
+ * `flushRender`'s catch deliberately stops rescheduling, and no inbound frame
+ * arrives to restart it.
+ *
+ * It replaced a pair of exported calls (`maybeFetchHistory` plus a public
+ * `resumeDrain`) because that pair was a silent-omission trap of exactly the
+ * shape the paged-scrollback docs warn about: a consumer upgrading the engine and
+ * keeping its old one-line wiring got paging and no drain recovery, with no type
+ * error and no runtime complaint. `maybeFetchHistory` stays exported for the
+ * transport's own retry path, which is a different event.
+ */
+export function handleScrollPosition(): void {
+  maybeFetchHistory();
+  resumeDrain();
+}
+
+/**
+ * Resume a drain that still has rows queued. Private: reached only through
+ * `handleScrollPosition`, so there is one wiring obligation rather than two.
+ *
+ * Three refusals, and each one is load-bearing rather than defensive:
+ *
+ * **An empty queue.** `flushRender` runs `applyPendingRestore`,
+ * `restoreReadAnchor` and `stickToBottomIfFollowing` unconditionally; only the
+ * drain is queue-gated. So a flush scheduled from a scroll handler would run the
+ * position invariants at moments the renderer never previously flushed at, and
+ * because `atBottom` tolerates `BOTTOM_TOLERANCE_PX` while `stickToBottom` pins
+ * on any non-zero gap, a downward scroll landing just short of the tail on an
+ * IDLE session would snap to the bottom one frame later. It would also expire an
+ * armed view restore early through `RESTORE_OWN_WRITE_EPSILON_PX`.
+ *
+ * **Alt screen.** Alt is a NAMED suspension of the drain (see the reschedule rule
+ * below), and a resumption path that ignores it is not a resumption path. The
+ * drain would survive anyway, because `flushRenderInner`'s alt branch returns
+ * before the drain, but the flush around it would still call `renderAlt` (which
+ * replaces the whole output subtree, destroying an in-alt selection) and run all
+ * three position invariants. Leaning on the body of a function to make a
+ * scheduling decision safe is how the next edit to that body becomes a bug. Alt
+ * exit re-queues everything through `queueRowsViewportFirst`, so refusing costs
+ * nothing.
+ *
+ * **A give-up already retried.** The catch's give-up exists so a deterministically
+ * throwing row cannot become a 60fps loop. Retrying it from a scroll event would
+ * move that loop outside the module rather than remove it: a flick is one scroll
+ * event per frame, and `scroll.ts`'s position callback fires for the browser's own
+ * clamps too, so a stuck row would log two errors per frame for the length of a
+ * gesture. One retry per give-up is enough to serve the case this function exists
+ * for (the reader scrolls, the surface completes) without reopening the loop the
+ * cap closed. The retry is re-earned by anything that clears the streak: real
+ * forward progress, an empty queue, a rebuild, or a re-attach. NOT by the give-up
+ * log — a retry that throws gives up again, and re-arming there would restore the
+ * per-gesture loop one indirection further out.
+ *
+ * Residual, accepted: `scroll.ts` fires its position seam before its own
+ * announced-shrink early return, so a programmatic clamp (a cap eviction) can spend
+ * the retry with no user action. The exposure is small because any successful flush
+ * re-arms it, and the alternative (a time bound) adds a clock to a path whose whole
+ * purpose is to be cheap.
+ */
+function resumeDrain(): void {
+  if (renderQueue.size === 0 || store.isAlt()) {
+    return;
+  }
+  // A frame is already coming, so there is nothing to resume and nothing to spend.
+  // Without this the retry is burned in a state where it buys NOTHING: the catch
+  // reaches `streak === MAX` from its own progress-less branch and schedules a frame
+  // on the way out, so for one frame the streak is at the cap with a flush pending.
+  // A scroll landing there would set the streak past the cap while `scheduleFlush`
+  // no-ops on the occupied slot, and the real give-up one frame later would then
+  // find its one retry already gone. The spend must be gated on the give-up having
+  // HAPPENED, and an empty frame slot is what distinguishes that.
+  if (pendingFrame !== undefined) {
+    return;
+  }
+  if (renderNoProgressStreak >= MAX_RENDER_NO_PROGRESS_RETRIES) {
+    if (renderNoProgressStreak > MAX_RENDER_NO_PROGRESS_RETRIES) {
+      return;
+    }
+    // Spend the one retry by carrying it in the streak itself, rather than in a
+    // second flag beside it. A flag was tried and it leaked: it had to be cleared
+    // at every site that clears the streak, it was cleared at three of five, and
+    // the two misses (`rebuild`, and a clean pass) are the common ones — so one
+    // give-up plus one scroll disabled the resume for the rest of the attachment,
+    // invisibly, because that state presents to the canary as a plain give-up. With
+    // the count carrying it there is nothing to keep in sync: every existing
+    // `renderNoProgressStreak = 0` re-arms the retry by construction.
+    renderNoProgressStreak = MAX_RENDER_NO_PROGRESS_RETRIES + 1;
+  }
+  scheduleFlush();
+}
+
 // --- Read-position anchoring (manual scroll anchoring) ---
 //
 // A flush can change the content height ABOVE the reading position: rows evicted
@@ -1241,6 +1348,54 @@ function flushRender(): void {
   // beside them — so the flush is the other place the trigger must run
   // (docs/paged-scrollback.md §5.4).
   maybeFetchHistory();
+  reportUnnamedDrainStall();
+}
+
+// --- The reschedule rule ---
+//
+// After a flush, owed rows are in exactly one of four states. The set is
+// exhaustive by construction here rather than by review of each return site,
+// which is what a queue left non-empty with an empty `pendingFrame` slot costs:
+// `scheduleFlush` is a single slot, so every later request from every source is
+// silently dropped and nothing drains.
+//
+//  1. nothing owed          - the queue is empty.
+//  2. scheduled             - a frame will drain it.
+//  3. suspended, named edge - alt screen. `renderAlt` replaces the whole output
+//                             subtree, so continuing the drain would inject
+//                             main-buffer rows into the alt grid; the alt-exit
+//                             branch re-queues everything via
+//                             queueRowsViewportFirst, so nothing is lost. The
+//                             resumption edge is alt exit. A future third
+//                             suspension point must declare its edge here.
+//  4. stopped and reported  - the bounded error path gave up after
+//                             MAX_RENDER_NO_PROGRESS_RETRIES and logged. It is a
+//                             guard on the process, so it refuses rather than
+//                             looping; the next inbound frame retries, or one
+//                             scroll does (resumeDrain, once per give-up).
+//
+// Anything else is a stall nobody owns. Reported once PER EPISODE: the latch
+// clears as soon as a flush ends in a healthy state, so a repeat of one stall
+// stays quiet while a genuinely new stall later is still reported. Log spam would
+// be its own defect, and so would a canary that goes deaf after the first report.
+function reportUnnamedDrainStall(): void {
+  if (renderQueue.size === 0 || pendingFrame !== undefined || store.isAlt()) {
+    // A healthy end: the episode (if any) is over, so re-arm the canary.
+    unnamedStallReported = false;
+    return;
+  }
+  if (renderNoProgressStreak >= MAX_RENDER_NO_PROGRESS_RETRIES) {
+    // Named and already logged by the catch. Not a healthy state, so the latch is
+    // left as it is rather than re-armed.
+    return;
+  }
+  if (unnamedStallReported) {
+    return;
+  }
+  unnamedStallReported = true;
+  console.warn(
+    `vterm: ${String(renderQueue.size)} rows queued with no scheduled frame and no named suspension`,
+  );
 }
 
 function flushRenderInner(): void {

@@ -265,6 +265,15 @@ function writePreservingFollow(next: number): void {
  * absolutely-positioned overlay) — and a lingering arm swallows the next real
  * gesture.
  *
+ * That last case is live in this codebase rather than illustrative: the caret
+ * overlay, the predicted cursor, the IME composition view and the consumer's
+ * hidden textarea all sit inside the scroll container carrying a `top` in CONTENT
+ * coordinates. Nothing resets them on a wipe: the renderer's `init` drops the two
+ * it owns (the caret and the predicted cursor), a full consumer remount recreates
+ * the other two, and `rebuild` does neither. So a wipe can leave scrollHeight held
+ * above the built content by a stale overlay, the clamp never happens, and there
+ * is nothing for this arm to cover. See `docs/tab-switch-repaint.md` §6.2.
+ *
  * A native-scroll-anchoring adjustment (Chrome/Firefox lowering scrollTop as
  * rows are removed above the viewport) also moves the position and also arms
  * this; that is correct rather than incidental, since it is likewise the

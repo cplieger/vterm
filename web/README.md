@@ -134,4 +134,4 @@ This package depends on `document`, `HTMLElement`, `MessageChannel`, and other D
 
 ## License
 
-GPL-3.0 — see [LICENSE](../LICENSE).
+MPL-2.0. See [LICENSE](../LICENSE).

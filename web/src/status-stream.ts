@@ -57,7 +57,7 @@ export interface SessionInfo {
    *  merges them (subscribing before its bootstrap list resolves, which is how to
    *  avoid double-adopting a session) sees neither sequence intact.
    *
-   *  Absent from a server before 3.9.0, and from a status event carrying
+   *  Absent from a server before 3.10.0, and from a status event carrying
    *  `removed` (the session has left the order). Treat absent as "this server has
    *  no shared order" and fall back to `createdAt`; do not read it as position 0,
    *  which belongs to a real session.

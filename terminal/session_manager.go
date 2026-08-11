@@ -392,7 +392,7 @@ type sessionOrder struct {
 //
 // Both enumerations use it — List (GET /api/sessions) and snapshot (the status
 // stream's initial sync) — so the two can never report a different order for the
-// same set. Until 3.9.0 they did: snapshot ranged m.sessions and returned
+// same set. Until 3.10.0 they did: snapshot ranged m.sessions and returned
 // unsorted, Go randomizes map iteration per range, and a client that placed tabs
 // in arrival order therefore got a different strip on every connect.
 //

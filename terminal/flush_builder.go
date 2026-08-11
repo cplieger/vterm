@@ -163,20 +163,31 @@ func (b *flushFrameBuilder) frameEmpty(screen *vt.Screen, changed, scrollOut int
 // previous-window cache to the new window.
 func (b *flushFrameBuilder) diffWindow(rows [][]vt.WireRun, base uint64) []int {
 	var changed []int
-	prevLen := uint64(len(b.prevRowWires))
 	for y, row := range rows {
-		abs := base + uint64(y)
-		var prev []vt.WireRun
-		if prevLen > 0 && abs >= b.prevBase && abs < b.prevBase+prevLen {
-			prev = b.prevRowWires[abs-b.prevBase]
-		}
-		if prev == nil || !slices.Equal(prev, row) {
+		prev, cached := b.prevRow(base + uint64(y))
+		if !cached || !slices.Equal(prev, row) {
 			changed = append(changed, y)
 		}
 	}
 	b.prevRowWires = rows
 	b.prevBase = base
 	return changed
+}
+
+// prevRow returns the last-sent content for absolute index abs, and whether
+// the cache covers that index at all.
+//
+// The cached flag is not a convenience: a row holding nothing but padding
+// encodes to ZERO runs (vt's trailing-blank trim), so a nil slice is now a
+// legitimate row VALUE and can no longer double as "no baseline". Reading it as
+// one marked every blank row changed on every frame, which kept frameEmpty from
+// ever holding and made a completely idle screen emit a frame per flush tick.
+func (b *flushFrameBuilder) prevRow(abs uint64) (runs []vt.WireRun, cached bool) {
+	prevLen := uint64(len(b.prevRowWires))
+	if prevLen == 0 || abs < b.prevBase || abs >= b.prevBase+prevLen {
+		return nil, false
+	}
+	return b.prevRowWires[abs-b.prevBase], true
 }
 
 // modesStable reports whether the screen's DEC private mode state

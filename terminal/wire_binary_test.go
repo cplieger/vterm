@@ -300,7 +300,7 @@ func TestEncodeScreenMsgScrollbackClearedFlag(t *testing.T) {
 // TestEncodeClipboardMsg verifies the OSC 52 clipboard frame layout:
 // [1B type=6][8B ack][2B len][text].
 func TestEncodeClipboardMsg(t *testing.T) {
-	buf := encodeClipboardMsg(0, []byte("hi"))
+	buf := encodeClipboardMsg([]byte("hi"))
 	if buf[0] != wireMsgClipboard {
 		t.Fatalf("opcode = %d, want %d", buf[0], wireMsgClipboard)
 	}

@@ -329,3 +329,108 @@ func TestFlushScheduler_resizeReprintHeldUntilSettled(t *testing.T) {
 		t.Fatalf("settled frame took %v after the last reprint byte, want <= cap %v", elapsed, redrawSettleCap)
 	}
 }
+
+// TestFlushScheduler_reprintLongerThanCapCoalesces drives the case the settle
+// hold's cap used to handle badly: a redraw that keeps writing PAST
+// redrawSettleCap. Releasing there streamed the rest of the reprint a partial
+// screen at a time (the churn the hold exists to prevent), so a lapse now lets
+// ONE full repaint through and re-arms instead. The scheduler-level assertion is
+// that the wire carries few frames across a multi-cap reprint rather than one per
+// flushInterval.
+//
+// Uses real time because the point is the scheduler's own timers. The budget is
+// derived from the constants, so changing them cannot silently make this vacuous.
+func TestFlushScheduler_reprintLongerThanCapCoalesces(t *testing.T) {
+	h := NewHandler([]string{"/bin/cat"}, WithLogger(nil))
+	t.Cleanup(h.Shutdown)
+	if err := h.StartEager(); err != nil {
+		t.Fatalf("StartEager: %v", err)
+	}
+	mux := http.NewServeMux()
+	h.RegisterRoutes(mux)
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	//nolint:bodyclose // coder/websocket Dial nils resp.Body on success
+	ws, _, err := websocket.Dial(ctx, "ws"+strings.TrimPrefix(srv.URL, "http")+"/ws", nil)
+	if err != nil {
+		t.Fatalf("ws dial: %v", err)
+	}
+	defer ws.Close(websocket.StatusNormalClosure, "") // #nosec G104 -- test cleanup
+	results := startWSReader(t, ws)
+
+	h.handlePTYData([]byte("pre-resize content\r\n"))
+	readUntilQuiet(t, results, 200*time.Millisecond)
+
+	// The phone keyboard opens: a size CHANGE arms the hold.
+	h.handleResize(&clientState{}, 100, 24)
+
+	// A reprint that outlasts the cap: small chunks with gaps well under
+	// redrawSettleQuiet, so the child never goes quiet, for longer than one cap
+	// interval.
+	reprintFor := redrawSettleCap + redrawSettleCap/2
+	deadline := time.Now().Add(reprintFor)
+	for time.Now().Before(deadline) {
+		h.handlePTYData([]byte("reprint line\r\n"))
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	// Drain everything the reprint window produced, then wait out the settle,
+	// counting only SCREEN payloads. That is what coalescing is about: a screen
+	// frame is a state the user sees, so shipping one mid-redraw is the churn.
+	// Scroll frames are orthogonal — they carry history that lands above the
+	// viewport — and streaming them is correct, so counting every websocket
+	// message would conflate the two and assert the wrong thing.
+	screens := readUntilQuietCounting(t, results, redrawSettleQuiet+500*time.Millisecond, wireMsgScreen)
+
+	// Pre-fix the cap lapsed once and every flushInterval pass after it shipped a
+	// mid-reprint screen, so this window carried tens of them. Coalescing ships
+	// about one per cap interval plus the settled one. The bound asserts an order
+	// of magnitude rather than an exact count, so scheduling jitter cannot make it
+	// flaky, while still failing decisively against the old release-and-stream.
+	maxScreens := int(reprintFor/redrawSettleCap) + 3
+	if screens > maxScreens {
+		t.Errorf("reprint of %v carried %d screen frames, want <= %d: the hold released mid-redraw instead of coalescing",
+			reprintFor, screens, maxScreens)
+	}
+	if screens == 0 {
+		t.Fatal("reprint carried no screen frame at all; the hold never released")
+	}
+}
+
+// readUntilQuietCounting drains frames until none arrives for the grace window,
+// returning how many carried the given wire message type. The type-filtering
+// sibling of readUntilQuiet, for assertions about one payload kind.
+func readUntilQuietCounting(
+	t *testing.T,
+	results <-chan wsReadResult,
+	grace time.Duration,
+	msgType byte,
+) int {
+	t.Helper()
+	timer := time.NewTimer(grace)
+	defer timer.Stop()
+	n := 0
+	for {
+		select {
+		case result, ok := <-results:
+			if !ok {
+				t.Fatal("WebSocket reader stopped while draining frames")
+			}
+			if result.err != nil {
+				t.Fatalf("WebSocket read while draining frames: %v", result.err)
+			}
+			if len(result.data) > 0 && result.data[0] == msgType {
+				n++
+			}
+			if !timer.Stop() {
+				<-timer.C
+			}
+			timer.Reset(grace)
+		case <-timer.C:
+			return n
+		}
+	}
+}

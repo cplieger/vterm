@@ -659,12 +659,16 @@ func (s *Screen) markWrapContinuation() {
 // joined; otherwise the retained tail is dropped. Alt-screen drains are
 // discarded by the flush builder, so the tail only tracks the main screen.
 func (s *Screen) drainTopRow() {
-	runs := s.stampAutolinks(0, s.cellsToRuns(s.Cells[0]))
+	// Row 0's trailing blanks are content, not padding, when row 1 soft-wraps
+	// from it — the same flag that decides whether the drain tail is retained
+	// for chain joining, read once for both.
+	continuesBelow := len(s.wrapped) > 1 && s.wrapped[1]
+	runs := s.stampAutolinks(0, s.cellsToRuns(s.Cells[0], continuesBelow))
 	s.Drained = append(s.Drained, runs)
 	if s.InAltScreen {
 		return
 	}
-	if len(s.wrapped) > 1 && s.wrapped[1] {
+	if continuesBelow {
 		s.drainTail = append(s.drainTail, rowMatchText(s.Cells[0]))
 		if len(s.drainTail) > maxAutolinkRows-1 {
 			s.drainTail = s.drainTail[len(s.drainTail)-(maxAutolinkRows-1):]

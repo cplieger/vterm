@@ -59,14 +59,71 @@ func (s *Screen) RenderRowWire(y int) []WireRun {
 	if y < 0 || y >= s.Height {
 		return nil
 	}
-	return s.stampAutolinks(y, s.cellsToRuns(s.Cells[y]))
+	return s.stampAutolinks(y, s.cellsToRuns(s.Cells[y], s.softWrapsBelow(y)))
 }
 
-// cellsToRuns converts a row of cells to wire runs (same-style coalesced).
+// softWrapsBelow reports whether row y autowrapped ONTO row y+1, which makes
+// row y's trailing blanks mid-line content rather than padding (see
+// trimmableBlank). Only the soft-wrap flag is consulted: an application HARD
+// wrap (hardWrapIndent) requires a glyph in the upper row's last column, so
+// such a row has no trailing blank to protect.
+func (s *Screen) softWrapsBelow(y int) bool {
+	return y+1 < len(s.wrapped) && s.wrapped[y+1]
+}
+
+// trimmableBlank reports whether a cell is a trailing blank the wire may drop:
+// a WRITTEN space (Ch == ' ') carrying no style and no hyperlink.
+//
+// The three exclusions are each load-bearing. A styled blank is content: an
+// erase writes the application's current background into the cells it clears,
+// so a colored tail is a painted region and dropping it would repaint it in the
+// theme default. A blank inside an OSC 8 link is part of the app's own anchor.
+// And Ch == 0 is not a space at all — it is a wide glyph's second half (or an
+// unwritten cell), encoded as the U+FFFF continuation sentinel, so trimming it
+// would strand the wide glyph's first half without its spacer.
+//
+// Cell.Protected/IsoProtected are deliberately NOT consulted: they govern which
+// erases spare the cell in the GRID, which stays authoritative, and the wire
+// carries neither.
+func trimmableBlank(c Cell) bool {
+	return c.Ch == ' ' && c.Style == (Style{}) && c.Hyperlink == ""
+}
+
+// trimTrailingBlanks returns row without its trailing run of trimmable blanks.
+//
+// Every cell grid pads each row to the full width, so today a `$ ` prompt row
+// ships ~118 spaces the application never printed — over the wire, into the
+// client's line store, and into the DOM, where they are selectable and land in
+// a copy. Right-trimming the wire representation is what xterm.js and tmux
+// already do on their own string/copy paths, so this matches the industry norm
+// and improves copy fidelity; an INTENDED trailing default-style space is
+// indistinguishable from padding in any cell grid, xterm.js included.
+//
+// Mid-line and leading whitespace are untouched, and paste INTO the terminal is
+// unaffected. A fully-blank row trims to zero runs, which the client renders as
+// a single non-breaking-space filler (render.ts buildRowSpans) so the row keeps
+// full line height instead of collapsing the grid.
+func trimTrailingBlanks(row []Cell) []Cell {
+	n := len(row)
+	for n > 0 && trimmableBlank(row[n-1]) {
+		n--
+	}
+	return row[:n]
+}
+
+// cellsToRuns converts a row of cells to wire runs (same-style coalesced),
+// dropping the row's trailing default-styled blanks (see trimTrailingBlanks).
+// continuesBelow suppresses the trim: the caller passes true when this row
+// soft-wrapped onto the row below, where the trailing blanks are mid-line
+// content of one logical line (xterm.js #1286) rather than grid padding.
+//
 // A method (not a free function) so color resolution can consult the Screen's
 // OSC 4 palette overrides.
-func (s *Screen) cellsToRuns(row []Cell) []WireRun {
+func (s *Screen) cellsToRuns(row []Cell, continuesBelow bool) []WireRun {
 	var runs []WireRun
+	if !continuesBelow {
+		row = trimTrailingBlanks(row)
+	}
 	if len(row) == 0 {
 		return runs
 	}

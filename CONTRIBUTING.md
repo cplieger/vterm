@@ -21,6 +21,20 @@ The Go server and TS client agree on a byte-level WebSocket protocol without imp
 - Compatibility metadata (TS): `web/src/wire-compatibility.ts`
 - Generated language-neutral manifest: `web/wire-compatibility.json` (generator `web/src/wire-manifest.ts`)
 
+Two rules keep the two halves honest, and both have been broken:
+
+- **Every `wire-golden/*.bin` fixture needs a decode test on the TS side.** A fixture
+  the Go generator writes and nothing in `web/src/wire-golden.test.ts` reads pins one
+  half of a two-language contract: a layout change then fails loudly in Go and
+  silently in the browser. Add the fixture and its consumer assertions in the same
+  change.
+- **A client → server control is a TEXT frame on an upgraded socket.** The v3
+  `0x00`-sentinel binary form is only for the pre-upgrade bootstrap. Past the
+  upgrade the server reads a binary frame as terminal INPUT, so a control sent that
+  way is typed into the user's program and counted in the received-byte ledger.
+  Send through `sendControl`, which owns that decision, rather than reaching for
+  `controlFrame` directly.
+
 The Go and TypeScript artifacts can be installed and upgraded independently. Package-version equality isn't the compatibility contract. Each release exports a current wire revision and a directional receiver floor:
 
 - Go: `terminal.WireProtocolVersion` and `terminal.MinSupportedClientWireVersion`

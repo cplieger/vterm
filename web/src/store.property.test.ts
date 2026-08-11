@@ -160,7 +160,6 @@ describe("LineStore invariants (property)", () => {
   });
 });
 
-
 // The paging half (docs/paged-scrollback.md §7): the same generated-interleaving
 // treatment, extended with a SOLICITED flag per batch so the guard-2 split is
 // generated rather than pinned by example. Under the solicited-range doctrine an
@@ -291,7 +290,12 @@ describe("LineStore paging invariants (property)", () => {
           for (const op of ops) {
             switch (op.kind) {
               case "scroll": {
-                s.applyScroll(scrollOf(next, Array.from({ length: op.count }, (_, i) => `L${next + i}`)));
+                s.applyScroll(
+                  scrollOf(
+                    next,
+                    Array.from({ length: op.count }, (_, i) => `L${next + i}`),
+                  ),
+                );
                 next += op.count;
                 // An EMPTY frame is not the batch landing: it applies no line,
                 // so it cannot end the post-jump transient. (The property found
@@ -316,7 +320,10 @@ describe("LineStore paging invariants (property)", () => {
                 if (hi <= lo) {
                   break;
                 }
-                const msg = scrollOf(lo, Array.from({ length: hi - lo }, (_, i) => `H${lo + i}`));
+                const msg = scrollOf(
+                  lo,
+                  Array.from({ length: hi - lo }, (_, i) => `H${lo + i}`),
+                );
                 if (op.solicited) {
                   s.noteSolicited(lo, hi);
                   s.applyHistoryScroll(msg, viewport);
@@ -346,7 +353,8 @@ describe("LineStore paging invariants (property)", () => {
                 });
                 // A jump is only PREDICTED when the ack declares paging and the
                 // replay really starts above what this socket reported.
-                const jumped = op.paging && op.jump && s.getWindow().height === 0 && s.browseCacheSize() > 0;
+                const jumped =
+                  op.paging && op.jump && s.getWindow().height === 0 && s.browseCacheSize() > 0;
                 midJump = midJump || jumped;
                 if (jumped) {
                   // The batch that follows a jump lands ABOVE the hole — the

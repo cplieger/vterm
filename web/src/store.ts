@@ -188,8 +188,6 @@ function evictionBatch(maxLines: number): number {
  */
 export const RESIDENT_TAIL_CAP = 1500;
 
-
-
 /** Lines of paged-in history retained as disposable cache. Engine-internal. */
 export const BROWSE_CACHE_CAP = 2500;
 
@@ -255,8 +253,8 @@ export interface StoreChanges {
   fullReset: boolean;
 }
 
-
-function emptyWindow(): WindowState {  return {
+function emptyWindow(): WindowState {
+  return {
     base: 0,
     height: 0,
     cursorRow: 0,
@@ -371,7 +369,7 @@ export class LineStore {
   /** When browse cache was last created or read, for the consumer's TTL. */
   private browseActivityMs = 0;
 
-/**
+  /**
    * Whether the last resumeAck declared paging. Kept because the RENDERER needs
    * it and cannot derive it: §5.4's top-of-store marker says something different
    * about the history above what is held depending on whether a fetch can bring
@@ -758,7 +756,11 @@ export class LineStore {
     }
     const candidates = interiorGaps(runs);
     const lowest = runs[0]?.lo ?? 0;
-    if (lowest > 0 && lowest > this.pagingFloor && (this.serverOldest < 0 || lowest > this.serverOldest)) {
+    if (
+      lowest > 0 &&
+      lowest > this.pagingFloor &&
+      (this.serverOldest < 0 || lowest > this.serverOldest)
+    ) {
       candidates.push({ lo: this.pagingFloor, hi: lowest });
     }
     // `gapHigh > pagingFloor`, deliberately NOT gapLow: after a ring exhaustion
@@ -1239,7 +1241,6 @@ export class LineStore {
     this.highest = max;
   }
 
-
   /**
    * Full reset: drop all lines and window state. Used on server restart (a new
    * boot epoch), where absolute indices start over from 0 and any retained
@@ -1403,7 +1404,8 @@ export class LineStore {
     // constructed, because it has to be the store's own cap as well as the trim
     // bound — passing the raw value here gave `fromSnapshot(snap, 0)` a store
     // that trimmed at 5000 and then evicted almost everything on the next append.
-    const cap = maxLines !== undefined && Number.isInteger(maxLines) && maxLines > 0 ? maxLines : undefined;
+    const cap =
+      maxLines !== undefined && Number.isInteger(maxLines) && maxLines > 0 ? maxLines : undefined;
     const bound = cap ?? MAX_LINES;
     const store = new LineStore(cap);
     const pairs: [number, WireRun[]][] = [];
@@ -1781,7 +1783,8 @@ export class LineStore {
     for (const key of this.lines.keys()) {
       if (key > k && (min < 0 || key < min)) {
         min = key;
-      }    }
+      }
+    }
     return min;
   }
 

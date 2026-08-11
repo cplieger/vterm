@@ -58,11 +58,24 @@ func requireSetsid(t *testing.T) string {
 
 // startMarked spawns a shell carrying the domain's marker and returns the head.
 // The caller reaps the head itself, exactly as the engine's monitor does.
+//
+// The environment is composed by the PRODUCTION path rather than by hand.
+// childEnv is what prepends the marker AND strips every other assignment to that
+// key, and a fixture restating either rule can drift from it. It did: this
+// fixture used to build `append([]string{s.envPair()}, os.Environ()...)` and
+// claimed to mirror the spawn path, which silently staged an UNMARKED tree
+// whenever the ambient environment already carried the key — os/exec keeps the
+// LAST value for a repeated key, so the ambient assignment won. Every process
+// running inside one of these very sessions carries it, which is where this suite
+// is developed, so the whole file failed there and passed on CI.
+//
+// A bare Handler is the right receiver: it carries no WithEnv, so the domain's
+// own marker is the only assignment to the key, which is precisely the state
+// these tests need staged.
 func startMarked(t *testing.T, s *sessionReap, script string) *exec.Cmd {
 	t.Helper()
 	cmd := exec.Command("/bin/sh", "-c", script)
-	// Marker first, mirroring the engine's spawn path (reap.go explains why).
-	cmd.Env = append([]string{s.envPair()}, os.Environ()...)
+	cmd.Env = (&Handler{}).childEnv(s)
 	if err := cmd.Start(); err != nil {
 		t.Fatalf("start marked tree: %v", err)
 	}
@@ -301,6 +314,54 @@ func TestReapMarkerSurvivesADuplicateKeyFromWithEnv(t *testing.T) {
 	if !slices.Contains(members, h.cmd.Process.Pid) {
 		t.Fatalf("a consumer setting %s displaced the engine's marker: session pid %d is outside its own domain (members=%v)",
 			reapMarkerEnv, h.cmd.Process.Pid, members)
+	}
+}
+
+// The INHERITED environment can carry this key too, and it is the source the
+// engine controls least: a server started from inside one of these sessions
+// inherits that session's live marker, so without the strip every session it
+// spawns would carry a marker the engine never minted — the scan would match
+// nothing and reaping would be silently off for the whole process. That is not
+// hypothetical; it is how this suite's own failures were found.
+//
+// Uses t.Setenv (hence no t.Parallel: the two are incompatible) so the ambient
+// value is a fixture rather than a property of the machine — this test must fail
+// on a clean CI runner too, not only inside one of these sessions.
+func TestReapMarkerSurvivesAnInheritedMarker(t *testing.T) {
+	t.Setenv(reapMarkerEnv, "inherited-from-an-outer-session")
+
+	h := NewHandler([]string{"/bin/sleep", "60"}, WithWorkDir("/"), WithLogger(nil))
+	if err := h.ensureStarted(80, 24); err != nil {
+		t.Fatalf("ensureStarted: %v", err)
+	}
+	defer h.Shutdown()
+
+	if h.reap == nil {
+		t.Fatal("no reap domain was minted for a session with reaping on by default")
+	}
+	if h.reap.marker == "inherited-from-an-outer-session" {
+		t.Fatal("the inherited value became the domain's marker")
+	}
+	members := reapFindByMarker(h.reap.marker)
+	if !slices.Contains(members, h.cmd.Process.Pid) {
+		t.Fatalf("an inherited %s displaced the engine's marker: session pid %d is outside its own domain (members=%v)",
+			reapMarkerEnv, h.cmd.Process.Pid, members)
+	}
+	// The child must carry exactly ONE assignment to the key. Two would mean the
+	// strip ran but the prepend did not dedup, leaving the scan's answer dependent
+	// on which copy execve kept.
+	env := h.childEnv(h.reap)
+	assignments := 0
+	for _, kv := range env {
+		if strings.HasPrefix(kv, reapMarkerEnv+"=") {
+			assignments++
+		}
+	}
+	if assignments != 1 {
+		t.Errorf("child env carries %d assignments to %s, want exactly 1", assignments, reapMarkerEnv)
+	}
+	if len(env) == 0 || env[0] != h.reap.envPair() {
+		t.Errorf("marker is not the first entry; the bounded environ read depends on it")
 	}
 }
 

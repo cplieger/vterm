@@ -126,16 +126,22 @@ func (s *sessionReap) envPair() string {
 	return reapMarkerEnv + "=" + s.marker
 }
 
-// stripReapMarker drops any consumer-supplied assignment to the marker key.
+// stripReapMarker drops any assignment to the marker key from an environment
+// slice.
 //
 // This is not tidiness, it is what makes the marker authoritative. os/exec
 // deduplicates the environment it passes to execve and keeps the LAST value for
-// a repeated key, so a consumer's WithEnv entry — appended after the engine's own
-// variables — would otherwise replace the engine's marker value outright. The
-// session's tree would then carry a marker the engine never minted, the scan
-// would match nothing, and reaping would be silently off for that session. A
-// test pins exactly this (TestReapMarkerSurvivesADuplicateKeyFromWithEnv);
-// without the strip it fails.
+// a repeated key, so any assignment appended after the engine's own prepended
+// marker replaces it outright. The session's tree would then carry a marker the
+// engine never minted, the scan would match nothing, and reaping would be
+// silently off for that session.
+//
+// The spawn path applies it to BOTH sources it composes (childEnv): a consumer's
+// WithEnv, and the process's own inherited environment. The inherited one matters
+// more, because it is the source the engine does not control: a server started
+// from inside one of these sessions inherits that session's live marker. Two
+// tests pin the pair — TestReapMarkerSurvivesADuplicateKeyFromWithEnv and
+// TestReapMarkerSurvivesAnInheritedMarker; without either strip, one fails.
 func stripReapMarker(env []string) []string {
 	prefix := reapMarkerEnv + "="
 	out := env[:0:0]

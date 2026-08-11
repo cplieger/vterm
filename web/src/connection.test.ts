@@ -15,7 +15,9 @@
 
 import { describe, it, expect, beforeEach, vi, afterEach } from "vitest";
 import {
+  adoptPersistedEpoch,
   connect,
+  currentSessionId,
   disconnect,
   forgetSession,
   generateSessionId,
@@ -23,6 +25,7 @@ import {
   reconnectNow,
   sendBinary,
   sendResize,
+  serverEpochOf,
   setSession,
 } from "./connection.js";
 import * as modes from "./modes.js";
@@ -126,6 +129,8 @@ interface DecodedControlFrame {
   haveThrough?: number;
   sentBytes?: number;
   sessionId?: string;
+  cols?: number;
+  rows?: number;
 }
 
 function decodeControlFrame(arg: unknown): DecodedControlFrame | null {
@@ -319,6 +324,109 @@ describe("connection: wake reconnect resumes from the held index (bug 2)", () =>
     expect(resume!.haveThrough).toBe(-1);
   });
 
+  it("announces the initial size BEFORE the resume so the snapshot comes back at it", () => {
+    // Order is the point: the server applies a resize the moment it decodes it,
+    // so a resize preceding the resume makes the resume's window snapshot and
+    // history replay arrive at this client's geometry. If it arrives afterwards,
+    // the client is answered at whatever size the session last held and a
+    // program that redraws on SIGWINCH then reprints INTO the replay it just
+    // applied (measured: the restore's row count collapsed mid-flight).
+    init({ ...baseCallbacks(), initialSize: () => ({ cols: 100, rows: 40 }) });
+    connect();
+    const sock = allMockWebSockets[0]!;
+    sock.fireOpen();
+
+    const frames = controlFramesSent(sock);
+    const resizeAt = frames.findIndex((m) => m.type === "resize");
+    const resumeAt = frames.findIndex((m) => m.type === "resume");
+    expect(resizeAt).toBeGreaterThanOrEqual(0);
+    expect(resumeAt).toBeGreaterThanOrEqual(0);
+    expect(resizeAt).toBeLessThan(resumeAt);
+    expect(frames[resizeAt]!.cols).toBe(100);
+    expect(frames[resizeAt]!.rows).toBe(40);
+  });
+
+  it("announces nothing when the consumer cannot measure yet, leaving the resume first", () => {
+    // null is the explicit "not yet" answer (fonts still loading, viewport mid
+    // transition). Announcing an untrustworthy measurement is worse than
+    // announcing none: it costs a second resize and therefore a second redraw.
+    init({ ...baseCallbacks(), initialSize: () => null });
+    connect();
+    const sock = allMockWebSockets[0]!;
+    sock.fireOpen();
+
+    const frames = controlFramesSent(sock);
+    expect(frames.some((m) => m.type === "resize")).toBe(false);
+    expect(frames[0]!.type).toBe("resume");
+  });
+
+  it("keeps the resume as message one when no initialSize is wired at all", () => {
+    init(baseCallbacks());
+    connect();
+    const sock = allMockWebSockets[0]!;
+    sock.fireOpen();
+
+    expect(controlFramesSent(sock)[0]!.type).toBe("resume");
+  });
+
+  it("refuses a malformed announced size rather than putting it on the wire", () => {
+    // The server floors an out-of-range resize rather than dropping it, so a 0
+    // or a fraction would silently resize the session to the minimum instead of
+    // being ignored. Validate at the boundary that owns the frame.
+    for (const bad of [
+      { cols: 0, rows: 24 },
+      { cols: 80, rows: 0 },
+      { cols: -80, rows: 24 },
+      { cols: 80.5, rows: 24 },
+      { cols: Number.NaN, rows: 24 },
+    ]) {
+      allMockWebSockets.length = 0;
+      init({ ...baseCallbacks(), initialSize: () => bad });
+      connect();
+      const sock = allMockWebSockets[0]!;
+      sock.fireOpen();
+      expect(controlFramesSent(sock).some((m) => m.type === "resize")).toBe(false);
+    }
+  });
+
+  it("survives a provider that throws, still sending the resume", () => {
+    // The provider runs inside the open handler, after the connect timeout has
+    // been cleared and before the resume is sent, so a throw that escaped would
+    // leave the resume unsent and the connection stuck at "connecting" with no
+    // timeout left to rescue it: a permanently dead socket from a consumer bug.
+    init({
+      ...baseCallbacks(),
+      initialSize: () => {
+        throw new Error("consumer bug");
+      },
+    });
+    connect();
+    const sock = allMockWebSockets[0]!;
+    sock.fireOpen();
+
+    const frames = controlFramesSent(sock);
+    expect(frames.some((m) => m.type === "resize")).toBe(false);
+    expect(frames[0]!.type).toBe("resume");
+    // And the socket is live enough to carry input afterwards.
+    sendResize();
+    expect(controlFramesSent(sock).some((m) => m.type === "resize")).toBe(true);
+  });
+
+  it("does not re-send the announced size when the consumer calls sendResize at the same size", () => {
+    // The announce seeds the deduplication baseline, so a consumer that also
+    // measures on open (the usual shape) costs one resize, not two.
+    init({ ...baseCallbacks(), initialSize: () => ({ cols: 100, rows: 40 }) });
+    connect();
+    const sock = allMockWebSockets[0]!;
+    sock.fireOpen();
+    sendResize(); // computeSize reports 80x24 in baseCallbacks, so this one lands
+    const resizes = controlFramesSent(sock).filter((m) => m.type === "resize");
+    expect(resizes.length).toBe(2);
+
+    sendResize(); // same size again: deduplicated
+    expect(controlFramesSent(sock).filter((m) => m.type === "resize").length).toBe(2);
+  });
+
   it("probes a silent socket with a ping and reconnects when the probe goes unanswered", () => {
     init(baseCallbacks());
     connect();
@@ -423,6 +531,142 @@ describe("connection: per-session resume state (tab switch)", () => {
   // in this file (vitest isolate:false), so each test uses its own session ids
   // to stay isolated rather than relying on a reset that the module does not
   // expose.
+
+  it("treats a hydrated session's first resumeAck as a restart when the epoch moved", () => {
+    // The corruption case persistence exists to avoid. Absolute line indices are
+    // only meaningful within one server process, and restart detection is
+    // otherwise in-memory: the FIRST resumeAck of a page load records the epoch
+    // with nothing to compare against. So a store restored from disk after the
+    // server restarted would be presented as live, and the new session's output
+    // — whose indices start again near 0 — would then be refused by the store's
+    // staleness guard. Seeding the persisted epoch is what gives that first
+    // resumeAck something to compare against.
+    adoptPersistedEpoch("epoch-restored", 111);
+    setSession("epoch-restored");
+    const sock = allMockWebSockets.at(-1)!;
+    sock.fireOpen();
+    sock.fireMessage(resumeAckFrame({ received: 0, serverEpoch: 222 }));
+
+    expect(onServerRestart).toHaveBeenCalledTimes(1);
+  });
+
+  it("stays quiet when a hydrated session reconnects to the SAME server process", () => {
+    // The other half: a wake that finds the server still running must not throw
+    // away the content that was just restored.
+    adoptPersistedEpoch("epoch-same", 333);
+    setSession("epoch-same");
+    const sock = allMockWebSockets.at(-1)!;
+    sock.fireOpen();
+    sock.fireMessage(resumeAckFrame({ received: 0, serverEpoch: 333 }));
+
+    expect(onServerRestart).not.toHaveBeenCalled();
+  });
+
+  it("ignores an absent persisted epoch rather than seeding a sentinel", () => {
+    // 0 means "no epoch was ever recorded", which is indistinguishable from a
+    // version-silent server. Seeding it would make the next real epoch look like
+    // a restart and wipe a perfectly good restore.
+    adoptPersistedEpoch("epoch-zero", 0);
+    adoptPersistedEpoch("epoch-zero", Number.NaN);
+    setSession("epoch-zero");
+    const sock = allMockWebSockets.at(-1)!;
+    sock.fireOpen();
+    sock.fireMessage(resumeAckFrame({ received: 0, serverEpoch: 444 }));
+
+    expect(onServerRestart).not.toHaveBeenCalled();
+  });
+
+  it("treats a hydrated session as restarted when the server reports NO epoch", () => {
+    // The one hole the epoch comparison alone leaves, and it is the design's worst
+    // case rather than a nuisance: a server downgraded to reporting no epoch between
+    // the save and the load never contradicts the seeded value, so the stale store
+    // would be presented as live and would then refuse the new session's low
+    // absolute indices — wrong, and then permanently blank. A seeded epoch is a
+    // CLAIM about restored content; a resume that cannot confirm it is handled as a
+    // restart.
+    adoptPersistedEpoch("epoch-silent-server", 111);
+    setSession("epoch-silent-server");
+    const sock = allMockWebSockets.at(-1)!;
+    sock.fireOpen();
+    sock.fireMessage(resumeAckFrame({ received: 0 })); // no serverEpoch at all
+
+    expect(onServerRestart).toHaveBeenCalledTimes(1);
+  });
+
+  it("does NOT treat a session whose epoch it LEARNED as restarted by a silent ack", () => {
+    // The other half, and the reason the seeded/learned distinction exists: an
+    // epoch learned from an earlier ack is an observation, and a server that reports
+    // none is ordinary operation for it. Resetting live sessions here would be a
+    // catastrophic false positive.
+    setSession("epoch-learned");
+    const first = allMockWebSockets.at(-1)!;
+    first.fireOpen();
+    first.fireMessage(resumeAckFrame({ received: 0, serverEpoch: 222 }));
+    expect(onServerRestart).not.toHaveBeenCalled();
+
+    reconnectNow();
+    const second = allMockWebSockets.at(-1)!;
+    second.fireOpen();
+    second.fireMessage(resumeAckFrame({ received: 0 })); // silent this time
+
+    expect(onServerRestart).not.toHaveBeenCalled();
+  });
+
+  it("refuses to seed an epoch over one a server already reported", () => {
+    // "Seed" is the whole contract: it exists to give the FIRST resumeAck something
+    // to compare against. Overwriting a value a server reported would make a genuine
+    // restart look like agreement, or a live session look restarted — so a caller
+    // that reaches here twice, or after connecting, is refused rather than obeyed.
+    setSession("epoch-no-clobber");
+    const sock = allMockWebSockets.at(-1)!;
+    sock.fireOpen();
+    sock.fireMessage(resumeAckFrame({ received: 0, serverEpoch: 555 }));
+    expect(serverEpochOf("epoch-no-clobber")).toBe(555);
+
+    adoptPersistedEpoch("epoch-no-clobber", 111);
+
+    expect(serverEpochOf("epoch-no-clobber")).toBe(555);
+    expect(onServerRestart).not.toHaveBeenCalled();
+  });
+
+  it("reports the epoch a session's content belongs to, so a snapshot can record it", () => {
+    // The read half. Without it a consumer persisting a store has no way to
+    // record WHICH server process its absolute indices came from, and the seeding
+    // above has nothing to be seeded with.
+    expect(serverEpochOf("epoch-read")).toBe(0);
+    setSession("epoch-read");
+    const sock = allMockWebSockets.at(-1)!;
+    sock.fireOpen();
+    sock.fireMessage(resumeAckFrame({ received: 0, serverEpoch: 555 }));
+
+    expect(serverEpochOf("epoch-read")).toBe(555);
+  });
+
+  it("reports 0 for a session it has never seen rather than throwing", () => {
+    // A save can be attempted for a tab that never completed a resume; 0 is the
+    // same "unknown" value adoptPersistedEpoch ignores, so the pair composes.
+    expect(serverEpochOf("never-connected-at-all")).toBe(0);
+  });
+
+  it("resolves a stable unmanaged session id, so the untabbed path has a key", () => {
+    // The unmanaged single-terminal path's identity is minted inside this module
+    // from sessionStorage. A consumer keying persisted scrollback by session has
+    // nothing else to key it by, and it must be resolvable BEFORE connecting.
+    // Module state persists across tests in this file, so drop the active
+    // session first: "unmanaged" is defined by there being no session set.
+    forgetSession(currentSessionId());
+    const first = currentSessionId();
+    expect(first).not.toBe("");
+    expect(first).toBe(sessionStorage.getItem("vterm-session-id"));
+    // Stable within the page: a second read must not mint a second id, or every
+    // reader would key its storage differently.
+    expect(currentSessionId()).toBe(first);
+  });
+
+  it("reports the MANAGED session once one is set, not the unmanaged id", () => {
+    setSession("managed-id-read");
+    expect(currentSessionId()).toBe("managed-id-read");
+  });
 
   it("routes the socket to ?session=<id> and resumes with a per-sender key derived from it", () => {
     setSession("route-A");

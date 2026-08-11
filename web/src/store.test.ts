@@ -123,6 +123,259 @@ describe("LineStore", () => {
     expect(s.getLine(0)).toBeUndefined();
   });
 
+  it("a window repaint below the staleness floor is applied (guard 2 exempts the live window)", () => {
+    // Found by the interleaved property test while pinning the cap walk: a
+    // frame stream whose base RETREATS below everEvictedThrough (malformed —
+    // the real server's base is a monotonic committed counter) must degrade
+    // to a DRAWN screen, not to window rows silently dropped forever. The
+    // live window is the terminal's writable region and is never stale.
+    const s = new LineStore(50);
+    s.applyScroll(scrollMsg(0, ["a", "b", "c"]));
+    // Push past the cap so rows 0..2 are evicted and marked stale.
+    const tall: Record<number, string> = {};
+    for (let y = 0; y < 48; y++) {
+      tall[y] = `w${String(3 + y)}`;
+    }
+    s.applyScreen(screenMsg(3, 48, tall));
+    expect(s.getLine(0)).toBeUndefined(); // 0..2 evicted (stale floor >= 2)
+    // A malformed stream retreats the base to 0: the window row must paint.
+    s.applyScreen(screenMsg(0, 1, { 0: "drawn" }));
+    expect(s.getLine(0)?.[0]?.t).toBe("drawn");
+  });
+
+  it("evicts in batches at the cap (hysteresis), so an at-cap stream shifts the DOM top once per batch", () => {
+    // Caps >= 32 evict in batches of floor(cap/16) (capped at 256): eviction
+    // starts only once the cap is EXCEEDED and then frees the whole batch, so
+    // the next (batch - 1) appends evict nothing. One whole-scroller content
+    // shift per batch, not per line — the WebKit tiled-layer churn this
+    // exists to avoid — while the retained count never exceeds the cap.
+    const cap = 64; // batch = 4
+    const s = new LineStore(cap);
+    const texts = Array.from({ length: cap }, (_, i) => `l${String(i)}`);
+    s.applyScroll(scrollMsg(0, texts)); // exactly at the cap: nothing evicts
+    expect(s.drainChanges().evictedLines).toEqual([]);
+    expect(s.oldestIndex()).toBe(0);
+
+    s.applyScroll(scrollMsg(cap, ["over"])); // 65th line: one batch evicts
+    const first = s.drainChanges();
+    expect(first.evictedLines.sort((a, b) => a - b)).toEqual([0, 1, 2, 3]);
+    expect(s.oldestIndex()).toBe(4);
+
+    // The freed headroom absorbs the next (batch - 1) appends eviction-free.
+    s.applyScroll(scrollMsg(cap + 1, ["a", "b", "c"]));
+    expect(s.drainChanges().evictedLines).toEqual([]);
+
+    // The next append past the cap evicts the next batch; the count never
+    // exceeded the cap at any point in between.
+    s.applyScroll(scrollMsg(cap + 4, ["d"]));
+    const second = s.drainChanges();
+    expect(second.evictedLines.sort((a, b) => a - b)).toEqual([4, 5, 6, 7]);
+    let retained = 0;
+    s.forEachLine(() => retained++);
+    expect(retained).toBeLessThanOrEqual(cap);
+    // Stale re-sends below the batched eviction point stay dropped.
+    s.applyScroll(scrollMsg(0, ["stale"]));
+    expect(s.getLine(0)).toBeUndefined();
+  });
+
+  it("batch headroom comes from history only: a batch never eats live-window rows", () => {
+    // R1 adversarial finding (fable/gpt): with a valid consumer cap near the
+    // terminal height (cap 64 -> batch 4, screen height 62), retained history
+    // at the overflow moment (3 rows) is SMALLER than the batch. The batch
+    // target must stop at the window base rather than evicting window rows —
+    // an evicted window row's index lands in everEvictedThrough, after which
+    // guard 2 drops every repaint of that row until the base advances (a
+    // permanently blank top row on a stable-base full-screen program).
+    const height = 62;
+    const winRows = (base: number): Record<number, string> => {
+      const out: Record<number, string> = {};
+      for (let y = 0; y < height; y++) {
+        out[y] = `r${String(base + y)}`;
+      }
+      return out;
+    };
+    const s = new LineStore(64);
+    s.applyScreen(screenMsg(0, height, winRows(0)));
+    // Scroll 3 rows into history: rows 0..2 are history, window is 3..64.
+    // Size 65 > 64 -> one eviction pass. It must take ONLY the 3 history rows.
+    s.applyScreen(screenMsg(3, height, winRows(3)));
+    expect(s.oldestIndex()).toBe(3);
+    expect(s.getLine(3)).toBeDefined();
+    s.drainChanges();
+    // A repaint of the window base row is APPLIED, not dropped as stale.
+    s.applyScreen(screenMsg(3, height, { 0: "repainted" }));
+    expect(lineTexts(s)[0]).toEqual({ abs: 3, text: "repainted" });
+  });
+
+  it("a cap at or below the screen height keeps the full screen (history budget, floored at the window)", () => {
+    // gpt R1 F1: scrollbackLines is public now, so a cap smaller than the
+    // terminal (8 vs a 24-row screen) is reachable. The cap governs HISTORY;
+    // the live screen is never truncated by it.
+    const height = 24;
+    const winRows = (base: number): Record<number, string> => {
+      const out: Record<number, string> = {};
+      for (let y = 0; y < height; y++) {
+        out[y] = `r${String(base + y)}`;
+      }
+      return out;
+    };
+    const s = new LineStore(8);
+    s.applyScreen(screenMsg(0, height, winRows(0)));
+    // Every window row retained despite size (24) > cap (8).
+    expect(s.oldestIndex()).toBe(0);
+    expect(s.highestIndex()).toBe(height - 1);
+    expect(lineTexts(s).length).toBe(height);
+    // The window slides: rows 0..1 become history, and only they are evictable.
+    s.applyScreen(screenMsg(2, height, winRows(2)));
+    expect(s.oldestIndex()).toBe(2); // history evicted, window 2..25 intact
+    expect(lineTexts(s).length).toBe(height);
+    expect(s.getLine(2)).toBeDefined();
+  });
+
+  it("an alt-screen frame does not disturb the main window's retention floor", () => {
+    // R4 (all three models): updateWindowCursor used to copy the ALT grid's
+    // height into win.height, so a smaller alt frame (12 rows over a 24-row
+    // main screen) lowered the advertised bound below the protected main rows
+    // and pointed the guard-2 exemption at a phantom range. The alt grid's
+    // height lives in altRows; win keeps the MAIN screen's geometry — the
+    // region alt exit must restore.
+    const height = 24;
+    const winRows = (base: number): Record<number, string> => {
+      const out: Record<number, string> = {};
+      for (let y = 0; y < height; y++) {
+        out[y] = `r${String(base + y)}`;
+      }
+      return out;
+    };
+    const s = new LineStore(8);
+    s.applyScreen(screenMsg(0, height, winRows(0)));
+    expect(lineTexts(s).length).toBe(height); // floored at the live screen
+    // Enter a SMALLER alt screen (vim opened in a shorter logical grid).
+    s.applyScreen(screenMsg(0, 12, { 0: "alt row" }, { altActive: true }));
+    expect(s.isAlt()).toBe(true);
+    expect(lineTexts(s).length).toBe(height); // main rows untouched
+    // The separating observable (R5 review: without it this test passed under
+    // the reverted fix): the window descriptor still reports the MAIN screen's
+    // geometry during alt — the retention floor and the guard-2 exemption are
+    // defined over it, and it is what alt exit restores. The alt grid's own
+    // height lives in the altRows.
+    expect(s.getWindow().height).toBe(height);
+    expect(s.getAltRows().length).toBe(12);
+    // Exit alt: the full main screen is still there to restore.
+    s.applyScreen(screenMsg(0, height, {}));
+    expect(s.isAlt()).toBe(false);
+    expect(lineTexts(s).length).toBe(height);
+    expect(s.getLine(0)).toBeDefined();
+  });
+
+  it("a scroll burst above a stale window cannot escape the cap (the resume-replay shape)", () => {
+    // R2 adversarial finding (claude): the window guard stopped the eviction
+    // LOOP once the oldest key reached the window base, but applyScroll does
+    // not restore the tail invariant (only a screen frame runs
+    // truncateBelowWindow), so history committed ABOVE the window — a resume
+    // replay delivered before its window frame, or a malformed stream —
+    // escaped the cap entirely (measured: 20k lines retained at cap 64).
+    // The skip-over-window walk bounds every apply at max(cap, window height).
+    const height = 24;
+    const winRows = (base: number): Record<number, string> => {
+      const out: Record<number, string> = {};
+      for (let y = 0; y < height; y++) {
+        out[y] = `r${String(base + y)}`;
+      }
+      return out;
+    };
+    const cap = 64;
+    const s = new LineStore(cap);
+    // History 60..99 below a window at 100..123 — an at-cap steady state.
+    s.applyScroll(
+      scrollMsg(
+        60,
+        Array.from({ length: 40 }, (_, i) => `h${String(60 + i)}`),
+      ),
+    );
+    s.applyScreen(screenMsg(100, height, winRows(100)));
+    // A 400-line replay lands ABOVE the stale window bottom, no screen frame.
+    s.applyScroll(
+      scrollMsg(
+        124,
+        Array.from({ length: 400 }, (_, i) => `r${String(124 + i)}`),
+      ),
+    );
+    let retained = 0;
+    s.forEachLine(() => retained++);
+    expect(retained).toBeLessThanOrEqual(Math.max(cap, height));
+    // The window survived the burst untouched...
+    for (let y = 0; y < height; y++) {
+      expect(s.getLine(100 + y)).toBeDefined();
+    }
+    // ...the surviving band is the NEWEST replay lines (evicted oldest-first;
+    // the ones adjacent to the incoming window), so once the window frame
+    // advances past the seam the retained set converges back to one
+    // contiguous block. (R3 finding: a newest-first trim instead parked a
+    // permanent interior hole that resume — which replays only above
+    // haveThrough — could never backfill.)
+    expect(s.getLine(523)).toBeDefined();
+    expect(s.getLine(124)).toBeUndefined();
+    // ...and was NOT poisoned as stale: a repaint of the window base row is
+    // applied (the live window is exempt from the staleness guard).
+    s.drainChanges();
+    s.applyScreen(screenMsg(100, height, { 0: "repainted" }));
+    expect(s.getLine(100)?.[0]?.t).toBe("repainted");
+    // That screen frame also restored the tail invariant: the whole
+    // above-window band went with it (truncateBelowWindow), leaving exactly
+    // the window — the store healed back under the plain cap.
+    retained = 0;
+    s.forEachLine(() => retained++);
+    expect(retained).toBe(height);
+  });
+
+  it("converges to one contiguous block after the window advances past a replay seam", () => {
+    // R3/R4 adversarial rounds: eviction direction inside the above-window
+    // band is load-bearing. Oldest-first keeps the NEWEST replay lines
+    // adjacent to the incoming window, so once the window frame lands at the
+    // replay head and output streams on, the stale rows and the seam evict
+    // away and the retained set is contiguous again. (A newest-first trim
+    // instead parked a permanent interior hole that resume — which replays
+    // only above haveThrough — could never backfill.)
+    const height = 24;
+    const winRows = (base: number): Record<number, string> => {
+      const out: Record<number, string> = {};
+      for (let y = 0; y < height; y++) {
+        out[y] = `r${String(base + y)}`;
+      }
+      return out;
+    };
+    const cap = 64;
+    const s = new LineStore(cap);
+    s.applyScroll(
+      scrollMsg(
+        60,
+        Array.from({ length: 40 }, (_, i) => `h${String(60 + i)}`),
+      ),
+    );
+    s.applyScreen(screenMsg(100, height, winRows(100)));
+    s.applyScroll(
+      scrollMsg(
+        124,
+        Array.from({ length: 400 }, (_, i) => `r${String(124 + i)}`),
+      ),
+    );
+    // The real window frame lands at the replay head, then output streams on
+    // (each frame slides the window down one row, the protocol shape).
+    for (let i = 0; i <= 40; i++) {
+      s.applyScreen(screenMsg(500 + i, height, winRows(500 + i)));
+    }
+    // The stale window rows and the seam have evicted away oldest-first:
+    // what remains is one contiguous block ending at the live window bottom.
+    const abses: number[] = [];
+    s.forEachLine((abs) => abses.push(abs));
+    expect(abses.length).toBeLessThanOrEqual(cap);
+    expect(abses[abses.length - 1]).toBe(540 + height - 1);
+    for (let i = 1; i < abses.length; i++) {
+      expect(abses[i]! - abses[i - 1]!).toBe(1); // no interior gaps
+    }
+  });
+
   it("advances oldest across a large index gap when evicting at the cap (bounded scan, no integer walk)", () => {
     // A compromised or malformed server frame can deliver content at an
     // absolute index far above the retained low index. When the cap then
@@ -207,6 +460,10 @@ describe("LineStore", () => {
   it("routes alt-screen frames to an ephemeral grid without touching the abs store", () => {
     const s = new LineStore();
     s.applyScroll(scrollMsg(0, ["history0", "history1"]));
+    // Establish the MAIN window first (base 2), as every live session has
+    // before an app enters alt — it is the frozen region the alt gate
+    // protects.
+    s.applyScreen(screenMsg(2, 2, { 0: "main 0", 1: "main 1" }));
     s.drainChanges();
     // Enter alt screen (e.g. vim): a 2-row ephemeral grid.
     s.applyScreen(screenMsg(2, 2, { 0: "~ alt 0", 1: "~ alt 1" }, { altActive: true }));
@@ -216,14 +473,38 @@ describe("LineStore", () => {
     expect(lineTexts(s)).toEqual([
       { abs: 0, text: "history0" },
       { abs: 1, text: "history1" },
+      { abs: 2, text: "main 0" },
+      { abs: 3, text: "main 1" },
     ]);
-    // A scroll frame during alt is dropped (protocol invariant).
-    s.applyScroll(scrollMsg(2, ["should-not-apply"]));
-    expect(s.getLine(2)).toBeUndefined();
+    // A scroll frame AT or ABOVE the frozen main base during alt is dropped
+    // (protocol invariant: the server never emits live scroll during alt,
+    // and the frozen window region must not be rewritten under vim)...
+    s.applyScroll(scrollMsg(4, ["should-not-apply"]));
+    expect(s.getLine(4)).toBeUndefined();
+    // ...but history strictly below it applies even during alt (2026-08 — a
+    // resume replay or a post-resume durable chunk racing an alt flip must
+    // not be lost; the write-ordering race's last residual). Alt paints from
+    // the ephemeral grid, so the update surfaces at alt exit's rebuild.
+    s.applyScroll(scrollMsg(0, ["history0+", "history1+"]));
+    expect(s.getLine(0)?.[0]?.t).toBe("history0+");
+    expect(s.getLine(1)?.[0]?.t).toBe("history1+");
     // Exit alt: grid cleared, history intact.
     s.applyScreen(screenMsg(2, 2, { 0: "history0", 1: "history1" }));
     expect(s.isAlt()).toBe(false);
     expect(s.getAltRows()).toEqual([]);
+  });
+
+  it("accepts alt-time history when no main window was ever seen (fresh attach into alt)", () => {
+    // A fresh tab attaching straight into an in-alt session has no frozen
+    // main window (the resume replay lands pre-flip on the normal path; this
+    // covers a post-batch stripped durable chunk arriving after the flip).
+    // With no window there is no region to protect, so the chunk stores
+    // exactly as it would on the main path and surfaces at alt exit.
+    const s = new LineStore();
+    s.applyScreen(screenMsg(0, 2, { 0: "~ alt 0", 1: "~ alt 1" }, { altActive: true }));
+    expect(s.isAlt()).toBe(true);
+    s.applyScroll(scrollMsg(0, ["late0"]));
+    expect(s.getLine(0)?.[0]?.t).toBe("late0");
   });
 
   it("rejects invalid indices", () => {
@@ -347,5 +628,254 @@ describe("LineStore", () => {
       { abs: 6, text: "b" },
       { abs: 7, text: "c" },
     ]);
+  });
+});
+
+// --- Persistence: snapshot / fromSnapshot -----------------------------------
+//
+// The store can be serialized as plain data so a consumer may keep scrollback
+// across a page discard (on iOS, a backgrounded tab being evicted is routine,
+// and a reloaded page otherwise resumes with haveThrough = -1 and pulls the
+// server's whole ring).
+//
+// The load-bearing part is what a snapshot deliberately does NOT carry, and the
+// epoch it does; see StoreSnapshot's doc comment.
+
+describe("LineStore persistence", () => {
+  function seeded(n: number, from = 0): LineStore {
+    const store = new LineStore();
+    store.applyScroll(
+      scrollMsg(
+        from,
+        Array.from({ length: n }, (_, i) => `L${from + i}`),
+      ),
+    );
+    return store;
+  }
+
+  it("round-trips lines at their absolute indices, preserving every run field", () => {
+    const store = new LineStore();
+    const fancy: WireRun[] = [
+      { t: "styled", f: -1, b: 4, uc: -1, a: 1 | 4, u: "https://example.test/x" },
+      { t: "plain" },
+    ];
+    store.applyScroll({ type: "scroll", firstIndex: 7, lines: [fancy], inputAck: 0 });
+
+    const snap = store.snapshot(1234);
+    expect(snap).not.toBeNull();
+    // Survives a structured clone, which is what an IndexedDB write does: no
+    // class instances, no functions, no cycles.
+    const cloned = structuredClone(snap!);
+    const back = LineStore.fromSnapshot(cloned);
+    expect(back).not.toBeNull();
+    expect(back!.getLine(7)).toEqual(fancy);
+    expect(back!.oldestIndex()).toBe(7);
+    expect(back!.highestIndex()).toBe(7);
+  });
+
+  it("reports the depth a bounded tail does not have, so the trim marker is honest", () => {
+    const store = seeded(10);
+    const snap = store.snapshot(0, 4); // keep only the newest 4 of 10
+    expect(snap!.lines.length).toBe(4);
+    expect(snap!.oldest).toBe(6);
+    expect(snap!.highest).toBe(9);
+
+    const back = LineStore.fromSnapshot(snap)!;
+    expect(back.oldestIndex()).toBe(6);
+    // everEvictedThrough = oldest - 1, so the store knows history is missing
+    // below the tail and the renderer shows "earlier output trimmed" rather than
+    // implying the buffer is complete.
+    expect(back.hasTrimmedHistory()).toBe(true);
+  });
+
+  it("hydrates every line as dirty so the renderer actually paints them", () => {
+    const back = LineStore.fromSnapshot(seeded(3).snapshot(0))!;
+    const changes = back.drainChanges();
+    expect(changes.dirtyLines.sort((a, b) => a - b)).toEqual([0, 1, 2]);
+  });
+
+  it("carries the server boot epoch, which is what makes hydrating safe at all", () => {
+    // Absolute indices are only meaningful within one server process. Without
+    // this field a consumer cannot tell the connection layer which epoch its
+    // restored content belongs to, and a hydrate across a server restart would
+    // present stale content as live AND then have the new session's low-index
+    // output refused by the staleness guard.
+    expect(seeded(2).snapshot(987654321)!.serverEpoch).toBe(987654321);
+    expect(seeded(2).snapshot(Number.NaN)!.serverEpoch).toBe(0);
+  });
+
+  it("refuses to snapshot an empty store, so it cannot overwrite a good one", () => {
+    expect(new LineStore().snapshot(1)).toBeNull();
+  });
+
+  it("does not persist the window, the server bound, or the alternate screen", () => {
+    const store = new LineStore();
+    store.applyScreen(screenMsg(0, 2, { 0: "a", 1: "b" }));
+    store.noteResumeBounds(50, 10);
+    const snap = store.snapshot(1)!;
+    // Only the documented keys. A future field must be added to StoreSnapshot
+    // deliberately, with its own reasoning, rather than leaking in.
+    expect(Object.keys(snap).sort()).toEqual(["highest", "lines", "oldest", "serverEpoch", "v"]);
+  });
+
+  it("discards a snapshot of a different shape version", () => {
+    const snap = seeded(3).snapshot(1)!;
+    expect(LineStore.fromSnapshot({ ...snap, v: snap.v + 1 })).toBeNull();
+  });
+
+  it("discards malformed snapshots instead of half-restoring one", () => {
+    const good = seeded(3).snapshot(1)!;
+    const cases: unknown[] = [
+      null,
+      undefined,
+      "nope",
+      {},
+      { ...good, lines: [] },
+      { ...good, lines: "nope" },
+      { ...good, lines: [[0]] }, // pair too short
+      { ...good, lines: [["0", [{ t: "x" }]]] }, // non-numeric index
+      { ...good, lines: [[1.5, [{ t: "x" }]]] }, // non-integer index
+      { ...good, lines: [[-1, [{ t: "x" }]]] }, // negative index
+      { ...good, lines: [[0, "nope"]] }, // runs not an array
+      {
+        ...good,
+        lines: [
+          [5, [{ t: "x" }]],
+          [3, [{ t: "y" }]],
+        ],
+      }, // not ascending
+      // The run CONTENTS, which is the case the wire path cannot produce and a
+      // snapshot can: a run reaching the renderer with a non-string `t` throws in
+      // its per-character loop, the row stays queued, and every row above it is
+      // blocked — permanently, because a hydrated store is never dropped.
+      { ...good, lines: [[0, [null]]] },
+      { ...good, lines: [[0, [42]]] },
+      { ...good, lines: [[0, ["plain string"]]] },
+      { ...good, lines: [[0, [{ f: 1 }]]] }, // no `t` at all
+      { ...good, lines: [[0, [{ t: 5 }]]] },
+      { ...good, lines: [[0, [{ t: "x", f: "red" }]]] },
+      { ...good, lines: [[0, [{ t: "x", a: Number.NaN }]]] },
+      { ...good, lines: [[0, [{ t: "x", u: 7 }]]] },
+      {
+        ...good,
+        lines: [
+          [5, [{ t: "x" }]],
+          [5, [{ t: "y" }]],
+        ],
+      }, // duplicated index
+    ];
+    for (const bad of cases) {
+      expect(LineStore.fromSnapshot(bad)).toBeNull();
+    }
+  });
+
+  it("keeps applying new lines above a hydrated tail", () => {
+    // The restored store has to be a working store, not just a rendered one:
+    // the session continues at indices above the tail.
+    const back = LineStore.fromSnapshot(seeded(4).snapshot(0))!;
+    back.applyScroll(scrollMsg(4, ["L4"]));
+    expect(back.highestIndex()).toBe(4);
+    expect(lineTexts(back).map((l) => l.text)).toEqual(["L0", "L1", "L2", "L3", "L4"]);
+  });
+
+  it("refuses a line below the hydrated tail, which is the stale-index guard", () => {
+    // A bounded tail means everything below it was deliberately dropped. A late
+    // re-delivery of one of those lines must not reappear underneath the
+    // restored content (apply-line guard 2, via everEvictedThrough).
+    const back = LineStore.fromSnapshot(seeded(10).snapshot(0, 4))!;
+    expect(back.oldestIndex()).toBe(6);
+    back.applyScroll(scrollMsg(2, ["late"]));
+    expect(back.getLine(2)).toBeUndefined();
+    expect(back.oldestIndex()).toBe(6);
+  });
+
+  it("still paints the screen when the window arrives BELOW the hydrated tail", () => {
+    // The counterpart to the guard above, and the case that protects this feature's
+    // own stated worst case rather than its nice-to-have. A hydrated store starts
+    // with a HIGH everEvictedThrough (oldest - 1), so if a window frame then arrives
+    // at a low base without a restart having been detected — an index space
+    // recreated in place, a server downgraded to reporting no epoch — apply-line
+    // guard 2 would refuse every window row and the terminal would be wrong and
+    // then permanently blank, which is precisely the failure the persisted epoch
+    // exists to avoid. Guard 2's live-window exemption is what makes it degrade to
+    // "working screen, no scrollback for a while" instead.
+    //
+    // The exemption belongs to the store's eviction/window rules, not to
+    // persistence, but only persistence can CREATE a store whose everEvictedThrough
+    // is high at construction — so the test belongs here, where it will fail if
+    // that exemption is ever narrowed.
+    const back = LineStore.fromSnapshot(seeded(1000, 3200).snapshot(1))!;
+    expect(back.oldestIndex()).toBe(3200);
+    expect(back.hasTrimmedHistory()).toBe(true);
+
+    back.applyScreen(screenMsg(0, 2, { 0: "after-restart-0", 1: "after-restart-1" }));
+
+    expect(back.getLine(0)?.[0]?.t).toBe("after-restart-0");
+    expect(back.getLine(1)?.[0]?.t).toBe("after-restart-1");
+  });
+
+  it("honors a smaller retention cap on the hydrated store", () => {
+    const back = LineStore.fromSnapshot(seeded(6).snapshot(0), 3);
+    expect(back).not.toBeNull();
+    // Appending past the cap evicts from the top rather than growing forever.
+    back!.applyScroll(scrollMsg(6, ["L6", "L7", "L8", "L9"]));
+    expect(back!.highestIndex()).toBe(9);
+    expect(lineTexts(back!).length).toBeLessThanOrEqual(6);
+  });
+
+  it("accepts every field a real run carries, so a valid snapshot is not rejected", () => {
+    // The other half of the run-contents check: it must not be so strict that the
+    // engine's own output fails it. A run with every optional field, and one with
+    // none beyond `t`, both have to survive.
+    const store = new LineStore();
+    store.applyScroll({
+      type: "scroll",
+      firstIndex: 0,
+      lines: [
+        [{ t: "full", f: -1, b: 4, uc: -1, a: 1 | 4, u: "https://example.test/x" }],
+        [{ t: "bare" } as WireRun],
+      ],
+      inputAck: 0,
+    });
+    const back = LineStore.fromSnapshot(store.snapshot(1));
+    expect(back).not.toBeNull();
+    expect(back!.getLine(1)).toEqual([{ t: "bare" }]);
+  });
+
+  it("gives the hydrated store the SAME cap it trimmed with", () => {
+    // An invalid cap has to fall back for both uses or they disagree: passing the
+    // raw value to the constructor while trimming with the default produced a
+    // store that kept 5000 lines and then evicted almost all of them on the next
+    // append.
+    for (const bad of [0, -1, 1.5, Number.NaN]) {
+      const back = LineStore.fromSnapshot(seeded(6).snapshot(0), bad);
+      expect(back).not.toBeNull();
+      // Appending must not collapse the buffer: the default cap is in force.
+      back!.applyScroll(scrollMsg(6, ["L6", "L7"]));
+      expect(back!.highestIndex()).toBe(7);
+      expect(lineTexts(back!).length).toBe(8);
+    }
+  });
+
+  it("trims a snapshot larger than the cap instead of hydrating over budget", () => {
+    // The cap is a memory budget — the renderer builds one DOM row per retained
+    // line — and the same snapshot outlives a consumer lowering it, so a restore
+    // must respect the cap on the way in rather than waiting for eviction to
+    // claw it back after the rows are already built.
+    const back = LineStore.fromSnapshot(seeded(20).snapshot(0), 8)!;
+    expect(back.oldestIndex()).toBe(12);
+    expect(back.highestIndex()).toBe(19);
+    expect(lineTexts(back).length).toBe(8);
+    // And it says so, rather than implying the buffer is complete.
+    expect(back.hasTrimmedHistory()).toBe(true);
+  });
+
+  it("validates the whole payload before trimming, so a corrupt head still rejects", () => {
+    // Trimming first would let a snapshot whose head is garbage restore its tail
+    // as though nothing were wrong.
+    const good = seeded(20).snapshot(0)!;
+    const corruptHead: [number, WireRun[]][] = [...good.lines];
+    corruptHead[0] = ["nope" as unknown as number, []];
+    expect(LineStore.fromSnapshot({ ...good, lines: corruptHead }, 8)).toBeNull();
   });
 });

@@ -109,6 +109,18 @@ export interface ResumeAckMessage {
    */
   oldestIndex?: number;
   /**
+   * The server DECLARES that it serves demand-paged scrollback (`history`
+   * controls) and that its ring is deep enough to back the client shrinking its
+   * resident tail. Absent on any server too old to carry the ack's third
+   * length-gated tail, which reads the same as false: no paging.
+   *
+   * Capability is declared here rather than probed with a request because this
+   * ack is the first frame of every resume batch — the client knows one RTT
+   * after attach, with nothing sent and no way to mistake a slow link for an
+   * old server.
+   */
+  historyPaging?: boolean;
+  /**
    * The server's wire-protocol revision (third length-gated tail, absent on
    * older servers). A value OUTSIDE the client's supported range means one
    * side runs a stale bundle/binary; the connection module warns and fires
@@ -229,7 +241,23 @@ export type ControlMessage =
       sentBytes: number;
       haveThrough: number;
       protocolVersion: number;
+      /**
+       * Bound the replay to the newest N missing lines. Optional: omitted means
+       * "no bound", which is every pre-paging client's behavior and what an
+       * old server does regardless. Honored only by a server that declares
+       * paging, and clamped by BOTH sides to the same constant so the value
+       * sent equals the value honored (docs/paged-scrollback.md §4.5).
+       */
+      replayMax?: number;
     }
+  /**
+   * Request a page of retained scrollback: at most `maxLines` lines starting at
+   * absolute index `fromAbs`. The reply is an ordinary scroll frame, made
+   * correlatable by falling inside the requested window rather than by a request
+   * id — within a boot epoch an absolute index is immutable, so a frame that
+   * satisfies the window carries the same bytes the awaited reply would have.
+   */
+  | { type: "history"; fromAbs: number; maxLines: number }
   | { type: "ping" }
   /**
    * v4 typed-framing transition (see WIRE_PROTOCOL_VERSION in

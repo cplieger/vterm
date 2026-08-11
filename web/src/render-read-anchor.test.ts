@@ -96,8 +96,11 @@ describe("render: the reading position holds when history is evicted above it", 
     render.init({ output: outputEl, termWrap });
     render.updateFontMetrics();
     scroll.init({ scrollEl: termWrap });
-    // A small retention cap, so eviction is reachable without 5000 rows — but
-    // roomy enough that a reader parked mid-buffer is not themselves trimmed.
+    // A small retention cap, so eviction is reachable without 5000 rows (cap
+    // 60 evicts in batches of 3 — evictionBatch(60)); the mid-buffer readers
+    // below keep a margin well past one batch so they are not themselves
+    // trimmed, and the batch-band case (the reader INSIDE an evicted batch)
+    // has its own test at the end of this file.
     render.bind(new LineStore(60));
   });
 
@@ -157,8 +160,8 @@ describe("render: the reading position holds when history is evicted above it", 
     const wasAt = screenPosOf(reading);
     const text = reading.textContent;
 
-    // More committed lines: at the cap, each evicts one row from the top, so the
-    // content above the reader shrinks.
+    // More committed lines: at the cap, eviction frees a 3-row batch from the
+    // top once the cap is exceeded, so the content above the reader shrinks.
     await commitLines(5);
     expect(outputEl.children.length).toBeLessThan(rowsBefore + 5); // eviction happened
     expect(reading.parentElement).toBe(outputEl); // the reader's row survived
@@ -213,6 +216,37 @@ describe("render: the reading position holds when history is evicted above it", 
     await tick();
 
     expect(termWrap.scrollTop).toBe(before);
+  });
+
+  it("re-anchors on the nearest surviving row when the anchor row is inside an evicted batch", async () => {
+    // R1 adversarial finding (claude): batched eviction can remove the ANCHOR
+    // ROW itself — a reader parked within a batch of the buffer top loses the
+    // anchored element while rows they had not read yet survive below it. The
+    // old bail-out ("mass trim") skipped correction entirely, so on Safari the
+    // view jumped past up to batch-1 lines of surviving, unread content. The
+    // anchor now carries the absolute index and re-resolves to the first
+    // surviving row at or after it.
+    await fillToCap();
+    // After the fill the oldest retained row is abs 6 (two 3-row batches
+    // evicted 0..5 during the fill). Park the reader ON abs 8 — inside the
+    // NEXT eviction batch (6,7,8).
+    const anchorRow = outputEl.querySelector('[data-abs="8"]') as HTMLElement;
+    expect(anchorRow).not.toBeNull();
+    userScrollTo(anchorRow.offsetTop);
+    expect(scroll.isUserScrolledUp()).toBe(true);
+
+    // Three more commits push the store over the cap once: one batch evicts
+    // exactly rows 6..8, including the anchor row.
+    await commitLines(3);
+    expect(outputEl.querySelector('[data-abs="8"]')).toBeNull(); // anchor evicted
+    const survivor = outputEl.querySelector('[data-abs="9"]') as HTMLElement;
+    expect(survivor).not.toBeNull();
+
+    // The first surviving row after the anchored index now sits exactly where
+    // the reader was looking; without re-anchoring, scrollTop stays put and
+    // the viewport top lands rows past it (the surviving content jumped by).
+    expect(screenPosOf(survivor)).toBe(0);
+    expect(scroll.isUserScrolledUp()).toBe(true); // still holding, no snap
   });
 });
 

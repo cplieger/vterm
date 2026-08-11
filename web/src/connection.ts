@@ -35,7 +35,14 @@ import {
   type WireIncompatibility,
 } from "./wire-compatibility.js";
 import * as modes from "./modes.js";
-import type { ControlMessage, ServerMessage } from "./types.js";
+// ONE page size for the whole feature. The transport used to declare its own
+// identical literal, and nothing held the two equal: the fetch trigger anchors a
+// request from the STORE's value while the transport clamps the length to its
+// own, so tuning either one alone produces a shrunken page with a full-size
+// anchor — the shape that leaves the rows under the reader blank while the far
+// end of the gap fills.
+import { PAGE_SIZE } from "./store.js";
+import type { ControlMessage, ScrollMessage, ServerMessage } from "./types.js";
 import { INITIAL_DELAY_MS, nextBackoffDelay } from "./reconnect.js";
 
 /**
@@ -98,6 +105,13 @@ interface ResumeState {
   outbox: Uint8Array[]; // unacked chunks (sum of lengths = bytesSent - bytesAcked)
   outboxBytes: number; // running sum of outbox chunk lengths; keeps applyAck O(n) not O(n²)
   lastServerEpoch: number | null; // process-start nanos last seen for this session
+  // Whether lastServerEpoch was SEEDED from persisted content rather than learned
+  // from a resumeAck. A seeded epoch is a claim about content restored from
+  // storage, and it is only worth anything if a server confirms or contradicts it —
+  // so a resume that reports no epoch at all leaves it unverifiable, which is
+  // handled as a restart. Learned epochs must not get that treatment: an ack
+  // without an epoch from a server that never reports one is ordinary operation.
+  epochSeeded: boolean;
   /** The session's last-announced DEC-mode state (P3: per-session mode
    *  mirror). Written on every inbound modes frame; restored synchronously
    *  into the modes singleton by setSession, so a keystroke in the switch
@@ -158,6 +172,7 @@ function newResumeState(id: string): ResumeState {
     outbox: [],
     outboxBytes: 0,
     lastServerEpoch: null,
+    epochSeeded: false,
     modes: { ...modes.POWER_ON_MODES },
   };
 }
@@ -204,6 +219,133 @@ const HEARTBEAT_INTERVAL_MS = 5_000;
 const IDLE_BEFORE_PROBE_MS = 10_000;
 /** How long an unanswered probe is tolerated before declaring the socket stale. */
 const PONG_TIMEOUT_MS = 7_000;
+
+// --- demand-paged scrollback: per-socket fetch state (docs/paged-scrollback.md) ---
+
+/** Requests served back-to-back before the client's own bucket throttles. */
+const HISTORY_BURST = 4;
+
+/**
+ * Client-side refill interval. Deliberately SLOWER than the server's floor
+ * (1.5 s): independent clocks and latency jitter compress arrival spacing, so
+ * identical constants would let a healthy client trip the server's silent drop.
+ * The slack absorbs that by construction rather than by coincidence.
+ */
+const HISTORY_REFILL_MS = 2_000;
+
+/**
+ * How long to wait for a page before releasing single-flight and retrying. It
+ * fires FIRST by design: the server's write context is 10 s, and in
+ * coder/websocket a write-deadline expiry CLOSES the socket, so a server that
+ * gave up first would turn every slow reply into a reconnect and make this
+ * retry path unreachable.
+ */
+const HISTORY_DATA_TIMEOUT_MS = 8_000;
+
+
+
+/** The smallest request the adaptive budget will shrink to. */
+const HISTORY_MIN_PAGE = 125;
+
+/**
+ * The server's clamp on `replayMax`, mirrored here so the client sends the
+ * value the server will actually honor. The equality is load-bearing: the
+ * replay-jump prediction computes `committed - sentReplayMax`, so a server
+ * honoring something smaller would place the real replay start above the
+ * prediction and leave a genuine jump undetected (§4.5).
+ */
+export const MAX_REPLAY_LINES = 2000;
+
+/**
+ * Everything the fetch controller owns for ONE socket. Held in the socket's
+ * closure lifetime — replaced wholesale on reconnect — because every field is
+ * a statement about that socket: a surviving empty bucket would stall against a
+ * fresh server bucket, a carried-over capability would page against a server
+ * that never declared it, and a carried-over 125-line budget would punish a new
+ * link for the old one's congestion.
+ */
+interface HistoryState {
+  /** The server declared paging on this socket's resume ack. */
+  paging: boolean;
+  /** An ack has been processed; before that, content frames are suppressed. */
+  acked: boolean;
+  /** The in-flight request's window, or null when nothing is outstanding. */
+  inFlight: { fromAbs: number; end: number } | null;
+  /** Token bucket fill and its last refill instant. */
+  tokens: number;
+  lastRefill: number;
+  /** The adaptive request budget, and the recovery ceiling above it. */
+  effMax: number;
+  budgetCeiling: number;
+  /** Timers: the in-flight data timeout, and the coalesced pending demand. */
+  dataTimer: ReturnType<typeof setTimeout> | null;
+  demandTimer: ReturnType<typeof setTimeout> | null;
+  /** The values this socket SENT on its resume, which its reply answers. */
+  sentHaveThrough: number;
+  sentReplayMax: number | null;
+}
+
+function newHistoryState(): HistoryState {
+  return {
+    paging: false,
+    acked: false,
+    inFlight: null,
+    // The bucket starts FULL so a fresh socket can burst; the server's bucket
+    // does the same, so the two agree on the first few requests.
+    tokens: HISTORY_BURST,
+    lastRefill: Date.now(),
+    effMax: PAGE_SIZE,
+    budgetCeiling: PAGE_SIZE,
+    dataTimer: null,
+    demandTimer: null,
+    sentHaveThrough: -1,
+    sentReplayMax: null,
+  };
+}
+
+let history: HistoryState = newHistoryState();
+
+/** Cancel both timers and release single-flight. */
+function clearHistoryTimers(): void {
+  if (history.dataTimer !== null) {
+    clearTimeout(history.dataTimer);
+    history.dataTimer = null;
+  }
+  if (history.demandTimer !== null) {
+    clearTimeout(history.demandTimer);
+    history.demandTimer = null;
+  }
+}
+
+/**
+ * Reset the fetch state for a new socket: capability, single-flight, pacing and
+ * the adaptive budget all go together, atomically. Splitting them is how a
+ * client ends up paging against a server that never declared it, or bursting
+ * into a depleted server bucket.
+ */
+function resetHistoryForSocket(): void {
+  clearHistoryTimers();
+  history = newHistoryState();
+}
+
+/**
+ * Spend a pacing token, returning the wait in ms when the bucket is empty (so
+ * the caller can arm the coalesced pending demand for exactly that instant)
+ * or 0 when a token was granted.
+ */
+function takeHistoryToken(): number {
+  const now = Date.now();
+  history.tokens = Math.min(
+    HISTORY_BURST,
+    history.tokens + (now - history.lastRefill) / HISTORY_REFILL_MS,
+  );
+  history.lastRefill = now;
+  if (history.tokens < 1) {
+    return Math.ceil((1 - history.tokens) * HISTORY_REFILL_MS);
+  }
+  history.tokens -= 1;
+  return 0;
+}
 
 /**
  * Maximum bytes we keep in the outbox before refusing new input. 1
@@ -314,6 +456,66 @@ export interface Callbacks {
    *  can tell a genuine history trim (the server evicted lines the client was
    *  missing) from a still-loading state. Resync guard 8.2.2. */
   onResumeBounds?(committed: number, oldest: number): void;
+  /**
+   * How many lines of resume replay this client wants at most — a REFINEMENT of
+   * the protocol ceiling, never an opt-out: the server bounds the replay to
+   * MAX_REPLAY_LINES whether or not this is wired, and the client sends that
+   * ceiling when it is absent so both sides predict the same replay start.
+   * Return the depth the consumer intends to keep resident.
+   *
+   * The value is clamped to MAX_REPLAY_LINES before it is sent, because the
+   * client's replay-jump prediction is only exact while the SENT value equals the
+   * honored one (docs/paged-scrollback.md §4.5).
+   */
+  getReplayMax?(): number | null;
+  /** Fired when a correlated history page arrives, carrying the reply and how
+   *  the client should read it. The consumer forwards `msg` to the store's
+   *  `applyHistoryScroll` (which classifies it as browse cache), and applies
+   *  `raiseFloorTo` when present — a clamped or empty reply is the server
+   *  proving nothing at or below that index survives. */
+  onHistoryReply?(msg: ScrollMessage, raiseFloorTo: number | null): void;
+  /** Fired once per resume ack with everything the store's single ack
+   *  transition needs, including the values this socket SENT (which the
+   *  server's reply is a function of) and the capability the server declared.
+   *  The consumer builds a closure over its store and renderer viewport and
+   *  calls `store.applyResumeAck(...)`; see docs/paged-scrollback.md §4.5 for
+   *  why the five steps must not be split across separate callbacks. */
+  onResumeTransition?(ack: {
+    epochChanged: boolean;
+    committed: number | null;
+    serverOldest: number | null;
+    paging: boolean;
+    sentHaveThrough: number;
+    sentReplayMax: number | null;
+  }): void;
+  /** The store port's two solicited-window methods. `connection` is store-blind
+   *  by design, but the events that open and close a solicited window all
+   *  originate here (send, data timeout, socket close), so the store needs a
+   *  bridge rather than a reach-in. */
+  noteSolicited?(fromAbs: number, end: number): void;
+  clearSolicited?(): void;
+  /** Re-run the fetch trigger: the coalesced pending demand fired (a paced
+   *  denial's refill instant, or a data timeout's retry). The controller
+   *  re-evaluates its full guard set rather than replaying a stale range. */
+  onHistoryRetry?(): void;
+  /** The size to announce to the server BEFORE asking to resume, or null when
+   *  the client cannot yet measure itself trustworthily (web fonts still
+   *  loading, a viewport transition in flight).
+   *
+   *  Establishing the size first is what makes a resume snapshot arrive at the
+   *  client's own geometry: the server reflows, and only then computes the
+   *  window and the replay. Without it the client is answered at whatever size
+   *  the session last held, repaints, and then its resize lands afterwards —
+   *  which on a program that redraws on SIGWINCH means the redraw interleaves
+   *  with the replay it just applied.
+   *
+   *  Returning null is the explicit "not yet" answer and is byte-identical to
+   *  omitting the callback: nothing is sent, the server keeps its current size,
+   *  and the consumer's own later sendResize() (typically once the viewport
+   *  settles) establishes it. Announcing an untrustworthy measurement is worse
+   *  than announcing none, because it costs a second resize and therefore a
+   *  second redraw. */
+  initialSize?(): { cols: number; rows: number } | null;
   /** Optional WebSocket endpoint path (default "/ws"). vibekit serves
    *  the shell at "/api/shell/ws"; web-terminal-kiro at "/ws". */
   wsPath?: string;
@@ -404,6 +606,40 @@ function sendControl(msg: ControlMessage): void {
     return;
   }
   connState.sock.send(controlFrame(msg));
+}
+
+/**
+ * The consumer's announced bootstrap size, validated, or null when there is
+ * none to announce.
+ *
+ * Isolated for two reasons. The validation: the server FLOORS an out-of-range
+ * resize rather than dropping it (a 0 becomes the minimum size), so a malformed
+ * value must be rejected here rather than silently resizing the session. And the
+ * try/catch: this runs inside the socket's open handler after the connect
+ * timeout has been cleared and BEFORE the resume is sent, so a consumer callback
+ * that throws would otherwise abort the handler, leave the resume unsent and the
+ * connection state stuck at "connecting" with no timeout left to rescue it. A
+ * broken provider degrades to "announce nothing", which is the documented
+ * behavior of omitting it.
+ */
+function readInitialSize(): { cols: number; rows: number } | null {
+  let size: { cols: number; rows: number } | null;
+  try {
+    size = cb?.initialSize?.() ?? null;
+  } catch (err) {
+    console.warn("vterm: initialSize provider threw; announcing no size", err);
+    return null;
+  }
+  if (
+    size === null ||
+    !Number.isInteger(size.cols) ||
+    !Number.isInteger(size.rows) ||
+    size.cols <= 0 ||
+    size.rows <= 0
+  ) {
+    return null;
+  }
+  return { cols: size.cols, rows: size.rows };
 }
 
 export function sendResize(): void {
@@ -590,6 +826,8 @@ function teardown(): void {
     }
   }
   stopHeartbeat();
+  resetHistoryForSocket();
+  cb?.clearSolicited?.();
   cancelScheduledReconnect();
   connState = { status: "disconnected" };
 }
@@ -650,6 +888,271 @@ export function forgetSession(id: string): void {
     activeId = null;
     teardown();
   }
+}
+
+/**
+ * Seed the server boot epoch a session's PERSISTED content belongs to, before
+ * connecting.
+ *
+ * Restart detection is otherwise in-memory: the first resumeAck of a page load
+ * records the epoch with nothing to compare against, and only a LATER mismatch
+ * fires onServerRestart. That is correct for a store built during this page's
+ * lifetime, and actively wrong for one hydrated from disk — a restarted server
+ * begins its absolute indices again at 0, so a hydrated store would be presented
+ * as live while the new session's low-index output was silently refused by the
+ * store's staleness guard.
+ *
+ * Seeding gives the first resumeAck something to compare against, so the
+ * existing restart path fires and resets the stale content exactly as it would
+ * mid-session. A consumer that hydrates a store MUST call this with the
+ * snapshot's `serverEpoch` (see StoreSnapshot in store.ts).
+ *
+ * Ignores a zero or non-finite epoch: those mean "no epoch was ever recorded",
+ * which is indistinguishable from a version-silent server, and seeding a
+ * sentinel would make the next real epoch look like a restart.
+ *
+ * Also ignores a session that already knows its epoch. "Seed" is the whole
+ * contract: this exists to give the FIRST resumeAck something to compare against,
+ * and overwriting a value a server already reported would make a genuine restart
+ * look like agreement, or a live session look restarted. A caller that reaches
+ * here twice, or after connecting, has a bug the library can simply refuse.
+ */
+export function adoptPersistedEpoch(sessionId: string, epoch: number): void {
+  if (!Number.isFinite(epoch) || epoch === 0) {
+    return;
+  }
+  const st = ensureState(sessionId);
+  if (st.lastServerEpoch !== null) {
+    return;
+  }
+  st.lastServerEpoch = epoch;
+  // Marked as a CLAIM about restored content, not an observation. A resume that
+  // reports no epoch cannot confirm it, and unverifiable restored content is
+  // handled as a restart — see handleResumeAck. This is the one hole the epoch
+  // comparison alone leaves: a server downgraded to reporting no epoch between the
+  // save and the load never contradicts the seeded value, so the stale store would
+  // otherwise be presented as live and then refuse the new session's low indices.
+  st.epochSeeded = true;
+}
+
+/**
+ * The current adaptive request budget: how many lines the next page request
+ * should ask for. The fetch trigger lives in the renderer (the only layer that
+ * maps scroll position to absolute indices) while this budget is per-SOCKET
+ * state owned here, and this accessor is the only channel between them.
+ *
+ * The trigger must read it for BOTH the request's length and its ANCHOR. Using
+ * it for the length alone is a real defect, not a nicety: an anchor computed
+ * from the full page size while the length is shrunken serves a range that ends
+ * far from the reader, so a slow link heals the far end of a gap and leaves the
+ * rows under the viewport blank (docs/paged-scrollback.md §4.2).
+ */
+export function historyBudget(): number {
+  return history.effMax;
+}
+
+/** Whether this socket's server declared demand-paged scrollback. */
+export function historyPagingAvailable(): boolean {
+  return history.paging && history.acked;
+}
+
+/** Whether a page request is currently outstanding (single-flight). */
+export function historyRequestInFlight(): boolean {
+  return history.inFlight !== null;
+}
+
+/**
+ * Request a page of history: at most `maxLines` lines starting at `fromAbs`.
+ *
+ * Returns true when the request went out. It can decline for four reasons, all
+ * of them normal: the server never declared paging, an ack has not arrived yet,
+ * a request is already in flight (single-flight), or the pacing bucket is empty.
+ * The last case ARMS the coalesced pending demand — a denied trigger is not
+ * merely dropped, because on an idle session no future scroll or flush event
+ * would ever re-fire it and a byte-short continuation would stall forever.
+ *
+ * The caller (the renderer's controller) owns the geometry; this owns the
+ * transport, single-flight, pacing, the timers and the adaptive budget.
+ */
+export function requestHistory(fromAbs: number, maxLines: number): boolean {
+  if (!history.paging || !history.acked) {
+    return false;
+  }
+  if (history.inFlight !== null) {
+    return false;
+  }
+  if (
+    !Number.isSafeInteger(fromAbs) ||
+    !Number.isSafeInteger(maxLines) ||
+    fromAbs < 0 ||
+    maxLines < 1 ||
+    // The subtraction form: the addition form is itself the overflow it would
+    // exist to reject (§4.1).
+    fromAbs > Number.MAX_SAFE_INTEGER - maxLines
+  ) {
+    return false;
+  }
+  if (connState.status !== "connected" || !connState.upgraded) {
+    return false;
+  }
+  const wait = takeHistoryToken();
+  if (wait > 0) {
+    armPendingDemand(wait);
+    return false;
+  }
+  const bounded = Math.min(maxLines, history.effMax);
+  const end = fromAbs + bounded;
+  history.inFlight = { fromAbs, end };
+  cb?.noteSolicited?.(fromAbs, end);
+  // Through sendControl, which owns the ENCODING decision. Sending
+  // `controlFrame` directly here was a defect with three simultaneous
+  // consequences, none of them visible in this repo's tests: this function
+  // refuses to run unless the socket is `upgraded`, and a post-upgrade server
+  // parses the v3 0x00-sentinel only while UNLATCHED — so every request was
+  // written straight to the PTY instead (terminal.go's handleBinaryFrame). No
+  // page reply ever arrived (the 8 s data timeout halved the budget and retried
+  // forever, so paging was inert); the control's JSON was TYPED INTO THE USER'S
+  // SHELL, and fed to the session-title deriver; and its bytes advanced the
+  // server's received-byte ledger while the client never counted them, so
+  // applyAck's min(received, bytesSent) clamp trimmed genuinely-unacked
+  // keystrokes out of the outbox.
+  sendControl({ type: "history", fromAbs, maxLines: bounded });
+  history.dataTimer = setTimeout(onHistoryDataTimeout, HISTORY_DATA_TIMEOUT_MS);
+  return true;
+}
+
+/**
+ * Arm the coalesced pending demand: ONE timer that re-runs the full trigger
+ * when the bucket refills. Coalesced because a burst of denied triggers should
+ * cost one retry, not one each; and re-running the FULL guard set rather than
+ * replaying the denied request, because the world may have changed (the gap may
+ * have healed, the session may have entered alt).
+ */
+function armPendingDemand(waitMs: number): void {
+  if (history.demandTimer !== null) {
+    return;
+  }
+  history.demandTimer = setTimeout(() => {
+    history.demandTimer = null;
+    cb?.onHistoryRetry?.();
+  }, waitMs);
+}
+
+/**
+ * The in-flight request did not answer in time. Release single-flight so the
+ * controller can try again, HALVE the budget, and remember the size that failed
+ * as the recovery ceiling.
+ *
+ * The ceiling is RFC 5681's `ssthresh` role — a growth target, not a cap below
+ * the current value. Halving alone would oscillate (a link that carries 500 but
+ * not 1000 would time out on every other request forever); dropping to the
+ * floor and climbing back toward half the failed size converges on the largest
+ * size the link actually carries, approaching it from below.
+ */
+function onHistoryDataTimeout(): void {
+  const failed = history.inFlight;
+  history.dataTimer = null;
+  history.inFlight = null;
+  cb?.clearSolicited?.();
+  if (failed !== null) {
+    const size = failed.end - failed.fromAbs;
+    history.budgetCeiling = Math.max(HISTORY_MIN_PAGE, Math.floor(size / 2));
+    history.effMax = HISTORY_MIN_PAGE;
+  }
+  // Retry through the same coalescing path a denied trigger uses, so the
+  // controller re-evaluates its guards rather than replaying a stale range.
+  armPendingDemand(0);
+}
+
+/**
+ * Correlate an inbound scroll frame against the in-flight request.
+ *
+ * A frame is the reply iff its `firstIndex` lies inside the request window.
+ * CONTAINMENT then decides the CONTROL effects separately from the content: only
+ * a reply that fits entirely inside the window releases single-flight and grows
+ * the budget. A correlated frame extending BEYOND the window — a timed-out
+ * larger reply sharing a retry's `fromAbs` — has its in-window intersection
+ * applied by the store and changes no control state, so the attempt's own reply
+ * still gets to complete it (§4.3).
+ *
+ * Returns the floor to raise to when the reply proves history is gone
+ * (`firstIndex > fromAbs` is the CLAMP signal; an empty reply means nothing in
+ * the whole window survives), or null.
+ */
+function correlateHistoryReply(msg: ScrollMessage): {
+  correlated: boolean;
+  raiseFloorTo: number | null;
+  contained: boolean;
+} {
+  const req = history.inFlight;
+  if (req === null) {
+    return { correlated: false, raiseFloorTo: null, contained: false };
+  }
+  if (msg.firstIndex < req.fromAbs || msg.firstIndex >= req.end) {
+    return { correlated: false, raiseFloorTo: null, contained: false };
+  }
+  const count = msg.lines.length;
+  let raiseFloorTo: number | null = null;
+  if (count === 0) {
+    // Nothing in [fromAbs, end) is retained: the whole window is condemned.
+    raiseFloorTo = req.end;
+  } else if (msg.firstIndex > req.fromAbs) {
+    // The server served from higher up than asked: everything below the served
+    // start is evicted server-side, permanently.
+    raiseFloorTo = msg.firstIndex;
+  }
+  const contained = msg.firstIndex + count <= req.end;
+  if (contained) {
+    if (history.dataTimer !== null) {
+      clearTimeout(history.dataTimer);
+      history.dataTimer = null;
+    }
+    history.inFlight = null;
+    // Recovery: climb toward the remembered ceiling, never past it.
+    history.effMax = Math.min(history.effMax * 2, history.budgetCeiling);
+  }
+  return { correlated: true, raiseFloorTo, contained };
+}
+
+/**
+ * The server boot epoch last observed for a session, or 0 when none is known —
+ * the read half of adoptPersistedEpoch.
+ *
+ * A consumer that persists a session's content must record WHICH server process
+ * the absolute indices in it belong to, and this is the only place that fact
+ * exists: it arrives in a resumeAck and is otherwise kept privately for restart
+ * detection. Pass the result to `LineStore.snapshot(serverEpoch)`.
+ *
+ * 0 means "never learned one", which happens before the first resumeAck and
+ * against a version-silent server that sends no epoch at all. It is deliberately
+ * the same value `adoptPersistedEpoch` ignores, so a snapshot taken without an
+ * epoch cannot later be mistaken for one taken under a known epoch.
+ */
+export function serverEpochOf(sessionId: string): number {
+  return sessions.get(sessionId)?.lastServerEpoch ?? 0;
+}
+
+/**
+ * The session id this module's socket serves, resolving the UNMANAGED id if no
+ * session has been set.
+ *
+ * A managed consumer (one calling setSession) already holds its own ids and does
+ * not need this. The unmanaged single-terminal path does: its identity is a
+ * per-tab, sessionStorage-backed id minted inside this module, so a consumer
+ * that wants to key anything per-session — persisted scrollback, per-session
+ * scroll memory — has no id to key it by, and any id it invented would be wrong
+ * in one direction or the other (localStorage would make two tabs share one
+ * terminal's state; a fresh random one would never match across a reload).
+ *
+ * Resolving means the same lazy load-or-mint the first send/connect performs, so
+ * calling this before connecting simply moves that by a few milliseconds. The
+ * semantics that make it the right persistence key are the ones sessionStorage
+ * already gives: stable across a reload and an iOS tab restore, fresh in a
+ * genuinely new tab.
+ */
+export function currentSessionId(): string {
+  activeId ??= loadOrCreateSessionId();
+  return activeId;
 }
 
 /**
@@ -744,11 +1247,56 @@ export function connect(): void {
     "open",
     () => {
       clearTimeout(timeoutId);
-      // Bootstrap resume FIRST, on the captured socket, before consumer
-      // callbacks can run: it must be message one on every socket (the v4
-      // negotiation bootstrap, design §4 — always binary-sentinel encoded,
-      // understood by every server revision). An onOpen callback that calls
-      // sendResize()/sendBinary() therefore always queues AFTER it.
+      // A new socket has no size on record with the server yet, so the
+      // deduplication baseline resets before anything is announced below.
+      lastSentCols = 0;
+      lastSentRows = 0;
+      // Announce the size BEFORE asking to resume, when the consumer can
+      // measure trustworthily (Callbacks.initialSize). Order matters and is the
+      // whole point: the server applies a resize control the moment it decodes
+      // it, so a resize that precedes the resume makes the resume's screen
+      // snapshot and history replay come back at THIS client's geometry, with
+      // the app's SIGWINCH redraw (if any) landing after a coherent snapshot
+      // instead of interleaved with the replay.
+      //
+      // This does not weaken the "resume is message one" invariant, which
+      // exists for two reasons, neither of which a resize touches: the server
+      // must see the resume's protocolVersion before any TEXT frame arrives
+      // (a resize does not arm typed framing), and PTY INPUT must not precede
+      // session resolution (input sent before the resume reaches the process
+      // but is skipped by the server's received-byte ledger, desyncing the
+      // outbox accounting). That is also why cb.onOpen() still runs after the
+      // resume: a consumer may send input from it.
+      const size = readInitialSize();
+      if (size !== null) {
+        sock.send(controlFrame({ type: "resize", cols: size.cols, rows: size.rows }));
+        lastSentCols = size.cols;
+        lastSentRows = size.rows;
+      }
+      // Bootstrap resume, on the captured socket, before consumer callbacks can
+      // run: always binary-sentinel encoded, understood by every server
+      // revision (the v4 negotiation bootstrap, design §4). An onOpen callback
+      // that calls sendResize()/sendBinary() therefore always queues AFTER it.
+      // Capture the resume's two history-relevant inputs BEFORE sending, and
+      // remember them on the socket. The server's reply is a function of these
+      // exact values, so the replay-jump prediction must be computed from them
+      // — never from store state, which a frame arriving between send and ack
+      // could have moved, masking a real jump (docs/paged-scrollback.md §4.5).
+      resetHistoryForSocket();
+      const sentHaveThrough = cb?.getHaveThrough?.() ?? -1;
+      // ALWAYS a number. A consumer may ask for fewer lines than the protocol
+      // ceiling, but it cannot opt OUT of the bound: the server clamps to the
+      // same ceiling unconditionally, and a client that sent nothing while the
+      // server bounded anyway would predict no replay jump where one happened —
+      // leaving the stranded band classified as live tail for enforceCap to eat
+      // silently. The two sides agree by construction instead of by wiring.
+      const rawReplayMax = cb?.getReplayMax?.() ?? MAX_REPLAY_LINES;
+      const sentReplayMax =
+        Number.isSafeInteger(rawReplayMax) && rawReplayMax >= 1
+          ? Math.min(rawReplayMax, MAX_REPLAY_LINES)
+          : MAX_REPLAY_LINES;
+      history.sentHaveThrough = sentHaveThrough;
+      history.sentReplayMax = sentReplayMax;
       sock.send(
         controlFrame({
           type: "resume",
@@ -763,7 +1311,10 @@ export function connect(): void {
           // duplication because applying a line by absolute index is
           // idempotent. Falls back to -1 (full retained replay) if the
           // consumer wired no getHaveThrough.
-          haveThrough: cb?.getHaveThrough?.() ?? -1,
+          haveThrough: sentHaveThrough,
+          // The resume replay bound, already clamped to what the server will
+          // honor, and always present (see above).
+          replayMax: sentReplayMax,
           // Lets the server detect a client built against a different wire
           // revision (e.g. a stale cached bundle) and warn rather than
           // silently mis-decode; >= 4 also ARMS the connection for the
@@ -775,8 +1326,6 @@ export function connect(): void {
       // decides whether the typed-framing upgrade happens (design §4).
       connState = { status: "connected", sock, abort: connectAbort, upgraded: false };
       reconnectDelay = INITIAL_DELAY_MS;
-      lastSentCols = 0;
-      lastSentRows = 0;
       cb?.onOpen();
 
       // Begin client-side liveness probing for this socket. Idempotent
@@ -920,12 +1469,46 @@ export function connect(): void {
       // bytesSent/bytesAcked accounting (the new server has no record
       // of the previous boot's input). Reset state and notify the UI.
       const epoch = msg.serverEpoch;
+      let epochChanged = false;
       if (epoch !== undefined && epoch !== 0) {
         if (st.lastServerEpoch !== null && st.lastServerEpoch !== epoch) {
+          epochChanged = true;
           resetSessionAfterRestart(st);
         }
         st.lastServerEpoch = epoch;
+        // Confirmed by a server: no longer a claim about restored content.
+        st.epochSeeded = false;
+      } else if (st.epochSeeded) {
+        // The epoch we hold was SEEDED from persisted content and this server will
+        // not say what process it is. Unverifiable restored content is handled as a
+        // restart, because the alternative is presenting a previous run's output as
+        // live and then refusing the new session's low absolute indices — wrong,
+        // then permanently blank. Only ever reachable for a hydrated session: an
+        // epoch learned from an earlier ack is an observation, and a server that
+        // reports none is ordinary operation for it.
+        epochChanged = true;
+        resetSessionAfterRestart(st);
+        st.lastServerEpoch = null;
+        st.epochSeeded = false;
       }
+      // Capability, read from the ack's length-gated flags tail. An absent tail
+      // (a server older than it) reads the same as an unset bit: no paging,
+      // nothing ever sent, and the store keeps its compatibility tail cap.
+      history.paging = msg.historyPaging === true;
+      history.acked = true;
+      // The store's ONE ack transition, dispatched BEFORE the early returns
+      // below. A ledger loss is not a capability event, and the long-absence
+      // attach that loses its ledger is exactly the one carrying a replay jump
+      // — appending this after those returns would skip it precisely there
+      // (docs/paged-scrollback.md §4.5).
+      cb?.onResumeTransition?.({
+        epochChanged,
+        committed: typeof msg.committed === "number" ? msg.committed : null,
+        serverOldest: typeof msg.oldestIndex === "number" ? msg.oldestIndex : null,
+        paging: history.paging,
+        sentHaveThrough: history.sentHaveThrough,
+        sentReplayMax: history.sentReplayMax,
+      });
       // Resync guard 8.2.2: hand the server's retained-history bounds to the
       // consumer so it can surface a trim marker when history the client was
       // missing is gone for good. (If the ledger-lost / session-forgotten
@@ -1005,6 +1588,58 @@ export function connect(): void {
     if (typeof msg.inputAck === "number") {
       applyAck(st, msg.inputAck);
     }
+    // PRE-ACK CONTENT SUPPRESSION (docs/paged-scrollback.md §4.5). The server
+    // registers a socket and wakes its scheduler at accept, so on a busy session
+    // a live screen/scroll frame is the DESIGNED first delivery — it can arrive
+    // before this socket's resumeAck. Applying its rows would mutate the store
+    // under a stale residency cap, and on an already-flipped store one frame is
+    // enough to push the tail over and have ordinary eviction eat the very band
+    // the ack transition exists to protect.
+    //
+    // Suppression is FIELD-AWARE, not a blanket drop, because a screen frame is
+    // not only rows. Row and window mutation are held back; everything else
+    // about the frame is honored:
+    //   - the piggybacked inputAck was applied just above (monotone, harmless);
+    //   - ED3 (`scrollbackCleared`) is a CONSUMED one-shot the resume batch
+    //     hard-codes false, so dropping it would leave the client displaying
+    //     history the server has already discarded — it is forwarded as a
+    //     rows-less clear;
+    //   - `bell` is dropped by design: it announces a screen the user has not
+    //     been shown yet, and the batch is about to repaint it;
+    //   - every other message class (modes, title, clipboard, pong, ackOnly)
+    //     returned earlier or is unaffected.
+    //
+    // The suppressed rows are LOSSLESS by supersession: the batch's own window
+    // frame carries the screen, and a frame's scroll lines are committed to the
+    // ring before dispatch, so the replay re-delivers them.
+    if (!history.acked && (msg.type === "screen" || msg.type === "scroll")) {
+      if (msg.type === "screen" && msg.scrollbackCleared) {
+        cb?.onMessage({ ...msg, changed: [], rows: [], bell: false });
+      }
+      return;
+    }
+    if (msg.type === "scroll") {
+      // A scroll frame may be a correlated page reply rather than live output.
+      // Correlation is by window membership; containment then decides whether
+      // this frame COMPLETES the attempt (releasing single-flight and growing
+      // the adaptive budget) or merely contributes content.
+      const { correlated, raiseFloorTo, contained } = correlateHistoryReply(msg);
+      if (correlated) {
+        cb?.onHistoryReply?.(msg, raiseFloorTo);
+        // Close the store's solicited window AFTER the page is applied, and only
+        // for a reply that COMPLETED the attempt. The window is the store's
+        // permission to admit lines below its stale-re-send watermark, so it has
+        // to outlive the apply — but leaving it open once no request is in flight
+        // means a later duplicate or malformed frame in that same range keeps
+        // bypassing the guard and can resurrect an evicted row through the
+        // ordinary (tail-classifying) path. An OVERSPILLING reply deliberately
+        // keeps both the slot and the window: its attempt is still open.
+        if (contained) {
+          cb?.clearSolicited?.();
+        }
+        return;
+      }
+    }
     cb?.onMessage(msg);
   }
 
@@ -1022,6 +1657,11 @@ export function connect(): void {
         return;
       }
       stopHeartbeat();
+      // The fetch state belonged to THIS socket: kill its timers so neither
+      // fires against a dead socket, and release the solicited window so the
+      // store stops admitting lines below its stale-re-send watermark.
+      resetHistoryForSocket();
+      cb?.clearSolicited?.();
       if (ev.code === WIRE_INCOMPATIBLE_CLOSE_CODE) {
         const reason =
           ev.reason ||

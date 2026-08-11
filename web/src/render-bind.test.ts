@@ -10,7 +10,7 @@
 //    switch paints the visible screen immediately.
 // 3. A bound store already in the alternate screen rebuilds into the alt grid.
 
-import { describe, it, expect, beforeEach } from "vitest";
+import { describe, it, expect, beforeEach, vi } from "vitest";
 import * as render from "./render.js";
 import { LineStore } from "./store.js";
 import type { ScreenMessage, ScrollMessage, WireRun } from "./types.js";
@@ -160,5 +160,74 @@ describe("render.bind / rebuild (per-tab store swap)", () => {
     const shown = texts(outputEl);
     expect(shown).toContain("alt0");
     expect(shown).toContain("alt1");
+  });
+});
+
+describe("render.init maxLines (the consumer-plumbed retained-line cap)", () => {
+  let outputEl: HTMLDivElement;
+  let termWrap: HTMLDivElement;
+
+  beforeEach(() => {
+    document.body.innerHTML = `<div id="term"><div id="term-output"></div></div>`;
+    termWrap = document.getElementById("term") as HTMLDivElement;
+    outputEl = document.getElementById("term-output") as HTMLDivElement;
+  });
+
+  it("caps the implicit store (and therefore the DOM row budget) at the given value", async () => {
+    // A consumer with a phone-sized memory budget passes maxLines through
+    // createTerminal -> render.init; the implicit store then evicts at that
+    // cap instead of the 5000 default, which bounds both the retained
+    // WireRun arrays and the DOM rows built from them.
+    render.init({ output: outputEl, termWrap, maxLines: 8 });
+    render.updateFontMetrics();
+    const lines = Array.from({ length: 12 }, (_, i) => `l${String(i)}`);
+    render.handleScroll(scrollMsg(0, lines));
+    await tick();
+    expect(render.getHighestIndex()).toBe(11);
+    // Cap 8 (batch of 1 at this size): the oldest rows evicted, newest kept.
+    expect(render.boundStore().oldestIndex()).toBe(4);
+    expect(outputEl.querySelectorAll(".term-row").length).toBeLessThanOrEqual(8);
+    expect(texts(outputEl)).toContain("l11");
+    expect(texts(outputEl)).not.toContain("l0");
+  });
+
+  it("always installs a fresh implicit store: a custom cap does not leak into the next attachment", async () => {
+    // gpt R1 F2: the store is module-global, so a re-init WITHOUT the option
+    // used to keep (and merely reset) whatever capped store the previous
+    // attachment installed — a destroy/remount silently inherited an 8-line
+    // terminal. init is the attachment boundary: it now always constructs a
+    // fresh store, capped only when THIS call says so.
+    render.init({ output: outputEl, termWrap, maxLines: 8 });
+    render.updateFontMetrics();
+    const lines = Array.from({ length: 12 }, (_, i) => `l${String(i)}`);
+    render.handleScroll(scrollMsg(0, lines));
+    await tick();
+    expect(render.boundStore().oldestIndex()).toBe(4); // capped at 8
+
+    render.init({ output: outputEl, termWrap }); // re-attach, option omitted
+    render.updateFontMetrics();
+    render.handleScroll(scrollMsg(0, lines));
+    await tick();
+    // Default cap restored: nothing evicted at 12 lines.
+    expect(render.boundStore().oldestIndex()).toBe(0);
+    expect(texts(outputEl)).toContain("l0");
+  });
+
+  it("warns on and ignores a non-positive or non-integer cap (default applies)", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    try {
+      render.init({ output: outputEl, termWrap, maxLines: 0 });
+      render.updateFontMetrics();
+      const lines = Array.from({ length: 12 }, (_, i) => `l${String(i)}`);
+      render.handleScroll(scrollMsg(0, lines));
+      await tick();
+      // Nothing evicted: the bogus cap was ignored, not applied as "retain 0".
+      expect(render.boundStore().oldestIndex()).toBe(0);
+      expect(texts(outputEl)).toContain("l0");
+      expect(texts(outputEl)).toContain("l11");
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining("maxLines"));
+    } finally {
+      warn.mockRestore();
+    }
   });
 });

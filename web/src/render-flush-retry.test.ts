@@ -102,6 +102,9 @@ function makeFakeStore(target: number, throwCount: number): LineStore {
   };
   const fake = {
     reset: (): void => undefined,
+    // bind() closes the OUTGOING store's solicited window, so every store the
+    // renderer is ever bound to must answer this — including a fake.
+    clearSolicited: (): void => undefined,
     getWindow: (): WindowState => win,
     isAlt: (): boolean => false,
     getAltRows: (): WireRun[][] => [],

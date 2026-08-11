@@ -16,9 +16,10 @@
 // when real history commits — never oscillating mid-redraw.
 
 import type { ScreenMessage, ScrollMessage, WireRun } from "./types.js";
-import { LineStore } from "./store.js";
+import { LineStore, PAGE_SIZE, PREFETCH_THRESHOLD } from "./store.js";
 import * as scroll from "./scroll.js";
 import { isReverseVideo } from "./modes.js";
+import { interiorGaps } from "./intervals.js";
 
 // --- Width cache (two-tier, xterm.js style) ---
 const WIDTH_FLAT_SIZE = 256;
@@ -29,6 +30,12 @@ const widthMap = new Map<string, number>();
 const VARIANT_REGULAR = 0;
 const VARIANT_BOLD = 1;
 const VARIANT_ITALIC = 2;
+// widthMap holds one entry per unique (bold, italic, glyph) measured — bounded
+// by the rendered repertoire in practice, but a long CJK/emoji-heavy session
+// can accumulate tens of thousands of keys that survive eviction, reset, and
+// tab close (only a font change clears it). Cap it: a clear on overflow costs
+// an occasional re-measure and changes no rendered output.
+const WIDTH_MAP_MAX = 20_000;
 const variantCtx: (CanvasRenderingContext2D | null)[] = [null, null, null, null];
 let fontString = "";
 
@@ -88,6 +95,9 @@ function measureChar(ch: string, bold: boolean, italic: boolean): number {
     variant |= VARIANT_ITALIC;
   }
   const w = variantContext(variant).measureText(ch).width;
+  if (widthMap.size >= WIDTH_MAP_MAX) {
+    widthMap.clear();
+  }
   widthMap.set(key, w);
   return w;
 }
@@ -123,6 +133,25 @@ const rowEls = new Map<number, HTMLDivElement>();
 // shown when the store reports history older than it holds was trimmed). Kept
 // as a module ref so it is reused rather than recreated each flush.
 let trimMarkerEl: HTMLDivElement | null = null;
+
+/**
+ * Per-gap "earlier output not loaded" markers, keyed by the gap's LOW index.
+ *
+ * Distinct from the singleton trim marker above in two ways that matter. Each
+ * one carries its gap's low index as `data-abs`, so `insertRowInOrder` and the
+ * read-anchor binary searches keep their monotonic-`data-abs` invariant with
+ * the marker in place — the trim marker can be a `data-abs`-less first child
+ * precisely because it only ever sits at the very top, and an INTERIOR marker
+ * cannot. And a marker here is a PROJECTION of the store's gap geometry: it is
+ * re-derived (value and position) whenever either edge of its gap moves, so a
+ * gap healing from its low edge carries its marker up with it, and it is
+ * removed when the gap closes (docs/paged-scrollback.md §5.4).
+ */
+const gapMarkerEls = new Map<number, HTMLDivElement>();
+
+/** Transport seams for demand paging, wired by the consumer at init. */
+let requestHistoryFn: ((fromAbs: number, maxLines: number) => boolean) | null = null;
+let historyBudgetFn: (() => number) | null = null;
 
 // Rows awaiting a DOM (re)build, processed in budgeted batches across frames.
 // A session restore (kiro-cli's /chat), a post-resize transcript reprint, or a
@@ -205,6 +234,23 @@ function termPadding(): { padL: number; padT: number } {
 let flushDrainedThisPass = 0;
 let renderNoProgressStreak = 0;
 const MAX_RENDER_NO_PROGRESS_RETRIES = 3;
+// Whether the CURRENT flush performed a full reset (server restart / epoch
+// change). Read by restoreReadAnchor after the flush: a re-anchor across a
+// reset would match unrelated content from the new index space (R2 review).
+let fullResetThisPass = false;
+// The ED3 base observed since the last flush, or -1. Set by handleScreen from
+// the frame itself; consumed (and reset) by the pass that applies it. Renderer-
+// local on purpose: the renderer is the caller of every path that discards a
+// REGION rather than trimming the cap, so nothing in the store's change set has
+// to grow a field for it (docs/scroll-position-fidelity.md §5).
+let discardedBelowPending = -1;
+let discardedBelowThisPass = -1;
+// Whether THIS pass removed rows from the DOM. Only a pass that did can have
+// caused a clamp, and announcing one that did not is unsound on Safari, which
+// updates scrollTop PAST the maximum during an overscroll bounce: the settle back
+// from a rubber-band is a downward move in value with no content change at all,
+// and arming for it would hand the user's own gesture a pass-through.
+let removedRowsThisPass = false;
 
 /**
  * Initialize the renderer by attaching it to a pair of DOM elements: the
@@ -214,23 +260,67 @@ const MAX_RENDER_NO_PROGRESS_RETRIES = 3;
  * @param opts.output      Inner element that holds row children.
  * @param opts.termWrap    Outer scroll container.
  * @param opts.onCursorMove Optional callback invoked when the cursor moves.
+ * @param opts.maxLines    Optional retained-line cap for the implicit store
+ *                         (default 5000) — a HISTORY budget floored at the
+ *                         live screen (the store never evicts the current
+ *                         window, so a cap at or below the terminal height
+ *                         keeps the full screen with no scrollback). Governs
+ *                         how many absolute-index lines — and therefore DOM
+ *                         rows — the client keeps; a memory-constrained
+ *                         consumer (a phone) passes a smaller budget. A
+ *                         consumer that manages stores itself (a tabbed
+ *                         shell) constructs each `LineStore` with its own cap
+ *                         and `bind()`s it AFTER init; init always installs a
+ *                         fresh implicit store, so call it before any bind.
+ *                         For the batched eviction to help, choose a cap
+ *                         comfortably above the terminal height (near or
+ *                         below it, eviction degrades to per-line — the
+ *                         screen stays correct, but the churn returns).
+ *                         Non-positive or non-integer values warn and are
+ *                         ignored (the default applies).
  */
 export function init(opts: {
   output: HTMLElement;
   termWrap: HTMLElement;
   onCursorMove?: () => void;
+  maxLines?: number;
+  /** Ask the transport for a page of history. Wired by the consumer to
+   *  `connection.requestHistory`; absent means paging is not available and the
+   *  controller stays dormant (docs/paged-scrollback.md §5.4). */
+  requestHistory?: (fromAbs: number, maxLines: number) => boolean;
+  /** The transport's current adaptive request budget
+   *  (`connection.historyBudget`). Read at FIRE time, and used for both the
+   *  request's length and its anchor: a shrunken length with a full-size anchor
+   *  serves a range that ends far from the reader. */
+  historyBudget?: () => number;
 }): void {
   output = opts.output;
   termWrap = opts.termWrap;
   onCursorMove = opts.onCursorMove ?? null;
+  requestHistoryFn = opts.requestHistory ?? null;
+  historyBudgetFn = opts.historyBudget ?? null;
   // New attach target: the cached padding belongs to the previous termWrap.
   padValid = false;
-  // Fresh attach: drop any prior model + DOM so re-init (and vitest's
-  // non-isolated module reuse) starts clean.
-  store.reset();
+  // Fresh attach: ALWAYS install a fresh implicit store, so no cap — a
+  // consumer-configured one, or a bound per-tab store's — leaks from a
+  // previous attachment into this one (init is the attachment boundary;
+  // vitest's non-isolated module reuse relies on the same reset).
+  const validCap =
+    opts.maxLines !== undefined && Number.isInteger(opts.maxLines) && opts.maxLines > 0;
+  if (opts.maxLines !== undefined && !validCap) {
+    console.warn(`vterm: ignoring invalid maxLines ${String(opts.maxLines)}`);
+  }
+  // An absent OR invalid cap is forwarded as absent, which is how the store
+  // spells "engine's choice"; a value here would be indistinguishable from a
+  // consumer decision and would pin the tail at the compatibility cap forever.
+  store = new LineStore(validCap ? opts.maxLines : undefined);
   rowEls.clear();
   renderQueue.clear();
   trimMarkerEl = null;
+  for (const el of gapMarkerEls.values()) {
+    el.remove();
+  }
+  gapMarkerEls.clear();
   // Drop the predicted-cursor + caret overlays (re-created lazily against the
   // new termWrap) so re-init starts clean.
   if (predCursorEl) {
@@ -249,6 +339,14 @@ export function init(opts: {
   }
   flushDrainedThisPass = 0;
   renderNoProgressStreak = 0;
+  // Attachment boundary: a view restore armed against the PREVIOUS surface must
+  // not survive it, or its timer outlives teardown and writes scrollTop on a
+  // detached element. Same discipline scroll.init applies to its own arms.
+  bindGen++;
+  clearPendingRestore();
+  discardedBelowPending = -1;
+  discardedBelowThisPass = -1;
+  lastInboundMs = 0;
   syncCursorBlink();
 }
 
@@ -277,10 +375,68 @@ export function resetScrollback(): void {
  * active tab's cached LineStore (design sections 5, 6, 8). The DOM is wiped and
  * repainted viewport-first from the new store; this is local, so the last-known
  * screen paints without a network round-trip.
+ *
+ * `opts.view` is the per-view scroll memory `captureViewMemory()` returned when
+ * the consumer last left this store, and passing it makes the swap ATOMIC. Both
+ * halves matter and they land at different times on purpose:
+ *
+ *   - the FOLLOW half is adopted SYNCHRONOUSLY, before the wipe, so the very
+ *     first flush's bottom pin is gated on the INCOMING view's state. The
+ *     follow flag is global (one per kernel), so without this the first frame
+ *     after a switch is gated on the state of the tab the user just LEFT —
+ *     binding a following tab while holding in another rendered the cached
+ *     screen above the viewport and left a black gap until a touch re-engaged
+ *     follow. It is applied through restoreView at the CURRENT offset, which
+ *     sets the flag without moving the position.
+ *   - the POSITION half is armed and re-asserted across the rebuild's frames
+ *     (see applyPendingRestore), because the row it names is usually not built
+ *     yet. A view left FOLLOWING arms nothing: the per-flush bottom pin already
+ *     is the correct answer, which keeps the common path free of any restore.
  */
-export function bind(next: LineStore): void {
+export function bind(next: LineStore, opts?: { view?: ViewMemory | null }): void {
+  const view = opts?.view ?? null;
+  // Passing `opts` at all is a statement that this caller owns the view. A NULL
+  // view is therefore not "no opinion" but "no memory" — a tab never visited, or
+  // one left on the alternate screen, where there is no absolute index worth
+  // remembering — and the right follow state for no memory is the tail. Without
+  // this, those tabs inherited the OUTGOING tab's follow flag, which is the
+  // stale-global-flag bug this seam exists to close, just narrowed to the tabs
+  // that have nothing saved. A caller that passes no `opts` keeps the pre-3.7
+  // behavior and its follow state is left alone.
+  if (opts !== undefined) {
+    scroll.restoreView({
+      top: scroll.currentScrollTop(),
+      following: view === null ? true : view.following,
+    });
+  }
+  // The OUTGOING store cannot have a request in flight: the socket that issued it
+  // is being switched away with it. Closing its solicited window here is what
+  // stops it stranding open, because the transport's own `clearSolicited` lands on
+  // whichever store is bound WHEN IT FIRES — and the order of `bind` against the
+  // consumer's `setSession`/reconnect teardown is the consumer's choice, which
+  // neither module constrains. Bound after the switch, that clear closes the
+  // INCOMING store's (empty) window and leaves the outgoing one permanently open:
+  // a standing exemption from apply-line guard 2 for that index range, with no
+  // socket and no timer left to close it, so any later frame in that range can
+  // resurrect an evicted row and be classified as browse cache. The sibling
+  // pendingRestore arm already had a generation guard for the same hazard; this
+  // one had none.
+  store.clearSolicited();
   store = next;
+  // A new bind invalidates any restore armed for the previous one: cancel, then
+  // arm, one slot, so a second switch mid-drain cannot land the first tab's
+  // anchor into this store.
+  bindGen++;
+  clearPendingRestore();
   rebuild();
+  if (view !== null && !view.following) {
+    pendingRestore = {
+      view,
+      gen: bindGen,
+      lastWrote: scroll.currentScrollTop(),
+      deadline: Date.now() + RESTORE_MAX_MS,
+    };
+  }
 }
 
 /**
@@ -331,10 +487,19 @@ function queueRowsViewportFirst(): void {
  * force a full repaint of the current store.
  */
 export function rebuild(): void {
+  // The wipe is the largest content shrink this module performs, and it happens
+  // OUTSIDE a flush (bind calls it synchronously), so the flush's own
+  // announcement cannot cover it. Unannounced, the clamp it causes falls back to
+  // the epsilon — exactly the inference §4 exists to stop relying on.
+  const scrollTopBeforeWipe = scroll.currentScrollTop();
   output.replaceChildren();
   rowEls.clear();
   renderQueue.clear();
   trimMarkerEl = null;
+  for (const el of gapMarkerEls.values()) {
+    el.remove();
+  }
+  gapMarkerEls.clear();
   cursorAbs = -1;
   altRendered = false;
   altPrevRows = [];
@@ -346,6 +511,7 @@ export function rebuild(): void {
   if (!store.isAlt()) {
     queueRowsViewportFirst();
   }
+  scroll.noteContentShrink(scrollTopBeforeWipe);
   scheduleFlush();
 }
 
@@ -368,6 +534,118 @@ export function getHighestIndex(): number {
 export function noteResumeBounds(committed: number, oldest: number): void {
   store.noteResumeBounds(committed, oldest);
   scheduleFlush();
+}
+
+// --- demand-paged scrollback: the consumer's seams (docs/paged-scrollback.md) ---
+
+/**
+ * Apply a correlated history page and, when the reply proved history is gone,
+ * raise the paging floor so nothing below it is requested again.
+ *
+ * Wired to `connection`'s `onHistoryReply`. The viewport index is supplied here
+ * rather than by the caller because the renderer is the only layer that knows
+ * it, and the store's eviction needs it to decide which end of the cache is
+ * safe to drop.
+ */
+export function handleHistoryReply(msg: ScrollMessage, raiseFloorTo: number | null): void {
+  if (raiseFloorTo !== null) {
+    store.raisePagingFloor(raiseFloorTo);
+  }
+  store.applyHistoryScroll(msg, viewportAbs());
+  scheduleFlush();
+}
+
+/**
+ * Run the store's single resume-ack transition, supplying the viewport the
+ * store cannot see. Wired to `connection`'s `onResumeTransition`.
+ */
+export function applyResumeTransition(ack: {
+  epochChanged: boolean;
+  committed: number | null;
+  serverOldest: number | null;
+  paging: boolean;
+  sentHaveThrough: number;
+  sentReplayMax: number | null;
+}): void {
+  // A tab switch RECONNECTS (connection.setSession -> reconnectNow), so this
+  // transition routinely runs while the surface is mid-rebuild — at a clamped
+  // offset, over rows that are still being built. The live measurement there is
+  // a transient that belongs to neither the outgoing nor the incoming view, and
+  // the store's reclassify pass uses it to decide which rows survive: reading
+  // the transient can evict the very rows an armed restore is about to bring
+  // back. An armed restore names the position the user is REGAINING, so it is
+  // the answer to "which rows must survive" (docs/scroll-position-fidelity.md
+  // §7.2, §7.3). Every other viewportAbs consumer asks about NOW and keeps the
+  // live value.
+  const pending = pendingRestoreAbs();
+  // The store no longer infers whether the reader is following; this layer knows.
+  // `isUserScrolledUp()` is the one authoritative source, and an ARMED RESTORE
+  // overrides it outright: mid-rebuild the browser has clamped the offset, so the
+  // live flag describes the transient rather than the view the reader is about to
+  // regain — and a restore is armed only for a position in history.
+  const pendingRestoreArmed = pending !== null;
+  store.applyResumeAck({
+    ...ack,
+    viewportAbs: pending ?? viewportAbs(),
+    following: !pendingRestoreArmed && !scroll.isUserScrolledUp(),
+  });
+  scheduleFlush();
+}
+
+/** Record the window of a request going out (the store port's half). */
+export function noteSolicited(fromAbs: number, end: number): void {
+  store.noteSolicited(fromAbs, end);
+}
+
+/** Release the in-flight window (reply applied, timed out, socket gone). */
+export function clearSolicited(): void {
+  store.clearSolicited();
+}
+
+/**
+ * Drop the browse cache, supplying the viewport the skip rule needs. The
+ * consumer owns the TTL and the visibility state; the engine has no notion of
+ * tabs or page visibility.
+ */
+export function dropBrowseCache(pageVisible: boolean): void {
+  store.dropBrowseCache(viewportAbs(), pageVisible);
+  scheduleFlush();
+}
+
+/** When the browse cache was last created or refreshed, for a consumer's TTL. */
+export function lastBrowseActivityMs(): number {
+  return store.lastBrowseActivityMs();
+}
+
+/** Lines currently held as disposable browse cache (diagnostics, tests). */
+export function browseCacheSize(): number {
+  return store.browseCacheSize();
+}
+
+/**
+ * The resume replay bound to send: the client's own residency minus the window
+ * it is about to be sent anyway, so an attach does not download rows the cap
+ * would immediately trim. Wired to `connection`'s `getReplayMax`.
+ */
+export function replayMaxForResume(): number {
+  return Math.max(1, store.tailCap() - store.getWindow().height);
+}
+
+/**
+ * How many rows are queued for a DOM (re)build but not yet built. Non-zero
+ * means the surface is still materializing content the store already holds: a
+ * resume replay, a wipe-and-rebuild after a store swap, or any burst larger
+ * than one frame's build budget.
+ *
+ * Exposed so a consumer can surface a "still catching up" affordance during a
+ * large restore. It is a RENDER-side measure, not a transport one: it reaches
+ * zero between the server's replay chunks, so on its own it is not a
+ * restore-complete signal. Pair it with the resumeAck bounds (the store's
+ * highestIndex reaching the reported `committed`) to tell "this frame's backlog
+ * is drained" from "the restore has finished arriving".
+ */
+export function pendingRowCount(): number {
+  return renderQueue.size;
 }
 
 // --- Color helpers ---
@@ -649,6 +927,17 @@ function buildRowSpans(runs: readonly WireRun[]): (HTMLSpanElement | HTMLAnchorE
  * index, so no client-side frame coalescing is needed.
  */
 export function handleScreen(msg: ScreenMessage): void {
+  lastInboundMs = Date.now();
+  if (msg.scrollbackCleared) {
+    // ED3: the application discarded its saved lines, so everything the store
+    // holds below this base is about to go. Recorded HERE, at the one place that
+    // sees the frame before the store consumes it, so restoreReadAnchor can tell
+    // a region DISCARD from an ordinary cap trim — the two need opposite
+    // recoveries and only the frame knows which happened
+    // (docs/scroll-position-fidelity.md §5). Max, because several frames can
+    // land between flushes.
+    discardedBelowPending = Math.max(discardedBelowPending, msg.base);
+  }
   store.applyScreen(msg);
   scheduleFlush();
 }
@@ -658,6 +947,7 @@ export function handleScreen(msg: ScreenMessage): void {
  * index, then schedule a render flush.
  */
 export function handleScroll(msg: ScrollMessage): void {
+  lastInboundMs = Date.now();
   store.applyScroll(msg);
   scheduleFlush();
 }
@@ -688,16 +978,42 @@ function scheduleFlush(): void {
 // all, because the bottom pin owns its position.
 interface ReadAnchor {
   el: HTMLElement;
+  /** The anchor row's absolute index, so an eviction that removes the element
+   *  itself (batched cap eviction frees up to a whole batch at once) can
+   *  re-resolve to the nearest surviving row instead of giving up. */
+  abs: number;
   /** Where the row sat ON SCREEN: offsetTop minus the scroll offset. Measuring
    *  the screen position rather than the container offset is what makes the
    *  correction idempotent — see restoreReadAnchor. */
   screenTop: number;
 }
 
-function captureReadAnchor(): ReadAnchor | null {
-  if (!scroll.isUserScrolledUp()) {
-    return null; // following: stickToBottom owns the position
-  }
+// rowAtViewportTop returns the first CONTENT row at or below the viewport top —
+// the ONE row-selection primitive every "where is the reader" question resolves
+// through: the read anchor, the paging trigger's viewportAbs, and the per-view
+// memory a tabbed consumer saves. One definition because two would drift, and
+// they would drift exactly during a rebuild, which is when the answer matters
+// most (docs/scroll-position-fidelity.md §7.2).
+//
+// Children are in document order with monotonic offsetTop, so this is a binary
+// search: ~13 reads for a full 5000-row buffer. Non-content children are NEVER a
+// reading position and are skipped: a marker is an annotation ABOUT a hole, so
+// holding one in place would pin the annotation rather than the text the reader
+// is looking at.
+//
+// "Content row" is decided by IDENTITY in rowEls, not by the presence of a
+// data-abs attribute. A gap marker carries one — updateGapMarkers sets it to the
+// gap's LOW index so insertRowInOrder keeps the container monotonic — so an
+// attribute test skips only the trim marker and happily returns a gap marker as
+// a reading position. Its index is the first ABSENT line, which rowEls can never
+// resolve, so a restore anchored there could never land and a viewportAbs built
+// on it would name a line the store does not hold.
+function isContentRow(el: HTMLElement): boolean {
+  const abs = rowAbs(el);
+  return abs >= 0 && rowEls.get(abs) === el;
+}
+
+function rowAtViewportTop(): HTMLElement | null {
   const kids = output.children;
   if (kids.length === 0) {
     return null;
@@ -716,15 +1032,123 @@ function captureReadAnchor(): ReadAnchor | null {
       lo = mid + 1;
     }
   }
-  // Everything is above the viewport top (a shrink already clamped past the
-  // last row): anchor on the last row rather than giving up.
-  const el = found ?? (kids[kids.length - 1] as HTMLElement);
-  return { el, screenTop: el.offsetTop - offset };
+  // Walk past any markers the search landed on. The bound is O(gaps + 1), not 1:
+  // two gap markers CAN be adjacent siblings, and can be the last two children —
+  // measured once predictReplayJump retires the window, since emptyWindow()'s
+  // base of 0 makes the drain ascending. Cheap either way (a handful of gaps at
+  // most), but do not assume a single step.
+  while (found !== null && !isContentRow(found)) {
+    found = found.nextElementSibling as HTMLElement | null;
+  }
+  return found;
+}
+
+function captureReadAnchor(): ReadAnchor | null {
+  if (!scroll.isUserScrolledUp()) {
+    return null; // following: stickToBottom owns the position
+  }
+  const el = rowAtViewportTop();
+  if (el === null) {
+    // Nothing at or below the viewport top. Reaching this with a container that
+    // CLAMPS scrollTop needs the viewport to be shorter than a single row, so it
+    // is effectively unreachable in a browser; the previous last-row fallback
+    // was reachable mainly under a test fixture whose scrollTop setter did not
+    // clamp. Standing down is the right answer either way: using the TAIL as a
+    // proxy reading position is what turned a large content shrink into a
+    // tail-drag (docs/scroll-position-fidelity.md §1.2).
+    return null;
+  }
+  return { el, abs: rowAbs(el), screenTop: el.offsetTop - scroll.currentScrollTop() };
+}
+
+// firstRowAtOrAfter returns the first output child whose absolute index is
+// >= abs — the nearest surviving CONTENT at or below a lost reading position.
+// Binary search over the children, mirroring rowAtViewportTop: they are kept in
+// ascending data-abs order.
+//
+// Markers are skipped by identity (isContentRow), not by reading -1 from a
+// missing data-abs. That older property held only while the trim marker was the
+// single non-row child; a per-gap marker carries its gap's LOW index, so an
+// attribute test would return the marker as the "nearest surviving row" and the
+// anchor would pin an annotation about a hole to the reader's screen position.
+// (~13 reads at the 5000-row cap; this runs inside the eviction flush, the
+// frame's most expensive pass already.)
+function firstRowAtOrAfter(abs: number): HTMLElement | null {
+  const kids = output.children;
+  let lo = 0;
+  let hi = kids.length - 1;
+  let found: HTMLElement | null = null;
+  while (lo <= hi) {
+    const mid = (lo + hi) >> 1;
+    const el = kids[mid] as HTMLElement;
+    if (rowAbs(el) >= abs) {
+      found = el;
+      hi = mid - 1;
+    } else {
+      lo = mid + 1;
+    }
+  }
+  while (found !== null && !isContentRow(found)) {
+    found = found.nextElementSibling as HTMLElement | null;
+  }
+  return found;
 }
 
 function restoreReadAnchor(anchor: ReadAnchor | null): void {
-  if (anchor?.el.parentElement !== output) {
-    return; // not holding, or the anchor row was itself evicted (mass trim)
+  if (anchor === null) {
+    return; // following: stickToBottom owns the position
+  }
+  let el: HTMLElement | null = anchor.el;
+  if (el.parentElement !== output) {
+    if (fullResetThisPass) {
+      // Server restart / epoch change: absolute indices restarted from 0, so
+      // a child with a matching data-abs is UNRELATED content from the new
+      // session — re-anchoring on it would pull an arbitrary row to the old
+      // reading position. Stand down; the fresh session's own follow state
+      // owns the viewport.
+      return;
+    }
+    // The anchor row itself was evicted out from under the reader: batched
+    // cap eviction frees up to a whole batch (256 at the default cap) in one
+    // pass, so a reader parked within a batch of the buffer top loses the
+    // anchored ELEMENT while rows they had not read yet survive below it.
+    // Re-resolve to the first surviving row at or after the anchored index
+    // and hold THAT at the anchor's screen position — the view resumes at
+    // the nearest surviving content instead of silently jumping past up to
+    // a batch of unread lines (WebKit has no native anchoring to catch it).
+    el = firstRowAtOrAfter(anchor.abs);
+    if (el === null) {
+      return; // nothing survives (reset/clear): nothing to hold
+    }
+    // A region DISCARD, not a cap trim: the application erased its saved lines
+    // (ED3), so nothing surviving is guaranteed ADJACENT to what the reader was
+    // looking at. On an inline TUI that reprints on resize the same text comes
+    // straight back at new indices, so the nearest surviving row is unrelated
+    // content — and holding it at the reader's screen position is the "random jump
+    // on resize" symptom. A cap trim is the opposite case and keeps the re-resolve
+    // above: it removes the oldest contiguous run, so the survivor really is the
+    // reader's neighbour (docs/scroll-position-fidelity.md §1.2, §5).
+    //
+    // The test is the ANCHOR's index. An earlier version also required the
+    // SURVIVOR to sit at or above the discard base, which never held for the shape
+    // this exists for: the reprint re-delivers lines below that base in the same
+    // frame, so the survivor looked adjacent and the correction fired anyway.
+    //
+    // The remaining `anchor.abs <` clause is a GUARD, not a live path, and the
+    // reachability argument is worth recording because it is not obvious. For a
+    // single well-formed frame it cannot fire: `msg.base` is both the discard bound
+    // and the new window base, so an anchor at or above it sits inside the live
+    // window, which cap eviction protects and `truncateBelowWindow` only trims
+    // above. Across several frames in one batch (ED3 at a low base, the window
+    // settling high) the anchor's ELEMENT normally survives instead — the store
+    // coalesces an evict-then-reapply of the same index, so `upsertRow` reuses the
+    // element and this whole branch is skipped, leaving the ordinary drift
+    // correction to handle the history the discard removed above the reader, which
+    // is right. Measured: that path applies a legitimate -1700px correction for
+    // 100 discarded rows, and it is NOT this branch.
+    if (discardedBelowThisPass >= 0 && anchor.abs < discardedBelowThisPass) {
+      return;
+    }
   }
   // Correct by how far the row DRIFTED ON SCREEN, not by how much the content
   // above it changed. The two differ exactly when the browser already did this
@@ -734,14 +1158,16 @@ function restoreReadAnchor(anchor: ReadAnchor | null): void {
   // the content delta instead would double-compensate there and throw the view
   // the other way. On Safari, which has no native anchoring, the drift is the
   // whole content delta and this is the only thing that fixes it.
-  const drift = anchor.el.offsetTop - scroll.currentScrollTop() - anchor.screenTop;
+  const drift = el.offsetTop - scroll.currentScrollTop() - anchor.screenTop;
   scroll.adjustForContentShift(drift);
 }
 
 function flushRender(): void {
   pendingFrame = undefined;
-  // Measured BEFORE any DOM mutation, so the post-mutation read below reveals
-  // exactly how much the content above the reading position moved.
+  // Read BEFORE any mutation, twice over: the anchor needs the pre-mutation
+  // screen position, and noteContentShrink needs the pre-mutation offset to tell
+  // whether this pass's row removals actually moved the viewport.
+  const scrollTopBefore = scroll.currentScrollTop();
   const anchor = captureReadAnchor();
   try {
     flushRenderInner();
@@ -776,14 +1202,45 @@ function flushRender(): void {
       console.error("vterm: giving up render retry after repeated no-progress errors");
     }
   }
-  // Two position invariants, applied after every DOM mutation and in this order:
-  // hold the reader's line against content that shifted above it, then (only if
-  // following) pin to the new bottom. They are mutually exclusive by
-  // construction — the anchor is null while following — so the order is for
-  // readability, not correctness.
-  restoreReadAnchor(anchor);
+  // Tell the scroll controller whether this pass's row removals moved the
+  // viewport. Must run BEFORE any write of our own below, or the comparison
+  // measures our write instead of the browser's clamp. Announcing the clamp is
+  // what keeps a content shrink from reading as "the user scrolled up" and
+  // silently switching auto-follow off (scroll.ts's header; §1.3).
+  if (removedRowsThisPass) {
+    scroll.noteContentShrink(scrollTopBefore);
+  }
+  // Three position invariants, applied after every DOM mutation and in this
+  // order. An armed view restore goes first because it OWNS the position while
+  // it is armed; the read anchor then holds whatever line is on screen; the
+  // bottom pin last, and only if following.
+  //
+  // The anchor is skipped ONLY in the frame the restore actually LANDED, and
+  // that exception is load-bearing rather than tidy: the anchor was captured
+  // BEFORE this frame's mutations, so once the restore has authoritatively moved
+  // the viewport, the anchor's drift measures the restore's own write and
+  // corrects it straight back out — the restore and the anchor cancel and the
+  // reader stays at the top. Skipping it while merely ARMED would be wrong for
+  // the opposite reason: a rebuild spans many frames, and suppressing the anchor
+  // across all of them reintroduces the WebKit read-position slide for every one.
+  const restoreLanded = applyPendingRestore();
+  if (!restoreLanded) {
+    restoreReadAnchor(anchor);
+  }
   // Single auto-follow invariant, applied after every DOM mutation.
   stickToBottomIfFollowing();
+  // Absorb every write this frame made — ours and the browser's native scroll
+  // anchoring — into the restore's baseline, so only a move that happens BETWEEN
+  // frames (a real gesture) reads as one.
+  if (pendingRestore !== null) {
+    pendingRestore.lastWrote = scroll.currentScrollTop();
+  }
+  // The post-flush trigger. The reader's position relative to the store's gaps
+  // can change without any scroll event — a tail trim moves the frontier up
+  // under a stationary reader, and a byte-short page leaves a fresh sub-gap
+  // beside them — so the flush is the other place the trigger must run
+  // (docs/paged-scrollback.md §5.4).
+  maybeFetchHistory();
 }
 
 function flushRenderInner(): void {
@@ -792,18 +1249,28 @@ function flushRenderInner(): void {
   // the count-so-far for flushRender's catch to read.
   flushDrainedThisPass = 0;
   const ch = store.drainChanges();
+  fullResetThisPass = ch.fullReset;
+  discardedBelowThisPass = discardedBelowPending;
+  discardedBelowPending = -1;
+  removedRowsThisPass = false;
 
   if (ch.fullReset) {
+    removedRowsThisPass = true;
     output.replaceChildren();
     rowEls.clear();
     renderQueue.clear();
     trimMarkerEl = null;
+    for (const el of gapMarkerEls.values()) {
+      el.remove();
+    }
+    gapMarkerEls.clear();
     cursorAbs = -1;
   } else {
     for (const abs of ch.evictedLines) {
       const el = rowEls.get(abs);
       if (el) {
         el.remove();
+        removedRowsThisPass = true;
       }
       rowEls.delete(abs);
       renderQueue.delete(abs);
@@ -843,10 +1310,15 @@ function flushRenderInner(): void {
     // before deep scrollback on a large-history alt-exit.
     altRendered = false;
     altPrevRows = [];
+    removedRowsThisPass = true;
     output.replaceChildren();
     rowEls.clear();
     renderQueue.clear();
     trimMarkerEl = null;
+    for (const el of gapMarkerEls.values()) {
+      el.remove();
+    }
+    gapMarkerEls.clear();
     queueRowsViewportFirst();
   }
 
@@ -889,16 +1361,35 @@ function flushRenderInner(): void {
   }
   inWindow.sort((a, b) => a - b);
   belowWindow.sort((a, b) => b - a);
-  for (const abs of [...inWindow, ...belowWindow]) {
+  // Drain the two lists sequentially under one budget (no concatenated copy:
+  // during a full-backlog drain the spread re-allocated a backlog-sized array
+  // every frame — pure GC churn on the hot path).
+  const drainRow = (abs: number): boolean => {
     if (flushDrainedThisPass >= MAX_ROWS_PER_FRAME) {
-      break;
+      return false;
     }
     upsertRow(abs);
     renderQueue.delete(abs);
     flushDrainedThisPass++;
+    return true;
+  };
+  for (const abs of inWindow) {
+    if (!drainRow(abs)) {
+      break;
+    }
+  }
+  for (const abs of belowWindow) {
+    if (!drainRow(abs)) {
+      break;
+    }
   }
 
   updateTrimMarker();
+  // The gap markers are a projection of the store's geometry, so they are
+  // re-derived on every flush rather than maintained incrementally: a page
+  // apply, a browse eviction and a tail trim all move gap edges, and none of
+  // them should have to know a marker exists.
+  updateGapMarkers();
 
   // More rows pending: keep draining on subsequent frames.
   if (renderQueue.size > 0) {
@@ -912,28 +1403,347 @@ function flushRenderInner(): void {
   }
 }
 
-// updateTrimMarker shows or hides the "earlier output trimmed" marker as the
-// first child of output, driven by the store. It appears when history older
-// than the store holds was trimmed — either the client evicted its oldest
-// lines at the cap, or the server reported (via resumeAck bounds) that it no
-// longer retains history the client was missing on resume. The marker carries
-// no data-abs, so insertRowInOrder (which compares numeric data-abs) never
-// places a row before it; it stays pinned at the top.
-function updateTrimMarker(): void {
-  if (store.hasTrimmedHistory()) {
-    if (trimMarkerEl === null) {
-      trimMarkerEl = document.createElement("div");
-      trimMarkerEl.className = "term-trim-marker";
-      trimMarkerEl.setAttribute("role", "status");
-      trimMarkerEl.setAttribute("aria-label", "earlier output trimmed");
-      trimMarkerEl.textContent = "earlier output trimmed";
-    }
-    if (trimMarkerEl.parentElement !== output || output.firstChild !== trimMarkerEl) {
-      output.insertBefore(trimMarkerEl, output.firstChild);
-    }
-  } else if (trimMarkerEl !== null && trimMarkerEl.parentElement === output) {
-    trimMarkerEl.remove();
+// --- Per-view scroll memory (docs/scroll-position-fidelity.md §3) ---
+//
+// A reading position is a LINE, not a pixel offset. A tabbed consumer that saved
+// `scrollTop` and replayed it on re-entry had that write silently CLAMPED,
+// because a rebuild has only built the live window plus one frame's budget when
+// the replay lands (301 of up to 5000 rows, ~5100 of ~85,000 px), and the clamp
+// was never re-attempted. The saved offset also stops meaning the same line as
+// soon as the tab's content grows while it is backgrounded, which is every tab
+// whose session kept working. So the memory is an absolute index plus the row's
+// on-screen offset, and the restore is RE-ASSERTED until the row it names has
+// actually been built.
+//
+// `screenTop` is deliberately a DIFFERENCE (offsetTop - scrollTop), the same
+// form ReadAnchor uses: rows report offsets in `.term-output`'s space while
+// scrollTop belongs to `.term`, so any ABSOLUTE pixel value would need the
+// rowTopInTermWrap conversion and would be one padding off without it. A
+// difference cancels the space out.
+export interface ViewMemory {
+  /** Absolute line index of the content row at the viewport top. */
+  abs: number;
+  /** That row's on-screen position: offsetTop minus the scroll offset. */
+  screenTop: number;
+  /** Whether auto-follow was engaged. */
+  following: boolean;
+}
+
+// The armed restore. `gen` is the bind generation it belongs to, so a second
+// switch mid-drain cannot land the first tab's anchor into the second tab's
+// store. `lastWrote` is the offset this module last left behind: a position that
+// does NOT match it was moved by the user, which cancels — the library never
+// fights a gesture, and it establishes that by knowing its own writes rather
+// than by listening to a signal (`onScrollPosition`) that also fires for the
+// browser's clamps, including the one the rebuild itself causes.
+interface PendingRestore {
+  view: ViewMemory;
+  gen: number;
+  lastWrote: number;
+  deadline: number;
+}
+let pendingRestore: PendingRestore | null = null;
+let bindGen = 0;
+// Wall-clock of the last inbound frame for the bound store. `renderQueue.size
+// === 0` alone is NOT "the rebuild finished": it reaches zero BETWEEN a resume
+// batch's replay chunks (see pendingRowCount's contract), so the settle needs
+// transport quiet too. Both numbers mirror the tabs feature's already-tuned
+// catch-up cue, which answers the same question for the same reason.
+let lastInboundMs = 0;
+const RESTORE_SETTLE_MS = 250;
+const RESTORE_MAX_MS = 30000;
+// A position within this many px of what we last wrote is still ours: a
+// fractional-layout or subpixel-DPR readback is not a user gesture.
+const RESTORE_OWN_WRITE_EPSILON_PX = 1;
+
+/**
+ * Capture the current view as per-view scroll memory a consumer can hand back
+ * to `bind`. Returns null when there is nothing meaningful to remember: no
+ * content rows yet, or the alternate screen is active (an alt grid has no
+ * absolute indices worth restoring, and measuring one would overwrite a tab's
+ * real saved position with an alt-screen row).
+ *
+ * Unlike the private read anchor this measures in BOTH follow states — the
+ * follow half is saved alongside it, and a consumer needs the pair.
+ */
+export function captureViewMemory(): ViewMemory | null {
+  if (store.isAlt()) {
+    return null;
   }
+  const el = rowAtViewportTop();
+  if (el === null) {
+    return null;
+  }
+  const abs = rowAbs(el);
+  if (abs < 0) {
+    return null;
+  }
+  return {
+    abs,
+    screenTop: el.offsetTop - scroll.currentScrollTop(),
+    following: !scroll.isUserScrolledUp(),
+  };
+}
+
+/** Drop any armed restore. Called on (re)init and on every bind. */
+function clearPendingRestore(): void {
+  pendingRestore = null;
+}
+
+// applyPendingRestore re-asserts an armed view restore, and is the reason the
+// restore is not a one-shot: the anchored row may not be BUILT yet. A rebuild
+// drains at MAX_ROWS_PER_FRAME, so a reader parked deep in history has their row
+// materialize several frames after the switch, and a single write at frame 1
+// would be clamped to the partial content and never retried.
+//
+// Returns true when it landed (and disarmed).
+function applyPendingRestore(): boolean {
+  const p = pendingRestore;
+  if (p === null) {
+    return false;
+  }
+  // A newer bind owns the surface, or indices restarted: the saved anchor
+  // describes content that is no longer here.
+  if (p.gen !== bindGen || fullResetThisPass) {
+    clearPendingRestore();
+    return false;
+  }
+  const now = scroll.currentScrollTop();
+  if (Math.abs(now - p.lastWrote) > RESTORE_OWN_WRITE_EPSILON_PX) {
+    clearPendingRestore(); // the user moved: never fight a gesture
+    return false;
+  }
+  const el = rowEls.get(p.view.abs);
+  if (el === undefined) {
+    // Not built yet, or gone for good. Give up only once the surface has
+    // genuinely settled (queue drained AND transport quiet) or the bound
+    // lapses; until then stay armed and try again next frame.
+    const quiet = renderQueue.size === 0 && Date.now() - lastInboundMs > RESTORE_SETTLE_MS;
+    if (quiet || Date.now() > p.deadline) {
+      clearPendingRestore();
+    }
+    return false;
+  }
+  // Same arithmetic as the read anchor's drift correction, for the same
+  // space-cancelling reason, and idempotent: an already-satisfied restore
+  // measures zero and writes nothing.
+  const drift = el.offsetTop - now - p.view.screenTop;
+  scroll.adjustForContentShift(drift);
+  clearPendingRestore();
+  return true;
+}
+
+/**
+ * The viewport's absolute index for the paging layer's live questions: which
+ * rows to exempt from eviction, whether a reader is sitting on cache, which gap
+ * an interaction is approaching. All three ask about NOW, so they get the live
+ * measurement.
+ *
+ * `pendingRestoreAbs` is the separate answer for the one caller that asks a
+ * different question — the resume transition, which asks which rows must
+ * SURVIVE a switch (docs/scroll-position-fidelity.md §7.2).
+ */
+function viewportAbs(): number {
+  if (!scroll.isUserScrolledUp()) {
+    return store.getWindow().base;
+  }
+  const el = rowAtViewportTop();
+  const abs = el === null ? -1 : rowAbs(el);
+  return abs >= 0 ? abs : store.getWindow().base;
+}
+
+/**
+ * The absolute index of an ARMED view restore, or null. Only the resume
+ * transition consults this: during a rebuild the live viewport is a transient —
+ * mid-drain, at a clamped offset — and a reclassify pass that reads it can evict
+ * the very rows the restore is about to bring back. The pending anchor is the
+ * position the user is regaining, which is the one that must survive.
+ */
+export function pendingRestoreAbs(): number | null {
+  const p = pendingRestore;
+  if (p === null) {
+    return null;
+  }
+  // Expire on READ as well as in the flush. The flush is the only other place
+  // this state is examined, so an idle surface (queue drained, no inbound frames,
+  // no flush scheduled) would otherwise hold an arm indefinitely and keep
+  // answering with a line the reader has long left.
+  if (Date.now() > p.deadline) {
+    clearPendingRestore();
+    return null;
+  }
+  return p.view.abs;
+}
+
+/**
+ * The fetch trigger: decide whether to ask for a page, and for which range.
+ *
+ * Called from the post-flush anchor path and from `scroll.ts`'s position seam.
+ * Both are cheap to over-call — every guard below is a pure read, and pacing
+ * makes a spurious run free — which is deliberate: the alternative (trying to
+ * fire it only when needed) is how a trigger ends up never firing on the idle
+ * session that needs it most.
+ */
+export function maybeFetchHistory(): void {
+  // ALT: no paging while the alternate screen is active. The event paths are
+  // scrollback-UI-only, but the pending-demand timer fires from a CLOCK, so
+  // this guard is the load-bearing one — without it a vim session would fetch
+  // pages nobody can see, and each denial would re-arm the timer for the
+  // session's whole duration (docs/paged-scrollback.md §5.5).
+  if (store.isAlt()) {
+    return;
+  }
+  if (requestHistoryFn === null) {
+    return; // paging not wired by this consumer
+  }
+  const budget = historyBudgetFn === null ? PAGE_SIZE : historyBudgetFn();
+  if (!Number.isInteger(budget) || budget < 1) {
+    return;
+  }
+  const abs = viewportAbs();
+  const edges = store.absentEdgesNear(abs, PREFETCH_THRESHOLD);
+  const gap = edges[0];
+  if (gap === undefined) {
+    return;
+  }
+  // APPROACH-ANCHORED: always fetch the end NEAREST the reader, so a wide gap
+  // heals from the side being read. Fetching a fixed end would land pages up to
+  // (gapWidth - budget) lines away from the viewport, leaving the rows under the
+  // reader blank while the far end filled in.
+  const floor = store.pagingFloorIndex();
+  const fromAbs =
+    abs >= gap.hi
+      ? Math.max(gap.lo, gap.hi - budget, floor) // approaching from BELOW the gap's top
+      : Math.max(gap.lo, floor); // approaching from above: start at the gap's low edge
+  const maxLines = Math.min(budget, gap.hi - fromAbs);
+  if (maxLines < 1) {
+    return;
+  }
+  requestHistoryFn(fromAbs, maxLines);
+}
+
+/**
+ * Re-derive the gap markers from the store's geometry. A projection, not a
+ * mutation log: every call recomputes which gaps exist and reconciles the DOM,
+ * so a gap that healed from either edge moves or loses its marker without any
+ * caller having to know which edge changed.
+ */
+function updateGapMarkers(): void {
+  // Through intervals.ts, which declares itself the single source of gap
+  // geometry — and the store's fetch trigger reads it too. This loop used to be
+  // a second copy of `interiorGaps` with the same bounds and the same predicate,
+  // so any correction to gap derivation (a touching-run case, an off-by-one at a
+  // run edge) would have landed on one of them: the renderer marking a hole the
+  // trigger will not fetch, or omitting one over a hole it will.
+  const gaps = new Map<number, number>(); // low index -> high index
+  for (const gap of interiorGaps(store.retainedRanges())) {
+    gaps.set(gap.lo, gap.hi);
+  }
+  // Remove markers whose gap closed.
+  for (const [lo, el] of [...gapMarkerEls]) {
+    if (!gaps.has(lo)) {
+      el.remove();
+      gapMarkerEls.delete(lo);
+    }
+  }
+  const floor = store.pagingFloorIndex();
+  for (const [lo, hi] of gaps) {
+    let el = gapMarkerEls.get(lo);
+    if (el === undefined) {
+      el = document.createElement("div");
+      el.className = "term-gap-marker";
+      el.setAttribute("role", "status");
+      gapMarkerEls.set(lo, el);
+    }
+    // Three states, and the IDLE one is the default (§5.4). A gap marker whose
+    // whole reason to exist is "do not read these two regions as contiguous"
+    // cannot fall back to asserting nothing, or the splice it prevents comes
+    // back silently.
+    const condemned = floor >= hi;
+    const label = condemned ? "earlier output trimmed" : "earlier output not loaded";
+    if (el.textContent !== label) {
+      el.textContent = label;
+      el.setAttribute("aria-label", label);
+    }
+    el.dataset["abs"] = String(lo);
+    el.classList.toggle("term-gap-trimmed", condemned);
+    // Position by data-abs order, the same invariant the row inserts keep.
+    const next = firstRowAtOrAfter(hi);
+    if (el.parentElement !== output || el.nextElementSibling !== next) {
+      output.insertBefore(el, next);
+    }
+  }
+}
+
+// updateTrimMarker shows, hides and LABELS the top-of-store marker as the first
+// child of output, driven by the store. It carries no data-abs, so
+// insertRowInOrder (which compares numeric data-abs) never places a row before
+// it; it stays pinned at the top.
+//
+// Three states, because there are three honest things to say about the history
+// above what is held (docs/paged-scrollback.md §5.4):
+//
+//  - NOTHING, when the store holds index 0: there is no history above it.
+//  - "earlier output trimmed", the PERMANENT statement. Without paging declared
+//    — including the pre-ack instant — it is the store's own trim bookkeeping,
+//    the pre-paging behavior and the right one when no fetch exists: the client
+//    evicted those rows itself, which is a fact whatever the server can serve.
+//    With paging declared it is EARNED instead: the paging floor has reached the
+//    oldest held index (the server proved nothing at or below it survives — an
+//    empty frontier reply lands exactly here), or the server's own retained edge
+//    is at or above it.
+//  - "earlier output not loaded", the RECOVERABLE statement, with paging
+//    declared and neither of those proofs in hand. This is the state that was
+//    missing: a bounded resume replay routinely leaves a fetchable frontier, and
+//    the old single predicate either said nothing at all (silently presenting a
+//    partial transcript as the beginning of the session) or said "trimmed" about
+//    history the server still holds and the trigger is about to fetch.
+//
+// The frontier is deliberately NOT sourced from gap geometry: its lower edge is
+// a policy question (what is still worth requesting), so an exhausted frontier
+// still renders a marker here rather than vanishing when the gap closes.
+function updateTrimMarker(): void {
+  const label = topMarkerLabel();
+  if (label === null) {
+    if (trimMarkerEl !== null && trimMarkerEl.parentElement === output) {
+      trimMarkerEl.remove();
+    }
+    return;
+  }
+  if (trimMarkerEl === null) {
+    trimMarkerEl = document.createElement("div");
+    trimMarkerEl.className = "term-trim-marker";
+    trimMarkerEl.setAttribute("role", "status");
+  }
+  if (trimMarkerEl.textContent !== label) {
+    trimMarkerEl.textContent = label;
+    trimMarkerEl.setAttribute("aria-label", label);
+  }
+  // Mirrors the interior gap marker's class, so one rule styles "gone" in both
+  // places and a reader learns the distinction once.
+  trimMarkerEl.classList.toggle("term-gap-trimmed", label === TRIM_LABEL_GONE);
+  if (trimMarkerEl.parentElement !== output || output.firstChild !== trimMarkerEl) {
+    output.insertBefore(trimMarkerEl, output.firstChild);
+  }
+}
+
+/** The permanent label: nothing below the oldest held index can be recovered. */
+const TRIM_LABEL_GONE = "earlier output trimmed";
+/** The recoverable label: history above exists and a fetch can bring it back. */
+const TRIM_LABEL_PENDING = "earlier output not loaded";
+
+/** Which top-of-store statement is true, or null for no marker (§5.4). */
+function topMarkerLabel(): string | null {
+  const oldest = store.oldestIndex();
+  if (oldest <= 0) {
+    return null; // holds index 0, or holds nothing: no history above it
+  }
+  if (!store.pagingDeclared()) {
+    return store.hasTrimmedHistory() ? TRIM_LABEL_GONE : null;
+  }
+  const serverOldest = store.serverOldestIndex();
+  const condemned = store.pagingFloorIndex() >= oldest || (serverOldest >= 0 && serverOldest >= oldest);
+  return condemned ? TRIM_LABEL_GONE : TRIM_LABEL_PENDING;
 }
 
 // upsertRow builds or updates the DOM row for an absolute index, or removes it
@@ -945,6 +1755,7 @@ function upsertRow(abs: number): void {
     const stale = rowEls.get(abs);
     if (stale) {
       stale.remove();
+      removedRowsThisPass = true;
       rowEls.delete(abs);
     }
     return;
@@ -991,8 +1802,13 @@ let altRendered = false;
 // The alt row arrays rendered by the last flush, by grid index. Row identity
 // is the store's change signal (applyScreen swaps exactly the changed rows'
 // arrays; getAltRows returns the live references), so `prev[y] === rows[y]`
-// means row y's DOM is already current. Cleared on alt exit and re-init.
-let altPrevRows: readonly (readonly WireRun[])[] = [];
+// means row y's DOM is already current. A separate MUTABLE container from the
+// store's own array (which is mutated in place across frames): the full build
+// snapshots it once, and the reconcile path updates only the entries it
+// rebuilt — the previous per-frame `rows.slice()` allocated a fresh array on
+// every alt flush (60fps GC churn under a full-screen TUI) for identical
+// semantics. Cleared on alt exit and re-init.
+let altPrevRows: (readonly WireRun[])[] = [];
 
 function renderAlt(rows: readonly (readonly WireRun[])[]): void {
   rowEls.clear();
@@ -1024,8 +1840,9 @@ function renderAlt(rows: readonly (readonly WireRun[])[]): void {
     const div = output.children[y] as HTMLDivElement;
     // eslint-disable-next-line @typescript-eslint/no-non-null-assertion -- y < rows.length === children.length
     div.replaceChildren(...buildRowSpans(rows[y]!));
+    // eslint-disable-next-line @typescript-eslint/no-non-null-assertion -- same bound as above
+    altPrevRows[y] = rows[y]!;
   }
-  altPrevRows = rows.slice();
 }
 
 /** Pin the viewport to the bottom iff the user is following. The scroll
@@ -1120,6 +1937,14 @@ if (typeof document !== "undefined") {
  * metrics.
  */
 export function updateFontMetrics(): void {
+  // Capture BEFORE the metrics change: a row-height change rescales every
+  // offsetTop, so a holding reader's line moves under them with nothing to
+  // correct it — the read anchor only measures drift across a FLUSH's own
+  // mutations, and a pure restyle may not schedule one at all. `abs` (the line
+  // identity, which is what the reader cares about) is exact regardless of when
+  // this runs; `screenTop` can be up to one row stale if the layout changed
+  // before this call, which is a sub-row error rather than a lost position.
+  const before = captureViewMemory();
   const cs = window.getComputedStyle(termWrap);
   // Refresh the overlay-positioning padding cache from the same computed
   // style (one staleness contract for all cached box metrics).
@@ -1138,6 +1963,31 @@ export function updateFontMetrics(): void {
   defaultSpacing = cellWidth - measuredW;
   output.style.letterSpacing = `${defaultSpacing}px`;
   document.documentElement.style.setProperty("--char-w", `${cellWidth}px`);
+  // A holding reader's line is restored through the same machinery a tab switch
+  // uses: arm it and let the next flush re-assert it. Idempotent when the metrics
+  // did not actually change (the drift measures zero), and a no-op for a
+  // following viewport, whose position the bottom pin already owns.
+  // An armed restore SURVIVES this call, and its baseline has to be refreshed or
+  // it does not: the reflow that provoked the call has already moved scrollTop,
+  // so leaving lastWrote stale makes the next flush read that as a gesture and
+  // cancel the very restore this branch is protecting. Declining to arm and
+  // silently killing the existing arm would be the worst of both.
+  if (pendingRestore !== null) {
+    pendingRestore.lastWrote = scroll.currentScrollTop();
+  }
+  // NEVER over an armed restore. A resize settle calls this (through the
+  // consumer's measurable-size check) and a tab switch reconnects, so the two
+  // routinely overlap: replacing a bind's saved anchor with one measured
+  // mid-rebuild would swap the reader's real position for a transient.
+  if (before !== null && !before.following && pendingRestore === null) {
+    pendingRestore = {
+      view: before,
+      gen: bindGen,
+      lastWrote: scroll.currentScrollTop(),
+      deadline: Date.now() + RESTORE_MAX_MS,
+    };
+    scheduleFlush();
+  }
 }
 
 const MIN_COLS = 20;

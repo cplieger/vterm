@@ -158,6 +158,13 @@ func (s *Screen) makeRunWithURL(text string, st Style, url string) WireRun {
 	r.F = s.colorToWire(fg)
 	r.B = s.colorToWire(bg)
 	r.Uc = s.colorToWire(st.UnderlineColor)
+	// Minimum-contrast floor (contrast.go), off unless a consumer asked for it.
+	// Skipped for concealed text: SGR 8 hides content deliberately, and a client
+	// that implements conceal by painting the text in its background color must
+	// never be handed a foreground that has been pushed away from it.
+	if s.minContrast > 1 && !st.Hidden {
+		r.F = s.liftForContrast(r.F, r.B)
+	}
 	if st.Bold {
 		r.A |= 1
 	}
@@ -512,17 +519,34 @@ func (s *Screen) colorToWire(c Color) int32 {
 	return wireDefaultColor
 }
 
+// basic16RGB resolves palette indices 0-15 (SGR 30-37 / 90-97 and their 40-47 /
+// 100-107 background forms) to RGB. These 16 slots are TERMINAL-DEFINED: no spec
+// assigns them values, so this is a palette choice, and the choice is kitty's
+// published default (kitty/options/definition.py color0-color15).
+//
+// kitty is the reference because it is the only widely-used terminal whose
+// default background is pure black, which is web-terminal-ui's default too, so
+// its slot values are chosen against the background this engine actually renders
+// on. The engine previously used the classic VGA / Linux-console table
+// (0x0000aa blue and friends). That table predates dark-theme legibility work
+// and reads at 1.58:1 against black, far under the WCAG AA floor of 4.5:1; GNOME
+// Terminal still ships it, under the name "Linux Console", as a legacy preset
+// rather than a default. Every actively-designed default lifts these slots, and
+// this one lifts each failing slot by 1.3x to 3x.
+//
+// An application can still override any slot with OSC 4, and a consumer can put
+// a contrast floor over the whole palette with WithMinimumContrast.
 func basic16RGB(idx uint8) int32 {
 	pal := [16]int32{
-		0x000000, 0xaa0000, 0x00aa00, 0xaa5500,
-		0x0000aa, 0xaa00aa, 0x00aaaa, 0xaaaaaa,
-		0x555555, 0xff5555, 0x55ff55, 0xffff55,
-		0x5555ff, 0xff55ff, 0x55ffff, 0xffffff,
+		0x000000, 0xcc0403, 0x19cb00, 0xcecb00,
+		0x0d73cc, 0xcb1ed1, 0x0dcdcd, 0xdddddd,
+		0x767676, 0xf2201f, 0x23fd00, 0xfffd00,
+		0x1a8fff, 0xfd28ff, 0x14ffff, 0xffffff,
 	}
 	if int(idx) < len(pal) {
 		return pal[idx]
 	}
-	return 0xaaaaaa
+	return pal[7] // out of range: the palette's plain white
 }
 
 func color256RGB(idx uint8) int32 {

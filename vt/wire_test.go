@@ -21,9 +21,9 @@ func TestWireRunEncoding(t *testing.T) {
 	if r.T != "Hi" {
 		t.Errorf("run[0].T = %q, want %q", r.T, "Hi")
 	}
-	// Red (ANSI index 1) → 0xaa0000 per basic16RGB palette.
-	if r.F != 0xaa0000 {
-		t.Errorf("run[0].F = 0x%06x, want 0xaa0000", r.F)
+	// Red (ANSI index 1) → 0xcc0403 per basic16RGB palette.
+	if r.F != 0xcc0403 {
+		t.Errorf("run[0].F = 0x%06x, want 0xcc0403", r.F)
 	}
 	// Default BG → -1.
 	if r.B != -1 {
@@ -112,7 +112,7 @@ func TestRenderRowWireRejectsOutOfRangeRow(t *testing.T) {
 }
 
 // TestBasic16RGBPaletteBounds verifies the 16-entry palette lookup: in-range
-// indices map to their colors, and an out-of-range index returns the gray
+// indices map to their colors, and an out-of-range index returns the plain-white
 // fallback rather than panicking.
 func TestBasic16RGBPaletteBounds(t *testing.T) {
 	if got := basic16RGB(0); got != 0x000000 {
@@ -121,8 +121,8 @@ func TestBasic16RGBPaletteBounds(t *testing.T) {
 	if got := basic16RGB(15); got != 0xffffff {
 		t.Errorf("basic16RGB(15) = 0x%06x, want 0xffffff", got)
 	}
-	if got := basic16RGB(16); got != 0xaaaaaa {
-		t.Errorf("basic16RGB(16) = 0x%06x, want 0xaaaaaa (out-of-range fallback)", got)
+	if got := basic16RGB(16); got != 0xdddddd {
+		t.Errorf("basic16RGB(16) = 0x%06x, want 0xdddddd (out-of-range fallback)", got)
 	}
 }
 
@@ -170,7 +170,7 @@ func TestRenderRowWire256Color(t *testing.T) {
 		idx  int
 		want int32
 	}{
-		{"\x1b[38;5;9mX\x1b[0m", 9, 0xff5555},     // <16: delegates to basic-16 palette
+		{"\x1b[38;5;9mX\x1b[0m", 9, 0xf2201f},     // <16: delegates to basic-16 palette
 		{"\x1b[38;5;21mX\x1b[0m", 21, 0x0000ff},   // cube: pure blue
 		{"\x1b[38;5;46mX\x1b[0m", 46, 0x00ff00},   // cube: pure green
 		{"\x1b[38;5;196mX\x1b[0m", 196, 0xff0000}, // cube: pure red

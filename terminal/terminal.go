@@ -325,8 +325,13 @@ type handlerConfig struct {
 	env                []string
 	containSample      time.Duration
 	scrollbackCapacity int
-	keepUnfocused      bool
-	inputTitle         bool
+	// minContrast is the minimum-contrast floor passed to the screen
+	// (WithMinimumContrast). Zero, like 1, leaves the floor off. Grouped with the
+	// other non-pointer scalars rather than beside theme, so it does not split
+	// the struct's leading pointer run.
+	minContrast   float64
+	keepUnfocused bool
+	inputTitle    bool
 	// noReap opts out of reaping this session's process tree at teardown
 	// (WithoutSessionReap). Reaping is ON by default, unlike containment: it
 	// needs no host support, so there is nothing to degrade to.
@@ -455,6 +460,21 @@ func WithKeepUnfocused() Option {
 // theme. Defaults to vt.DefaultTheme (a dark scheme). Build colors with vt.RGB.
 func WithTheme(t vt.Theme) Option {
 	return func(c *handlerConfig) { c.theme = &t }
+}
+
+// WithMinimumContrast sets a floor on the WCAG contrast ratio between a run's
+// text and its background, clamped to 1..21. A foreground below the floor is
+// blended toward white or black until it reaches it; backgrounds and default
+// foregrounds are left alone. Off by default (1), matching xterm.js's
+// minimumContrastRatio.
+//
+// Pass 4.5 (the WCAG AA floor for body text, and VS Code's default for its
+// integrated terminal) when your client renders on a dark background. A terminal
+// program selects a palette SLOT and cannot know what your client resolves it
+// to, so this is the only place the mismatch can be corrected. See
+// vt.WithMinimumContrast for the full rationale.
+func WithMinimumContrast(ratio float64) Option {
+	return func(c *handlerConfig) { c.minContrast = ratio }
 }
 
 // sessionState persists across WS reconnects for the same logical
@@ -707,6 +727,9 @@ func NewHandler(command []string, opts ...Option) *Handler {
 	var vtOpts []vt.Option
 	if cfg.theme != nil {
 		vtOpts = append(vtOpts, vt.WithTheme(*cfg.theme))
+	}
+	if cfg.minContrast > vt.MinimumContrastOff {
+		vtOpts = append(vtOpts, vt.WithMinimumContrast(cfg.minContrast))
 	}
 	var derived *inputTitleDeriver
 	if cfg.inputTitle {
@@ -1222,12 +1245,18 @@ func (h *Handler) ensureStarted(cols, rows int) error {
 //
 // The reap marker is PREPENDED, ahead of even os.Environ(), so it sits at the
 // front of /proc/<pid>/environ and the reap scan can read a bounded prefix per
-// pid instead of a whole ARG_MAX environment (see reap.go). The consumer's own
-// env is stripped of that key first, because os/exec keeps the LAST value for a
-// repeated key and would otherwise let WithEnv replace the marker and silently
-// switch reaping off for the session.
+// pid instead of a whole ARG_MAX environment (see reap.go).
+//
+// BOTH env sources are stripped of that key first, not just the consumer's.
+// os/exec keeps the LAST value for a repeated key, so any later assignment
+// displaces the engine's freshly minted marker, and the session's tree then
+// carries a marker the engine never minted: the scan matches nothing and reaping
+// is silently off. The INHERITED environment is the likelier carrier of the two
+// and the one the engine controls least — a server started from inside one of
+// these very sessions inherits that session's live marker, so every session it
+// spawns would inherit it too and the whole process would reap nothing.
 func (h *Handler) childEnv(reap *sessionReap) []string {
-	inherited := os.Environ()
+	inherited := stripReapMarker(os.Environ())
 	consumer := stripReapMarker(h.cfg.env)
 	env := make([]string, 0, len(inherited)+len(consumer)+5)
 	if pair := reap.envPair(); pair != "" {

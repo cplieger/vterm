@@ -242,8 +242,6 @@ const HISTORY_REFILL_MS = 2_000;
  */
 const HISTORY_DATA_TIMEOUT_MS = 8_000;
 
-
-
 /** The smallest request the adaptive budget will shrink to. */
 const HISTORY_MIN_PAGE = 125;
 

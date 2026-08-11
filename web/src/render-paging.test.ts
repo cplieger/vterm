@@ -38,7 +38,11 @@ function scrollMsg(firstIndex: number, count: number): ScrollMessage {
   };
 }
 
-function screenMsg(base: number, height: number, opts: { altActive?: boolean } = {}): ScreenMessage {
+function screenMsg(
+  base: number,
+  height: number,
+  opts: { altActive?: boolean } = {},
+): ScreenMessage {
   const rows: WireRun[][] = [];
   const changed: number[] = [];
   for (let y = 0; y < height; y++) {
@@ -67,8 +71,7 @@ let budget: number;
 let output: HTMLElement;
 
 function initRender(opts: { wireTransport?: boolean } = {}): void {
-  document.body.innerHTML =
-    `<div class="term"><div class="term-wrap"><div class="term-output"></div></div></div>`;
+  document.body.innerHTML = `<div class="term"><div class="term-wrap"><div class="term-output"></div></div></div>`;
   const termWrap = document.querySelector<HTMLElement>(".term-wrap")!;
   output = document.querySelector<HTMLElement>(".term-output")!;
   installCanvasStub();
@@ -437,7 +440,6 @@ describe("render: paging constants", () => {
     expect(PREFETCH_THRESHOLD).toBeLessThanOrEqual(PAGE_SIZE);
   });
 });
-
 
 describe("render: the top-of-store marker", () => {
   // Three honest statements about the history above what is held

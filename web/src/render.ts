@@ -1742,7 +1742,8 @@ function topMarkerLabel(): string | null {
     return store.hasTrimmedHistory() ? TRIM_LABEL_GONE : null;
   }
   const serverOldest = store.serverOldestIndex();
-  const condemned = store.pagingFloorIndex() >= oldest || (serverOldest >= 0 && serverOldest >= oldest);
+  const condemned =
+    store.pagingFloorIndex() >= oldest || (serverOldest >= 0 && serverOldest >= oldest);
   return condemned ? TRIM_LABEL_GONE : TRIM_LABEL_PENDING;
 }
 

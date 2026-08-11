@@ -26,16 +26,19 @@ function members(set: readonly Interval[]): number[] {
  */
 function assertNormalized(set: readonly Interval[], label: string): void {
   for (const iv of set) {
-    expect(iv.hi, `${label}: empty or inverted interval ${JSON.stringify(iv)}`).toBeGreaterThan(iv.lo);
+    expect(iv.hi, `${label}: empty or inverted interval ${JSON.stringify(iv)}`).toBeGreaterThan(
+      iv.lo,
+    );
   }
   for (let i = 1; i < set.length; i++) {
     const prev = set[i - 1];
     const cur = set[i];
     expect(prev, `${label}: sparse set`).toBeDefined();
     expect(cur, `${label}: sparse set`).toBeDefined();
-    expect(cur!.lo, `${label}: ${JSON.stringify(set)} is unsorted or has a touching pair`).toBeGreaterThan(
-      prev!.hi,
-    );
+    expect(
+      cur!.lo,
+      `${label}: ${JSON.stringify(set)} is unsorted or has a touching pair`,
+    ).toBeGreaterThan(prev!.hi);
   }
 }
 
@@ -79,7 +82,14 @@ describe("intervals: retainedIntervals (the gap source)", () => {
     // exported and takes any list. A zero-width gap would reach the renderer as
     // a marker for a hole with no rows in it, and the trigger as a fetch target
     // of zero lines.
-    expect(pairs(interiorGaps([{ lo: 0, hi: 10 }, { lo: 10, hi: 20 }]))).toEqual([]);
+    expect(
+      pairs(
+        interiorGaps([
+          { lo: 0, hi: 10 },
+          { lo: 10, hi: 20 },
+        ]),
+      ),
+    ).toEqual([]);
   });
 });
 

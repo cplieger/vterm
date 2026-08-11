@@ -65,7 +65,7 @@ describe("per-view scroll memory across a multi-frame rebuild", () => {
 
   /** Run exactly one animation frame's worth of scheduled work. */
   function pumpFrame(): void {
-        const due = frames;
+    const due = frames;
     frames = [];
     for (const cb of due) {
       cb(performance.now());
@@ -91,11 +91,7 @@ describe("per-view scroll memory across a multi-frame rebuild", () => {
     s.applyScroll(scrollMsg(from, texts));
     const base = from + count;
     s.applyScreen(
-      screenMsg(
-        base,
-        [row("w0"), row("w1"), row("w2"), row("w3")],
-        [0, 1, 2, WINDOW_H - 1],
-      ),
+      screenMsg(base, [row("w0"), row("w1"), row("w2"), row("w3")], [0, 1, 2, WINDOW_H - 1]),
     );
     return s;
   }

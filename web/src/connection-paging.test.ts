@@ -32,7 +32,11 @@ interface MockWS {
   listeners: Map<string, ((ev: unknown) => void)[]>;
   send: ReturnType<typeof vi.fn>;
   close: ReturnType<typeof vi.fn>;
-  addEventListener: (type: string, handler: (ev: unknown) => void, opts?: { signal?: AbortSignal }) => void;
+  addEventListener: (
+    type: string,
+    handler: (ev: unknown) => void,
+    opts?: { signal?: AbortSignal },
+  ) => void;
   fireOpen: () => void;
   fireMessage: (data: ArrayBuffer) => void;
   fireClose: (code?: number) => void;
@@ -265,13 +269,19 @@ function historyControls(sock: MockWS): { fromAbs: number; maxLines: number }[] 
  * Bring a socket up and (optionally) declare paging, which is what makes
  * `requestHistory` willing to send at all.
  */
-function openSocket(opts: { paging?: boolean; committed?: number; oldest?: number; ack?: boolean } = {}): MockWS {
+function openSocket(
+  opts: { paging?: boolean; committed?: number; oldest?: number; ack?: boolean } = {},
+): MockWS {
   connect();
   const sock = sockets[sockets.length - 1]!;
   sock.fireOpen();
   if (opts.ack !== false) {
     sock.fireMessage(
-      resumeAckFrame({ paging: opts.paging ?? true, committed: opts.committed ?? 5000, oldest: opts.oldest ?? 0 }),
+      resumeAckFrame({
+        paging: opts.paging ?? true,
+        committed: opts.committed ?? 5000,
+        oldest: opts.oldest ?? 0,
+      }),
     );
   }
   return sock;
@@ -282,7 +292,15 @@ describe("connection: history paging", () => {
     sockets.length = 0;
     vi.useFakeTimers();
     vi.stubGlobal("WebSocket", makeMockWebSocket());
-    h = { messages: [], replies: [], transitions: [], solicited: [], cleared: 0, retries: 0, store: null };
+    h = {
+      messages: [],
+      replies: [],
+      transitions: [],
+      solicited: [],
+      cleared: 0,
+      retries: 0,
+      store: null,
+    };
     init({
       onMessage: (msg) => h.messages.push(msg),
       onOpen: () => {
@@ -404,7 +422,9 @@ describe("connection: history paging", () => {
       });
       setSession("paging-tests");
       const sock = openSocket({ paging: true });
-      expect(controlsSent(sock).find((m) => m["type"] === "resume")?.["replayMax"]).toBe(MAX_REPLAY_LINES);
+      expect(controlsSent(sock).find((m) => m["type"] === "resume")?.["replayMax"]).toBe(
+        MAX_REPLAY_LINES,
+      );
       expect(h.transitions.at(-1)?.sentReplayMax).toBe(MAX_REPLAY_LINES);
     });
 

@@ -32,7 +32,11 @@ function pageMsg(firstIndex: number, count: number): ScrollMessage {
   };
 }
 
-function screenMsg(base: number, height: number, opts: Partial<{ altActive: boolean }> = {}): ScreenMessage {
+function screenMsg(
+  base: number,
+  height: number,
+  opts: Partial<{ altActive: boolean }> = {},
+): ScreenMessage {
   const rows: WireRun[][] = new Array<WireRun[]>(height);
   const changed: number[] = [];
   for (let y = 0; y < height; y++) {
@@ -906,7 +910,6 @@ describe("LineStore paging: dropBrowseCache", () => {
   });
 });
 
-
 describe("LineStore paging: classification survives every removal path", () => {
   // Classification lives in a second container keyed by the same indices
   // (`browse`), so it is only as correct as its least-maintained deletion path.
@@ -1025,7 +1028,6 @@ describe("LineStore paging: classification survives every removal path", () => {
   });
 });
 
-
 describe("LineStore paging: the budget walk terminates over a hole-spanning band", () => {
   // Termination of the budget walk, over the shape that broke it: a cache whose
   // low edge sits above a wide hole. A range-based victim pool picks an EDGE, and
@@ -1068,7 +1070,6 @@ describe("LineStore paging: the budget walk terminates over a hole-spanning band
     expect(s.browseCacheSize()).toBeLessThanOrEqual(BROWSE_CACHE_CAP + PAGE_SIZE);
   });
 });
-
 
 describe("LineStore paging: the ED3 (scrollbackCleared) lifecycle", () => {
   /** A screen frame carrying ED3, as the wire decodes it. */

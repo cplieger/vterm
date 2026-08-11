@@ -10,7 +10,7 @@
     ],
     "curRow": 1,
     "curCol": 3,
-    "frame": "AAAAAAAAAAAAAAAAAAAAAAABAAMABAAEAAABAAABAAgAICAgICAgICD//////////wAA/////wAAAQABAAgAICAgICAgICD//////////wAA/////wAAAgABAAgAICAgICAgICD//////////wAA/////wAAAwABAAgAICAgICAgICD//////////wAA/////wAA"
+    "frame": "AAAAAAAAAAAAAAAAAAAAAAABAAMABAAEAAABAAAAAAEAAAACAAAAAwAAAA=="
   },
   {
     "name": "erase_below_ed0",
@@ -23,7 +23,7 @@
     ],
     "curRow": 1,
     "curCol": 2,
-    "frame": "AAAAAAAAAAAAAAAAAAAAAAABAAIABAAEAAABAAABAAgAQUFBQSAgICD//////////wAA/////wAAAQABAAgAQkIgICAgICD//////////wAA/////wAAAgABAAgAICAgICAgICD//////////wAA/////wAAAwABAAgAICAgICAgICD//////////wAA/////wAA"
+    "frame": "AAAAAAAAAAAAAAAAAAAAAAABAAIABAAEAAABAAABAAQAQUFBQf//////////AAD/////AAABAAEAAgBCQv//////////AAD/////AAACAAAAAwAAAA=="
   },
   {
     "name": "erase_above_ed1",
@@ -36,7 +36,7 @@
     ],
     "curRow": 1,
     "curCol": 2,
-    "frame": "AAAAAAAAAAAAAAAAAAAAAAABAAIABAAEAAABAAABAAgAICAgICAgICD//////////wAA/////wAAAQABAAgAICAgQiAgICD//////////wAA/////wAAAgABAAgAQ0NDQyAgICD//////////wAA/////wAAAwABAAgAICAgICAgICD//////////wAA/////wAA"
+    "frame": "AAAAAAAAAAAAAAAAAAAAAAABAAIABAAEAAABAAAAAAEAAQAEACAgIEL//////////wAA/////wAAAgABAAQAQ0NDQ///////////AAD/////AAADAAAA"
   },
   {
     "name": "erase_line_to_end_el0",
@@ -49,7 +49,7 @@
     ],
     "curRow": 0,
     "curCol": 2,
-    "frame": "AAAAAAAAAAAAAAAAAAAAAAAAAAIABAAEAAABAAABAAgASEUgICAgICD//////////wAA/////wAAAQABAAgAICAgICAgICD//////////wAA/////wAAAgABAAgAICAgICAgICD//////////wAA/////wAAAwABAAgAICAgICAgICD//////////wAA/////wAA"
+    "frame": "AAAAAAAAAAAAAAAAAAAAAAAAAAIABAAEAAABAAABAAIASEX//////////wAA/////wAAAQAAAAIAAAADAAAA"
   },
   {
     "name": "erase_line_to_start_el1",
@@ -62,7 +62,7 @@
     ],
     "curRow": 0,
     "curCol": 3,
-    "frame": "AAAAAAAAAAAAAAAAAAAAAAAAAAMABAAEAAABAAABAAgAICAgIE9XT1L//////////wAA/////wAAAQABAAgAICAgICAgICD//////////wAA/////wAAAgABAAgAICAgICAgICD//////////wAA/////wAAAwABAAgAICAgICAgICD//////////wAA/////wAA"
+    "frame": "AAAAAAAAAAAAAAAAAAAAAAAAAAMABAAEAAABAAABAAgAICAgIE9XT1L//////////wAA/////wAAAQAAAAIAAAADAAAA"
   },
   {
     "name": "erase_whole_line_el2",
@@ -75,7 +75,7 @@
     ],
     "curRow": 0,
     "curCol": 7,
-    "frame": "AAAAAAAAAAAAAAAAAAAAAAAAAAcABAAEAAABAAABAAgAICAgICAgICD//////////wAA/////wAAAQABAAgAICAgICAgICD//////////wAA/////wAAAgABAAgAICAgICAgICD//////////wAA/////wAAAwABAAgAICAgICAgICD//////////wAA/////wAA"
+    "frame": "AAAAAAAAAAAAAAAAAAAAAAAAAAcABAAEAAABAAAAAAEAAAACAAAAAwAAAA=="
   },
   {
     "name": "cursor_position_write",
@@ -88,7 +88,7 @@
     ],
     "curRow": 1,
     "curCol": 4,
-    "frame": "AAAAAAAAAAAAAAAAAAAAAAABAAQABAAEAAABAAABAAgAICAgICAgICD//////////wAA/////wAAAQABAAgAICAgWCAgICD//////////wAA/////wAAAgABAAgAICAgICAgICD//////////wAA/////wAAAwABAAgAICAgICAgICD//////////wAA/////wAA"
+    "frame": "AAAAAAAAAAAAAAAAAAAAAAABAAQABAAEAAABAAAAAAEAAQAEACAgIFj//////////wAA/////wAAAgAAAAMAAAA="
   },
   {
     "name": "overwrite_middle",
@@ -101,7 +101,7 @@
     ],
     "curRow": 0,
     "curCol": 4,
-    "frame": "AAAAAAAAAAAAAAAAAAAAAAAAAAQABAAEAAABAAABAAgAQUFCQkFBQUH//////////wAA/////wAAAQABAAgAICAgICAgICD//////////wAA/////wAAAgABAAgAICAgICAgICD//////////wAA/////wAAAwABAAgAICAgICAgICD//////////wAA/////wAA"
+    "frame": "AAAAAAAAAAAAAAAAAAAAAAAAAAQABAAEAAABAAABAAgAQUFCQkFBQUH//////////wAA/////wAAAQAAAAIAAAADAAAA"
   },
   {
     "name": "carriage_return",
@@ -114,7 +114,7 @@
     ],
     "curRow": 0,
     "curCol": 2,
-    "frame": "AAAAAAAAAAAAAAAAAAAAAAAAAAIABAAEAAABAAABAAgAWFlDREVGICD//////////wAA/////wAAAQABAAgAICAgICAgICD//////////wAA/////wAAAgABAAgAICAgICAgICD//////////wAA/////wAAAwABAAgAICAgICAgICD//////////wAA/////wAA"
+    "frame": "AAAAAAAAAAAAAAAAAAAAAAAAAAIABAAEAAABAAABAAYAWFlDREVG//////////8AAP////8AAAEAAAACAAAAAwAAAA=="
   },
   {
     "name": "backspace_overwrite",
@@ -127,7 +127,7 @@
     ],
     "curRow": 0,
     "curCol": 3,
-    "frame": "AAAAAAAAAAAAAAAAAAAAAAAAAAMABAAEAAABAAABAAgAQUJYICAgICD//////////wAA/////wAAAQABAAgAICAgICAgICD//////////wAA/////wAAAgABAAgAICAgICAgICD//////////wAA/////wAAAwABAAgAICAgICAgICD//////////wAA/////wAA"
+    "frame": "AAAAAAAAAAAAAAAAAAAAAAAAAAMABAAEAAABAAABAAMAQUJY//////////8AAP////8AAAEAAAACAAAAAwAAAA=="
   },
   {
     "name": "tab_stop",
@@ -140,7 +140,7 @@
     ],
     "curRow": 0,
     "curCol": 7,
-    "frame": "AAAAAAAAAAAAAAAAAAAAAAAAAAcABAAEAAABAAABAAgAQSAgICAgIEL//////////wAA/////wAAAQABAAgAICAgICAgICD//////////wAA/////wAAAgABAAgAICAgICAgICD//////////wAA/////wAAAwABAAgAICAgICAgICD//////////wAA/////wAA"
+    "frame": "AAAAAAAAAAAAAAAAAAAAAAAAAAcABAAEAAABAAABAAgAQSAgICAgIEL//////////wAA/////wAAAQAAAAIAAAADAAAA"
   },
   {
     "name": "insert_char_ich",
@@ -153,7 +153,7 @@
     ],
     "curRow": 0,
     "curCol": 2,
-    "frame": "AAAAAAAAAAAAAAAAAAAAAAAAAAIABAAEAAABAAABAAgAQUIgIENERUb//////////wAA/////wAAAQABAAgAICAgICAgICD//////////wAA/////wAAAgABAAgAICAgICAgICD//////////wAA/////wAAAwABAAgAICAgICAgICD//////////wAA/////wAA"
+    "frame": "AAAAAAAAAAAAAAAAAAAAAAAAAAIABAAEAAABAAABAAgAQUIgIENERUb//////////wAA/////wAAAQAAAAIAAAADAAAA"
   },
   {
     "name": "delete_char_dch",
@@ -166,7 +166,7 @@
     ],
     "curRow": 0,
     "curCol": 2,
-    "frame": "AAAAAAAAAAAAAAAAAAAAAAAAAAIABAAEAAABAAABAAgAQUJFRkdIICD//////////wAA/////wAAAQABAAgAICAgICAgICD//////////wAA/////wAAAgABAAgAICAgICAgICD//////////wAA/////wAAAwABAAgAICAgICAgICD//////////wAA/////wAA"
+    "frame": "AAAAAAAAAAAAAAAAAAAAAAAAAAIABAAEAAABAAABAAYAQUJFRkdI//////////8AAP////8AAAEAAAACAAAAAwAAAA=="
   },
   {
     "name": "erase_char_ech",
@@ -179,7 +179,7 @@
     ],
     "curRow": 0,
     "curCol": 2,
-    "frame": "AAAAAAAAAAAAAAAAAAAAAAAAAAIABAAEAAABAAABAAgAQUIgIEVGR0j//////////wAA/////wAAAQABAAgAICAgICAgICD//////////wAA/////wAAAgABAAgAICAgICAgICD//////////wAA/////wAAAwABAAgAICAgICAgICD//////////wAA/////wAA"
+    "frame": "AAAAAAAAAAAAAAAAAAAAAAAAAAIABAAEAAABAAABAAgAQUIgIEVGR0j//////////wAA/////wAAAQAAAAIAAAADAAAA"
   },
   {
     "name": "insert_line_il",
@@ -192,7 +192,7 @@
     ],
     "curRow": 1,
     "curCol": 0,
-    "frame": "AAAAAAAAAAAAAAAAAAAAAAABAAAABAAEAAABAAABAAgAUjAgICAgICD//////////wAA/////wAAAQABAAgAICAgICAgICD//////////wAA/////wAAAgABAAgAUjEgICAgICD//////////wAA/////wAAAwABAAgAUjIgICAgICD//////////wAA/////wAA"
+    "frame": "AAAAAAAAAAAAAAAAAAAAAAABAAAABAAEAAABAAABAAIAUjD//////////wAA/////wAAAQAAAAIAAQACAFIx//////////8AAP////8AAAMAAQACAFIy//////////8AAP////8AAA=="
   },
   {
     "name": "delete_line_dl",
@@ -205,7 +205,7 @@
     ],
     "curRow": 1,
     "curCol": 0,
-    "frame": "AAAAAAAAAAAAAAAAAAAAAAABAAAABAAEAAABAAABAAgAUjAgICAgICD//////////wAA/////wAAAQABAAgAUjIgICAgICD//////////wAA/////wAAAgABAAgAUjMgICAgICD//////////wAA/////wAAAwABAAgAICAgICAgICD//////////wAA/////wAA"
+    "frame": "AAAAAAAAAAAAAAAAAAAAAAABAAAABAAEAAABAAABAAIAUjD//////////wAA/////wAAAQABAAIAUjL//////////wAA/////wAAAgABAAIAUjP//////////wAA/////wAAAwAAAA=="
   },
   {
     "name": "autowrap_to_next_row",
@@ -218,7 +218,7 @@
     ],
     "curRow": 1,
     "curCol": 4,
-    "frame": "AAAAAAAAAAAAAAAAAAAAAAABAAQABAAEAAABAAABAAgAQUJDREVGR0j//////////wAA/////wAAAQABAAgASUpLTCAgICD//////////wAA/////wAAAgABAAgAICAgICAgICD//////////wAA/////wAAAwABAAgAICAgICAgICD//////////wAA/////wAA"
+    "frame": "AAAAAAAAAAAAAAAAAAAAAAABAAQABAAEAAABAAABAAgAQUJDREVGR0j//////////wAA/////wAAAQABAAQASUpLTP//////////AAD/////AAACAAAAAwAAAA=="
   },
   {
     "name": "newline_scroll_up",
@@ -231,7 +231,7 @@
     ],
     "curRow": 3,
     "curCol": 0,
-    "frame": "AAAAAAAAAAAAAAAAAAAAAAADAAAABAAEAAABAAABAAgAUjEgICAgICD//////////wAA/////wAAAQABAAgAUjIgICAgICD//////////wAA/////wAAAgABAAgAUjMgICAgICD//////////wAA/////wAAAwABAAgAICAgICAgICD//////////wAA/////wAA"
+    "frame": "AAAAAAAAAAAAAAAAAAAAAAADAAAABAAEAAABAAABAAIAUjH//////////wAA/////wAAAQABAAIAUjL//////////wAA/////wAAAgABAAIAUjP//////////wAA/////wAAAwAAAA=="
   },
   {
     "name": "reverse_index_scroll_down",
@@ -244,7 +244,7 @@
     ],
     "curRow": 0,
     "curCol": 0,
-    "frame": "AAAAAAAAAAAAAAAAAAAAAAAAAAAABAAEAAABAAABAAgAICAgICAgICD//////////wAA/////wAAAQABAAgAUjAgICAgICD//////////wAA/////wAAAgABAAgAUjEgICAgICD//////////wAA/////wAAAwABAAgAUjIgICAgICD//////////wAA/////wAA"
+    "frame": "AAAAAAAAAAAAAAAAAAAAAAAAAAAABAAEAAABAAAAAAEAAQACAFIw//////////8AAP////8AAAIAAQACAFIx//////////8AAP////8AAAMAAQACAFIy//////////8AAP////8AAA=="
   },
   {
     "name": "cursor_up_cuu",
@@ -257,7 +257,7 @@
     ],
     "curRow": 1,
     "curCol": 1,
-    "frame": "AAAAAAAAAAAAAAAAAAAAAAABAAEABAAEAAABAAABAAgAICAgICAgICD//////////wAA/////wAAAQABAAgAWCAgICAgICD//////////wAA/////wAAAgABAAgAICAgICAgICD//////////wAA/////wAAAwABAAgAICAgICAgICD//////////wAA/////wAA"
+    "frame": "AAAAAAAAAAAAAAAAAAAAAAABAAEABAAEAAABAAAAAAEAAQABAFj//////////wAA/////wAAAgAAAAMAAAA="
   },
   {
     "name": "cursor_down_cud",
@@ -270,7 +270,7 @@
     ],
     "curRow": 2,
     "curCol": 1,
-    "frame": "AAAAAAAAAAAAAAAAAAAAAAACAAEABAAEAAABAAABAAgAICAgICAgICD//////////wAA/////wAAAQABAAgAICAgICAgICD//////////wAA/////wAAAgABAAgAWCAgICAgICD//////////wAA/////wAAAwABAAgAICAgICAgICD//////////wAA/////wAA"
+    "frame": "AAAAAAAAAAAAAAAAAAAAAAACAAEABAAEAAABAAAAAAEAAAACAAEAAQBY//////////8AAP////8AAAMAAAA="
   },
   {
     "name": "cursor_forward_cuf",
@@ -283,7 +283,7 @@
     ],
     "curRow": 0,
     "curCol": 4,
-    "frame": "AAAAAAAAAAAAAAAAAAAAAAAAAAQABAAEAAABAAABAAgAICAgWCAgICD//////////wAA/////wAAAQABAAgAICAgICAgICD//////////wAA/////wAAAgABAAgAICAgICAgICD//////////wAA/////wAAAwABAAgAICAgICAgICD//////////wAA/////wAA"
+    "frame": "AAAAAAAAAAAAAAAAAAAAAAAAAAQABAAEAAABAAABAAQAICAgWP//////////AAD/////AAABAAAAAgAAAAMAAAA="
   },
   {
     "name": "cursor_back_cub",
@@ -296,7 +296,7 @@
     ],
     "curRow": 0,
     "curCol": 4,
-    "frame": "AAAAAAAAAAAAAAAAAAAAAAAAAAQABAAEAAABAAABAAgAICAgWCAgICD//////////wAA/////wAAAQABAAgAICAgICAgICD//////////wAA/////wAAAgABAAgAICAgICAgICD//////////wAA/////wAAAwABAAgAICAgICAgICD//////////wAA/////wAA"
+    "frame": "AAAAAAAAAAAAAAAAAAAAAAAAAAQABAAEAAABAAABAAQAICAgWP//////////AAD/////AAABAAAAAgAAAAMAAAA="
   },
   {
     "name": "cursor_col_absolute_cha",
@@ -309,7 +309,7 @@
     ],
     "curRow": 0,
     "curCol": 5,
-    "frame": "AAAAAAAAAAAAAAAAAAAAAAAAAAUABAAEAAABAAABAAgAICAgIFggICD//////////wAA/////wAAAQABAAgAICAgICAgICD//////////wAA/////wAAAgABAAgAICAgICAgICD//////////wAA/////wAAAwABAAgAICAgICAgICD//////////wAA/////wAA"
+    "frame": "AAAAAAAAAAAAAAAAAAAAAAAAAAUABAAEAAABAAABAAUAICAgIFj//////////wAA/////wAAAQAAAAIAAAADAAAA"
   },
   {
     "name": "cursor_hpa",
@@ -322,7 +322,7 @@
     ],
     "curRow": 0,
     "curCol": 6,
-    "frame": "AAAAAAAAAAAAAAAAAAAAAAAAAAYABAAEAAABAAABAAgAICAgICBYICD//////////wAA/////wAAAQABAAgAICAgICAgICD//////////wAA/////wAAAgABAAgAICAgICAgICD//////////wAA/////wAAAwABAAgAICAgICAgICD//////////wAA/////wAA"
+    "frame": "AAAAAAAAAAAAAAAAAAAAAAAAAAYABAAEAAABAAABAAYAICAgICBY//////////8AAP////8AAAEAAAACAAAAAwAAAA=="
   },
   {
     "name": "cursor_hpr",
@@ -335,7 +335,7 @@
     ],
     "curRow": 0,
     "curCol": 4,
-    "frame": "AAAAAAAAAAAAAAAAAAAAAAAAAAQABAAEAAABAAABAAgAICAgWCAgICD//////////wAA/////wAAAQABAAgAICAgICAgICD//////////wAA/////wAAAgABAAgAICAgICAgICD//////////wAA/////wAAAwABAAgAICAgICAgICD//////////wAA/////wAA"
+    "frame": "AAAAAAAAAAAAAAAAAAAAAAAAAAQABAAEAAABAAABAAQAICAgWP//////////AAD/////AAABAAAAAgAAAAMAAAA="
   },
   {
     "name": "cursor_vpa",
@@ -348,7 +348,7 @@
     ],
     "curRow": 2,
     "curCol": 3,
-    "frame": "AAAAAAAAAAAAAAAAAAAAAAACAAMABAAEAAABAAABAAgAICAgICAgICD//////////wAA/////wAAAQABAAgAICAgICAgICD//////////wAA/////wAAAgABAAgAICBYICAgICD//////////wAA/////wAAAwABAAgAICAgICAgICD//////////wAA/////wAA"
+    "frame": "AAAAAAAAAAAAAAAAAAAAAAACAAMABAAEAAABAAAAAAEAAAACAAEAAwAgIFj//////////wAA/////wAAAwAAAA=="
   },
   {
     "name": "cursor_vpr",
@@ -361,7 +361,7 @@
     ],
     "curRow": 2,
     "curCol": 1,
-    "frame": "AAAAAAAAAAAAAAAAAAAAAAACAAEABAAEAAABAAABAAgAICAgICAgICD//////////wAA/////wAAAQABAAgAICAgICAgICD//////////wAA/////wAAAgABAAgAWCAgICAgICD//////////wAA/////wAAAwABAAgAICAgICAgICD//////////wAA/////wAA"
+    "frame": "AAAAAAAAAAAAAAAAAAAAAAACAAEABAAEAAABAAAAAAEAAAACAAEAAQBY//////////8AAP////8AAAMAAAA="
   },
   {
     "name": "cursor_next_line_cnl",
@@ -374,7 +374,7 @@
     ],
     "curRow": 2,
     "curCol": 1,
-    "frame": "AAAAAAAAAAAAAAAAAAAAAAACAAEABAAEAAABAAABAAgAICAgICAgICD//////////wAA/////wAAAQABAAgAICAgICAgICD//////////wAA/////wAAAgABAAgAWCAgICAgICD//////////wAA/////wAAAwABAAgAICAgICAgICD//////////wAA/////wAA"
+    "frame": "AAAAAAAAAAAAAAAAAAAAAAACAAEABAAEAAABAAAAAAEAAAACAAEAAQBY//////////8AAP////8AAAMAAAA="
   },
   {
     "name": "cursor_prev_line_cpl",
@@ -387,7 +387,7 @@
     ],
     "curRow": 1,
     "curCol": 1,
-    "frame": "AAAAAAAAAAAAAAAAAAAAAAABAAEABAAEAAABAAABAAgAICAgICAgICD//////////wAA/////wAAAQABAAgAWCAgICAgICD//////////wAA/////wAAAgABAAgAICAgICAgICD//////////wAA/////wAAAwABAAgAICAgICAgICD//////////wAA/////wAA"
+    "frame": "AAAAAAAAAAAAAAAAAAAAAAABAAEABAAEAAABAAAAAAEAAQABAFj//////////wAA/////wAAAgAAAAMAAAA="
   },
   {
     "name": "cursor_forward_tab_cht",
@@ -400,7 +400,7 @@
     ],
     "curRow": 0,
     "curCol": 7,
-    "frame": "AAAAAAAAAAAAAAAAAAAAAAAAAAcABAAEAAABAAABAAgAICAgICAgIFj//////////wAA/////wAAAQABAAgAICAgICAgICD//////////wAA/////wAAAgABAAgAICAgICAgICD//////////wAA/////wAAAwABAAgAICAgICAgICD//////////wAA/////wAA"
+    "frame": "AAAAAAAAAAAAAAAAAAAAAAAAAAcABAAEAAABAAABAAgAICAgICAgIFj//////////wAA/////wAAAQAAAAIAAAADAAAA"
   },
   {
     "name": "cursor_back_tab_cbt",
@@ -413,7 +413,7 @@
     ],
     "curRow": 0,
     "curCol": 1,
-    "frame": "AAAAAAAAAAAAAAAAAAAAAAAAAAEABAAEAAABAAABAAgAWCAgICAgICD//////////wAA/////wAAAQABAAgAICAgICAgICD//////////wAA/////wAAAgABAAgAICAgICAgICD//////////wAA/////wAAAwABAAgAICAgICAgICD//////////wAA/////wAA"
+    "frame": "AAAAAAAAAAAAAAAAAAAAAAAAAAEABAAEAAABAAABAAEAWP//////////AAD/////AAABAAAAAgAAAAMAAAA="
   },
   {
     "name": "index_ind",
@@ -426,7 +426,7 @@
     ],
     "curRow": 2,
     "curCol": 1,
-    "frame": "AAAAAAAAAAAAAAAAAAAAAAACAAEABAAEAAABAAABAAgAICAgICAgICD//////////wAA/////wAAAQABAAgAICAgICAgICD//////////wAA/////wAAAgABAAgAWCAgICAgICD//////////wAA/////wAAAwABAAgAICAgICAgICD//////////wAA/////wAA"
+    "frame": "AAAAAAAAAAAAAAAAAAAAAAACAAEABAAEAAABAAAAAAEAAAACAAEAAQBY//////////8AAP////8AAAMAAAA="
   },
   {
     "name": "next_line_nel",
@@ -439,7 +439,7 @@
     ],
     "curRow": 2,
     "curCol": 1,
-    "frame": "AAAAAAAAAAAAAAAAAAAAAAACAAEABAAEAAABAAABAAgAICAgICAgICD//////////wAA/////wAAAQABAAgAICAgICAgICD//////////wAA/////wAAAgABAAgAWCAgICAgICD//////////wAA/////wAAAwABAAgAICAgICAgICD//////////wAA/////wAA"
+    "frame": "AAAAAAAAAAAAAAAAAAAAAAACAAEABAAEAAABAAAAAAEAAAACAAEAAQBY//////////8AAP////8AAAMAAAA="
   },
   {
     "name": "scroll_up_su",
@@ -452,7 +452,7 @@
     ],
     "curRow": 3,
     "curCol": 2,
-    "frame": "AAAAAAAAAAAAAAAAAAAAAAADAAIABAAEAAABAAABAAgAUjIgICAgICD//////////wAA/////wAAAQABAAgAUjMgICAgICD//////////wAA/////wAAAgABAAgAICAgICAgICD//////////wAA/////wAAAwABAAgAICAgICAgICD//////////wAA/////wAA"
+    "frame": "AAAAAAAAAAAAAAAAAAAAAAADAAIABAAEAAABAAABAAIAUjL//////////wAA/////wAAAQABAAIAUjP//////////wAA/////wAAAgAAAAMAAAA="
   },
   {
     "name": "scroll_down_sd",
@@ -465,7 +465,7 @@
     ],
     "curRow": 3,
     "curCol": 2,
-    "frame": "AAAAAAAAAAAAAAAAAAAAAAADAAIABAAEAAABAAABAAgAICAgICAgICD//////////wAA/////wAAAQABAAgAICAgICAgICD//////////wAA/////wAAAgABAAgAUjAgICAgICD//////////wAA/////wAAAwABAAgAUjEgICAgICD//////////wAA/////wAA"
+    "frame": "AAAAAAAAAAAAAAAAAAAAAAADAAIABAAEAAABAAAAAAEAAAACAAEAAgBSMP//////////AAD/////AAADAAEAAgBSMf//////////AAD/////AAA="
   },
   {
     "name": "repeat_rep",
@@ -478,7 +478,7 @@
     ],
     "curRow": 0,
     "curCol": 7,
-    "frame": "AAAAAAAAAAAAAAAAAAAAAAAAAAcABAAEAAABAAABAAgAWFhYWFhYWSD//////////wAA/////wAAAQABAAgAICAgICAgICD//////////wAA/////wAAAgABAAgAICAgICAgICD//////////wAA/////wAAAwABAAgAICAgICAgICD//////////wAA/////wAA"
+    "frame": "AAAAAAAAAAAAAAAAAAAAAAAAAAcABAAEAAABAAABAAcAWFhYWFhYWf//////////AAD/////AAABAAAAAgAAAAMAAAA="
   },
   {
     "name": "set_tab_hts",
@@ -491,7 +491,7 @@
     ],
     "curRow": 0,
     "curCol": 4,
-    "frame": "AAAAAAAAAAAAAAAAAAAAAAAAAAQABAAEAAABAAABAAgAICAgWCAgICD//////////wAA/////wAAAQABAAgAICAgICAgICD//////////wAA/////wAAAgABAAgAICAgICAgICD//////////wAA/////wAAAwABAAgAICAgICAgICD//////////wAA/////wAA"
+    "frame": "AAAAAAAAAAAAAAAAAAAAAAAAAAQABAAEAAABAAABAAQAICAgWP//////////AAD/////AAABAAAAAgAAAAMAAAA="
   },
   {
     "name": "clear_tabs_tbc",
@@ -504,7 +504,7 @@
     ],
     "curRow": 0,
     "curCol": 7,
-    "frame": "AAAAAAAAAAAAAAAAAAAAAAAAAAcABAAEAAABAAABAAgAICAgICAgIFj//////////wAA/////wAAAQABAAgAICAgICAgICD//////////wAA/////wAAAgABAAgAICAgICAgICD//////////wAA/////wAAAwABAAgAICAgICAgICD//////////wAA/////wAA"
+    "frame": "AAAAAAAAAAAAAAAAAAAAAAAAAAcABAAEAAABAAABAAgAICAgICAgIFj//////////wAA/////wAAAQAAAAIAAAADAAAA"
   },
   {
     "name": "save_restore_cursor_decsc",
@@ -517,7 +517,7 @@
     ],
     "curRow": 1,
     "curCol": 3,
-    "frame": "AAAAAAAAAAAAAAAAAAAAAAABAAMABAAEAAABAAABAAgAICAgICAgICD//////////wAA/////wAAAQABAAgAICBYICAgICD//////////wAA/////wAAAgABAAgAICAgICAgICD//////////wAA/////wAAAwABAAgAICAgICAgWiD//////////wAA/////wAA"
+    "frame": "AAAAAAAAAAAAAAAAAAAAAAABAAMABAAEAAABAAAAAAEAAQADACAgWP//////////AAD/////AAACAAAAAwABAAcAICAgICAgWv//////////AAD/////AAA="
   },
   {
     "name": "screen_alignment_decaln",
@@ -543,7 +543,7 @@
     ],
     "curRow": 2,
     "curCol": 1,
-    "frame": "AAAAAAAAAAAAAAAAAAAAAAACAAEABAAEAAABAAABAAgAUjAgICAgICD//////////wAA/////wAAAQABAAgAUjIgICAgICD//////////wAA/////wAAAgABAAgAWCAgICAgICD//////////wAA/////wAAAwABAAgAUjMgICAgICD//////////wAA/////wAA"
+    "frame": "AAAAAAAAAAAAAAAAAAAAAAACAAEABAAEAAABAAABAAIAUjD//////////wAA/////wAAAQABAAIAUjL//////////wAA/////wAAAgABAAEAWP//////////AAD/////AAADAAEAAgBSM///////////AAD/////AAA="
   },
   {
     "name": "origin_mode_margins",
@@ -556,7 +556,7 @@
     ],
     "curRow": 1,
     "curCol": 3,
-    "frame": "AAAAAAAAAAAAAAAAAAAAAAABAAMABAAEAAABAAABAAgAICAgICAgICD//////////wAA/////wAAAQABAAgAICBYICAgICD//////////wAA/////wAAAgABAAgAICAgICAgICD//////////wAA/////wAAAwABAAgAICAgICAgICD//////////wAA/////wAA"
+    "frame": "AAAAAAAAAAAAAAAAAAAAAAABAAMABAAEAAABAAAAAAEAAQADACAgWP//////////AAD/////AAACAAAAAwAAAA=="
   },
   {
     "name": "fill_rect_decfra",
@@ -569,7 +569,7 @@
     ],
     "curRow": 0,
     "curCol": 0,
-    "frame": "AAAAAAAAAAAAAAAAAAAAAAAAAAAABAAEAAABAAABAAgAICAgICAgICD//////////wAA/////wAAAQABAAgAICBYWFggICD//////////wAA/////wAAAgABAAgAICBYWFggICD//////////wAA/////wAAAwABAAgAICAgICAgICD//////////wAA/////wAA"
+    "frame": "AAAAAAAAAAAAAAAAAAAAAAAAAAAABAAEAAABAAAAAAEAAQAFACAgWFhY//////////8AAP////8AAAIAAQAFACAgWFhY//////////8AAP////8AAAMAAAA="
   },
   {
     "name": "erase_rect_decera",
@@ -595,7 +595,7 @@
     ],
     "curRow": 0,
     "curCol": 2,
-    "frame": "AAAAAAAAAAAAAAAAAAAAAAAAAAIABAAEAAABAAABAAgAQUIgICAgICD//////////wAA/////wAAAQABAAgAICAgICAgICD//////////wAA/////wAAAgABAAgAQUIgICAgICD//////////wAA/////wAAAwABAAgAICAgICAgICD//////////wAA/////wAA"
+    "frame": "AAAAAAAAAAAAAAAAAAAAAAAAAAIABAAEAAABAAABAAIAQUL//////////wAA/////wAAAQAAAAIAAQACAEFC//////////8AAP////8AAAMAAAA="
   },
   {
     "name": "shift_left_sl",
@@ -608,7 +608,7 @@
     ],
     "curRow": 0,
     "curCol": 7,
-    "frame": "AAAAAAAAAAAAAAAAAAAAAAAAAAcABAAEAAABAAABAAgAQ0RFRkdIICD//////////wAA/////wAAAQABAAgAICAgICAgICD//////////wAA/////wAAAgABAAgAICAgICAgICD//////////wAA/////wAAAwABAAgAICAgICAgICD//////////wAA/////wAA"
+    "frame": "AAAAAAAAAAAAAAAAAAAAAAAAAAcABAAEAAABAAABAAYAQ0RFRkdI//////////8AAP////8AAAEAAAACAAAAAwAAAA=="
   },
   {
     "name": "shift_right_sr",
@@ -621,7 +621,7 @@
     ],
     "curRow": 0,
     "curCol": 7,
-    "frame": "AAAAAAAAAAAAAAAAAAAAAAAAAAcABAAEAAABAAABAAgAICBBQkNERUb//////////wAA/////wAAAQABAAgAICAgICAgICD//////////wAA/////wAAAgABAAgAICAgICAgICD//////////wAA/////wAAAwABAAgAICAgICAgICD//////////wAA/////wAA"
+    "frame": "AAAAAAAAAAAAAAAAAAAAAAAAAAcABAAEAAABAAABAAgAICBBQkNERUb//////////wAA/////wAAAQAAAAIAAAADAAAA"
   },
   {
     "name": "insert_col_decic",
@@ -634,7 +634,7 @@
     ],
     "curRow": 0,
     "curCol": 2,
-    "frame": "AAAAAAAAAAAAAAAAAAAAAAAAAAIABAAEAAABAAABAAgAQUEgIEFBQUH//////////wAA/////wAAAQABAAgAQkIgIEJCQkL//////////wAA/////wAAAgABAAgAICAgICAgICD//////////wAA/////wAAAwABAAgAICAgICAgICD//////////wAA/////wAA"
+    "frame": "AAAAAAAAAAAAAAAAAAAAAAAAAAIABAAEAAABAAABAAgAQUEgIEFBQUH//////////wAA/////wAAAQABAAgAQkIgIEJCQkL//////////wAA/////wAAAgAAAAMAAAA="
   },
   {
     "name": "delete_col_decdc",
@@ -647,7 +647,7 @@
     ],
     "curRow": 0,
     "curCol": 2,
-    "frame": "AAAAAAAAAAAAAAAAAAAAAAAAAAIABAAEAAABAAABAAgAQUFBQUFBICD//////////wAA/////wAAAQABAAgAQkJCQkJCICD//////////wAA/////wAAAgABAAgAICAgICAgICD//////////wAA/////wAAAwABAAgAICAgICAgICD//////////wAA/////wAA"
+    "frame": "AAAAAAAAAAAAAAAAAAAAAAAAAAIABAAEAAABAAABAAYAQUFBQUFB//////////8AAP////8AAAEAAQAGAEJCQkJCQv//////////AAD/////AAACAAAAAwAAAA=="
   },
   {
     "name": "back_index_decbi",
@@ -660,7 +660,7 @@
     ],
     "curRow": 0,
     "curCol": 3,
-    "frame": "AAAAAAAAAAAAAAAAAAAAAAAAAAMABAAEAAABAAABAAgAICBYICAgICD//////////wAA/////wAAAQABAAgAICAgICAgICD//////////wAA/////wAAAgABAAgAICAgICAgICD//////////wAA/////wAAAwABAAgAICAgICAgICD//////////wAA/////wAA"
+    "frame": "AAAAAAAAAAAAAAAAAAAAAAAAAAMABAAEAAABAAABAAMAICBY//////////8AAP////8AAAEAAAACAAAAAwAAAA=="
   },
   {
     "name": "forward_index_decfi",
@@ -673,7 +673,7 @@
     ],
     "curRow": 0,
     "curCol": 5,
-    "frame": "AAAAAAAAAAAAAAAAAAAAAAAAAAUABAAEAAABAAABAAgAICAgIFggICD//////////wAA/////wAAAQABAAgAICAgICAgICD//////////wAA/////wAAAgABAAgAICAgICAgICD//////////wAA/////wAAAwABAAgAICAgICAgICD//////////wAA/////wAA"
+    "frame": "AAAAAAAAAAAAAAAAAAAAAAAAAAUABAAEAAABAAABAAUAICAgIFj//////////wAA/////wAAAQAAAAIAAAADAAAA"
   },
   {
     "name": "selective_erase_display_decsed",
@@ -686,7 +686,7 @@
     ],
     "curRow": 0,
     "curCol": 4,
-    "frame": "AAAAAAAAAAAAAAAAAAAAAAAAAAQABAAEAAABAAABAAgAQUIgICAgICD//////////wAA/////wAAAQABAAgAICAgICAgICD//////////wAA/////wAAAgABAAgAICAgICAgICD//////////wAA/////wAAAwABAAgAICAgICAgICD//////////wAA/////wAA"
+    "frame": "AAAAAAAAAAAAAAAAAAAAAAAAAAQABAAEAAABAAABAAIAQUL//////////wAA/////wAAAQAAAAIAAAADAAAA"
   },
   {
     "name": "selective_erase_line_decsel",
@@ -699,6 +699,6 @@
     ],
     "curRow": 0,
     "curCol": 0,
-    "frame": "AAAAAAAAAAAAAAAAAAAAAAAAAAAABAAEAAABAAABAAgAQUIgICAgICD//////////wAA/////wAAAQABAAgAICAgICAgICD//////////wAA/////wAAAgABAAgAICAgICAgICD//////////wAA/////wAAAwABAAgAICAgICAgICD//////////wAA/////wAA"
+    "frame": "AAAAAAAAAAAAAAAAAAAAAAAAAAAABAAEAAABAAABAAIAQUL//////////wAA/////wAAAQAAAAIAAAADAAAA"
   }
 ]

@@ -31,17 +31,22 @@ func goldenFrames() map[string][]byte {
 		"screen": encodeScreenMsg(100, 3, 1, 2, 0, []int{0, 2}, screenRows, 2, false, true, false, false, false),
 		// scroll: two history lines starting at absolute index 50.
 		"scroll": encodeScrollMsg(0, 50, [][]vt.WireRun{row("h0"), row("h1")}),
-		// resumeAck: ack=7, epoch, committed=200, oldest=10, ledger intact;
-		// carries the third length-gated tail (serverWireVersion + ackFlags).
-		"resumeack": encodeResumeAck(7, 1234567890, 200, 10, false),
+		// resumeAck: ack=7, epoch, committed=200, oldest=10, ledger intact,
+		// paging NOT declared; carries the third length-gated tail
+		// (serverWireVersion + ackFlags).
+		"resumeack": encodeResumeAck(7, 1234567890, 200, 10, false, false),
 		// resumeAck with the ledger-lost flag set (ackFlags bit0).
-		"resumeack-ledgerlost": encodeResumeAck(7, 1234567890, 200, 10, true),
+		"resumeack-ledgerlost": encodeResumeAck(7, 1234567890, 200, 10, true, false),
+		// resumeAck with the history-paging capability declared (ackFlags bit1),
+		// the demand-paged-scrollback signal. Independent of bit0, so the pair
+		// pins that a client reads the bits separately.
+		"resumeack-historypaging": encodeResumeAck(7, 1234567890, 200, 10, false, true),
 		// ackOnly: bare ack (type + inputAck, no body), ack=42.
 		"ackonly": encodeAckOnly(42),
 		// clipboard (opcode 6): OSC 52 text for the system clipboard. Fixture
 		// added 2026-07 (judgement finding): its cross-language layout was
 		// previously pinned only by two independently hand-written tests.
-		"clipboard": encodeClipboardMsg(0, []byte("copy me")),
+		"clipboard": encodeClipboardMsg([]byte("copy me")),
 		// modes: bracketed paste + SGR mouse + reverse video on, mouseMode 1002,
 		// kitty disambiguate flag (1).
 		"modes": encodeModesMsg(true, false, true, false, false, true, false, 1002, 1),

@@ -634,6 +634,155 @@ func TestRedrawSettle_buildFrameHeldThenSettles(t *testing.T) {
 	}
 }
 
+// TestRedrawSettle_capLapseCoalescesThenDisarms pins the lapse ladder, which is
+// what stops a redraw LONGER than the cap from streaming its remainder. A cap
+// lapse while the child is still writing must not fall back to per-flush
+// streaming (the churn the hold exists to prevent); it must let one FULL repaint
+// through and re-arm, a bounded number of times, and only then give up so a
+// genuinely streaming program is not throttled forever.
+//
+// Driven through redrawHoldUntil's explicit `now` rather than sleeps: the cap is
+// a whole second, and a real-time version of this test would be both slow and
+// flaky under load.
+func TestRedrawSettle_capLapseCoalescesThenDisarms(t *testing.T) {
+	h := NewHandler([]string{"/bin/true"}, WithLogger(nil))
+	defer h.Shutdown()
+
+	t0 := time.Now()
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.armRedrawSettle(t0)
+
+	// Each lapse: the cap deadline has passed but the child wrote just now, so
+	// it is still redrawing.
+	for i := 1; i <= redrawSettleMaxRearms; i++ {
+		lapse := h.redrawSettleUntil.Add(time.Millisecond)
+		h.redrawLastData = lapse // still writing
+		d := h.redrawHoldUntil(lapse)
+		if !d.IsZero() {
+			t.Fatalf("lapse %d: redrawHoldUntil = %v, want zero so this pass can flush", i, d)
+		}
+		if !h.redrawCoalesceNow {
+			t.Fatalf("lapse %d: redrawCoalesceNow = false, want true so the pass builds a FULL repaint rather than a mid-redraw diff", i)
+		}
+		if h.redrawSettleUntil.IsZero() {
+			t.Fatalf("lapse %d: hold disarmed, want a re-arm (budget %d of %d used)", i, i, redrawSettleMaxRearms)
+		}
+		if got, want := h.redrawSettleUntil, lapse.Add(redrawSettleCap); !got.Equal(want) {
+			t.Errorf("lapse %d: re-armed until %v, want %v", i, got, want)
+		}
+		if h.redrawRearms != i {
+			t.Errorf("lapse %d: redrawRearms = %d, want %d", i, h.redrawRearms, i)
+		}
+		h.redrawCoalesceNow = false // buildFrame consumes it on the pass that builds
+	}
+
+	// Budget spent: a program still writing at this point is streaming, not
+	// redrawing, so the hold must release for good.
+	lapse := h.redrawSettleUntil.Add(time.Millisecond)
+	h.redrawLastData = lapse
+	if d := h.redrawHoldUntil(lapse); !d.IsZero() {
+		t.Errorf("budget spent: redrawHoldUntil = %v, want zero", d)
+	}
+	if !h.redrawSettleUntil.IsZero() {
+		t.Error("budget spent: hold must disarm for good, not re-arm again")
+	}
+	if h.redrawCoalesceNow {
+		t.Error("budget spent: must not request another full repaint; normal streaming resumes")
+	}
+}
+
+// TestRedrawSettle_quietReleaseDoesNotCoalesce keeps the two exits distinct: a
+// redraw that ended (the child went quiet) needs no forced full repaint, and
+// requesting one would cost every settled resize an extra whole-screen frame.
+func TestRedrawSettle_quietReleaseDoesNotCoalesce(t *testing.T) {
+	h := NewHandler([]string{"/bin/true"}, WithLogger(nil))
+	defer h.Shutdown()
+
+	t0 := time.Now()
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.armRedrawSettle(t0)
+	quiet := t0.Add(redrawSettleQuiet + time.Millisecond)
+	if d := h.redrawHoldUntil(quiet); !d.IsZero() {
+		t.Fatalf("quiet for > redrawSettleQuiet must release; got %v", d)
+	}
+	if !h.redrawSettleUntil.IsZero() {
+		t.Error("a settled hold must disarm")
+	}
+	if h.redrawCoalesceNow {
+		t.Error("a settled release must not request a full repaint")
+	}
+}
+
+// TestRedrawSettle_freshArmRestoresBudget verifies the budget is per-redraw, not
+// per-session: a later geometry change gets the full coalescing allowance even
+// if an earlier one spent it.
+func TestRedrawSettle_freshArmRestoresBudget(t *testing.T) {
+	h := NewHandler([]string{"/bin/true"}, WithLogger(nil))
+	defer h.Shutdown()
+
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.redrawRearms = redrawSettleMaxRearms
+	h.redrawCoalesceNow = true
+	h.armRedrawSettle(time.Now())
+	if h.redrawRearms != 0 {
+		t.Errorf("armRedrawSettle: redrawRearms = %d, want 0 (a new redraw gets the full budget)", h.redrawRearms)
+	}
+	if h.redrawCoalesceNow {
+		t.Error("armRedrawSettle must clear a stale coalesce request")
+	}
+}
+
+// TestBuildFrame_coalescedLapseEmitsFullRepaint is the observable half of the
+// ladder: the pass following a coalescing lapse must emit a frame describing the
+// WHOLE screen, not a diff against the client's cache. A diff at that instant
+// describes a screen caught mid-redraw, which is exactly the partial state the
+// hold exists to hide.
+func TestBuildFrame_coalescedLapseEmitsFullRepaint(t *testing.T) {
+	h := NewHandler([]string{"/bin/true"}, WithLogger(nil))
+	h.sizeEstablished = true
+	h.registry.Add(&websocket.Conn{})
+
+	// Establish a client-side cache so a diff would be SMALL, making the
+	// full-repaint assertion meaningful rather than vacuous.
+	h.handlePTYData([]byte("first line\r\n"))
+	first, _ := h.buildFrame()
+	if first == nil {
+		t.Fatal("setup: expected an initial frame to prime the builder's diff cache")
+	}
+
+	// A geometry change arms the hold; the child starts redrawing and does not
+	// stop, so the cap lapses.
+	h.mu.Lock()
+	h.armRedrawSettle(time.Now())
+	h.mu.Unlock()
+	h.handlePTYData([]byte("second line\r\n"))
+	h.mu.Lock()
+	h.redrawSettleUntil = time.Now().Add(-time.Millisecond) // cap lapsed
+	h.redrawLastData = time.Now()                           // still writing
+	h.mu.Unlock()
+
+	frame, holdUntil := h.buildFrame()
+	if !holdUntil.IsZero() {
+		t.Fatalf("a coalescing lapse must let the pass flush; got retry deadline %v", holdUntil)
+	}
+	if frame == nil {
+		t.Fatal("a coalescing lapse must emit the coalesced update")
+	}
+	if len(frame.changed) != len(frame.rows) {
+		t.Errorf("coalesced frame carries %d changed rows of %d: want every row (a full repaint, not a mid-redraw diff)",
+			len(frame.changed), len(frame.rows))
+	}
+	h.mu.Lock()
+	coalesceStillPending := h.redrawCoalesceNow
+	h.mu.Unlock()
+	if coalesceStillPending {
+		t.Error("buildFrame must consume the coalesce request once it has built the repaint")
+	}
+}
+
 // dualConn stands up a throwaway WebSocket server, dials it, and returns BOTH
 // the SERVER-side conn (to hand to dispatchFrame/handleResume) and the
 // CLIENT-side conn (to read back the server→client frames a test wants to
@@ -856,7 +1005,7 @@ func TestHandleResume_commitsScrolledLinesToHistory(t *testing.T) {
 	if before := h.scrollback.Committed(); before != 0 {
 		t.Fatalf("precondition: committed=%d, want 0 before resume", before)
 	}
-	h.handleResume(server, &clientState{}, "sid", -1, 0)
+	h.handleResume(server, &clientState{}, "sid", -1, 0, nil)
 
 	if got := h.scrollback.Committed(); got == 0 {
 		t.Errorf("handleResume committed %d lines to history; want > 0 (scrolled lines must be retained)", got)
@@ -904,7 +1053,7 @@ func TestHandleResume_altStraddleDrainNotCommitted(t *testing.T) {
 			if before := h.scrollback.Committed(); before != 0 {
 				t.Fatalf("precondition: committed=%d, want 0 before resume", before)
 			}
-			h.handleResume(server, &clientState{}, "sid", -1, 0)
+			h.handleResume(server, &clientState{}, "sid", -1, 0, nil)
 
 			if gotCommitted := h.scrollback.Committed() > 0; gotCommitted != tc.wantCommitted {
 				t.Errorf("after resume: committed-history-present=%v, want %v (alt-straddle drain must be dropped; plain main-screen drain must commit)",
@@ -926,7 +1075,7 @@ func TestHandleResume_replayStartsAfterHaveThrough(t *testing.T) {
 
 	h.scrollback.Append([][]vt.WireRun{makeLine("L0"), makeLine("L1"), makeLine("L2")})
 
-	h.handleResume(server, &clientState{}, "sid", 0, 0) // client already holds index 0
+	h.handleResume(server, &clientState{}, "sid", 0, 0, nil) // client already holds index 0
 
 	frames := readServerFrames(t, client, 300*time.Millisecond)
 	var scroll []byte
@@ -963,7 +1112,7 @@ func TestHandleResume_replayChunkBoundaryEmitsSingleFrame(t *testing.T) {
 	}
 	h.scrollback.Append(lines)
 
-	h.handleResume(server, &clientState{}, "sid", -1, 0) // -1 ⇒ replay everything from index 0
+	h.handleResume(server, &clientState{}, "sid", -1, 0, nil) // -1 ⇒ replay everything from index 0
 
 	types := countFramesByType(readServerFrames(t, client, 300*time.Millisecond))
 	if types[wireMsgScroll] != 1 {
@@ -987,7 +1136,7 @@ func TestHandleResume_replayChunksCarryAscendingAbsoluteIndices(t *testing.T) {
 	}
 	h.scrollback.Append(lines)
 
-	h.handleResume(server, &clientState{}, "sid", -1, 0) // replay all from index 0
+	h.handleResume(server, &clientState{}, "sid", -1, 0, nil) // replay all from index 0
 
 	var firstIdxs []uint64
 	for _, f := range readServerFrames(t, client, 300*time.Millisecond) {
@@ -1138,7 +1287,7 @@ func TestHandleResume_frameOrderByAltState(t *testing.T) {
 			// The window frame must carry this live alt state in both arms.
 			h.screen.InAltScreen = tc.inAlt
 
-			h.handleResume(server, &clientState{}, "sid", -1, 0) // -1 ⇒ client holds nothing, replay all
+			h.handleResume(server, &clientState{}, "sid", -1, 0, nil) // -1 ⇒ client holds nothing, replay all
 
 			frames := readServerFrames(t, client, 300*time.Millisecond)
 
@@ -1312,7 +1461,7 @@ func TestHandleResume_ledgerLostFlag(t *testing.T) {
 			if tc.preSeedSession {
 				h.registry.sessions["sid"] = &sessionState{lastSeen: time.Now(), bytesReceived: 120}
 			}
-			h.handleResume(server, &clientState{}, "sid", -1, tc.sentBytes)
+			h.handleResume(server, &clientState{}, "sid", -1, tc.sentBytes, nil)
 
 			var resumeAck []byte
 			for _, f := range readServerFrames(t, client, 300*time.Millisecond) {
@@ -1352,11 +1501,18 @@ func TestSweepAcks_acksQuietInputOnce(t *testing.T) {
 	h.registry.IncrementReceived(state, 42)
 
 	h.sweepAcks()
-	frames := readServerFrames(t, client, 300*time.Millisecond)
+	frames := framePump(t, client)
 	var acks []uint64
-	for _, f := range frames {
-		if len(f) == 9 && f[0] == wireMsgAckOnly {
-			acks = append(acks, binary.LittleEndian.Uint64(f[1:9]))
+	deadline := time.After(2 * time.Second)
+collect:
+	for len(acks) == 0 {
+		select {
+		case f := <-frames:
+			if len(f) == 9 && f[0] == wireMsgAckOnly {
+				acks = append(acks, binary.LittleEndian.Uint64(f[1:9]))
+			}
+		case <-deadline:
+			break collect
 		}
 	}
 	if len(acks) != 1 || acks[0] != 42 {
@@ -1364,8 +1520,11 @@ func TestSweepAcks_acksQuietInputOnce(t *testing.T) {
 	}
 
 	h.sweepAcks()
-	if extra := readServerFrames(t, client, 300*time.Millisecond); len(extra) != 0 {
-		t.Errorf("second sweep with no new input sent %d frame(s); want 0", len(extra))
+	// One pump for the whole test (a readServerFrames re-read is vacuous:
+	// its idle timeout closed the conn, so a second call always returns
+	// nothing — the assertion could never fail).
+	if extra := nextFrame(frames, 300*time.Millisecond); extra != nil {
+		t.Errorf("second sweep with no new input sent a frame (type %d); want none", extra[0])
 	}
 }
 
@@ -1388,13 +1547,17 @@ func TestDispatchFrame_suppressesRedundantAckSweep(t *testing.T) {
 		screenHeight: 1,
 	}
 	h.dispatchFrame(frame)
-	if types := countFramesByType(readServerFrames(t, client, 300*time.Millisecond)); types[wireMsgModes] != 1 {
-		t.Fatalf("dispatch emitted %d modes frame(s); want 1", types[wireMsgModes])
+	// One pump for the whole test: readServerFrames' idle timeout closes the
+	// conn, so a second call on the same socket returns nothing
+	// unconditionally and the suppression assertion below could never fail.
+	frames := framePump(t, client)
+	if got := nextFrame(frames, 2*time.Second); got == nil || got[0] != wireMsgModes {
+		t.Fatalf("dispatch emitted %v; want one modes frame", got)
 	}
 
 	h.sweepAcks()
-	if extra := readServerFrames(t, client, 300*time.Millisecond); len(extra) != 0 {
-		t.Errorf("sweep after a content frame carried ack=7 sent %d frame(s); want 0 (NoteAcksSent must suppress)", len(extra))
+	if extra := nextFrame(frames, 300*time.Millisecond); extra != nil {
+		t.Errorf("sweep after a content frame carried ack=7 sent a frame (type %d); want none (NoteAcksSent must suppress)", extra[0])
 	}
 }
 

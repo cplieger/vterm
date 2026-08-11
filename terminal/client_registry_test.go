@@ -145,7 +145,7 @@ func TestRegistry_ConcurrentResolveIncrementSnapshot(t *testing.T) {
 				sessionID := "session-" + string(rune('A'+id)) + "-" + string(rune('0'+i%10))
 				_, _ = r.ResolveSession(state, sessionID)
 				r.IncrementReceived(state, 42)
-				_ = r.Snapshot()
+				_, _, _ = r.Snapshot()
 			}
 		}(g)
 	}
@@ -454,6 +454,20 @@ func TestAckSweepTargets_recordsOptimisticallyAndHonorsNoteAcksSent(t *testing.T
 	r.NoteAcksSent(map[*websocket.Conn]uint64{ws: 9})
 	if after := r.AckSweepTargets(); len(after) != 0 {
 		t.Errorf("AckSweepTargets after NoteAcksSent(9) = %v, want empty", after)
+	}
+
+	// NoteAcksSent is MONOTONIC: a durable-stripped write finishing after a
+	// resume batch reports an ack at or below the batch's resumeAck, and
+	// recording it must not regress lastAckSent ("the highest ack this
+	// socket was told") — a regression would make the next sweep re-send a
+	// value the client already has AND mask the dedupe the field exists
+	// for. Backward resyncs are handleResume's unconditional Store alone.
+	r.NoteAcksSent(map[*websocket.Conn]uint64{ws: 4})
+	if got := state.lastAckSent.Load(); got != 9 {
+		t.Errorf("lastAckSent after NoteAcksSent(4) = %d, want 9 (monotonic: an older delivered ack must not regress it)", got)
+	}
+	if after := r.AckSweepTargets(); len(after) != 0 {
+		t.Errorf("AckSweepTargets after the stale NoteAcksSent(4) = %v, want empty (bytesReceived is still 9)", after)
 	}
 }
 

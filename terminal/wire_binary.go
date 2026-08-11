@@ -162,6 +162,17 @@ const (
 	// its designed loss semantic — drop the outbox and notify — instead of
 	// guessing from an ambiguous received=0.
 	resumeAckFlagLedgerLost byte = 1 << 0
+
+	// resumeAckFlagHistoryPaging is bit1 of the resumeAck ackFlags byte: the
+	// server DECLARES that it serves the `history` control and that its ring is
+	// deep enough to back demand paging (see historyPagingDeclared). Capability
+	// is declared rather than probed because the ack is the first frame of every
+	// resume batch, so the client knows one RTT after attach with zero requests
+	// spent and no way to mis-read a slow link as an old server. An unset bit
+	// (or a server too old to carry the length-gated tail at all) reads as
+	// unsupported: the client keeps its legacy resident-tail cap and never sends
+	// a history control. See docs/paged-scrollback.md §4.5.
+	resumeAckFlagHistoryPaging byte = 1 << 1
 )
 
 // WirePairIncompatibility reports whether a Go-server / TS-client PAIR is
@@ -320,11 +331,14 @@ func encodeScrollMsg(ack, firstIndex uint64, lines [][]vt.WireRun) []byte {
 // The trailing [serverWireVersion, ackFlags] pair is the frame's third
 // length-gated tail (>= 35 bytes): serverWireVersion lets the client surface
 // a stale-bundle protocol skew ("reload required") instead of leaving the
-// mismatch server-log-only, and ackFlags bit0 (ledgerLost) tells a resuming
-// client its input ledger no longer exists so it must drop-and-notify rather
-// than replay (see resumeAckFlagLedgerLost). Older clients ignore the extra
-// bytes; newer clients treat a shorter frame as "tail absent".
-func encodeResumeAck(ack uint64, epochNanos int64, committed, oldestIndex uint64, ledgerLost bool) []byte {
+// mismatch server-log-only, and ackFlags carries bit0 (ledgerLost — tells a
+// resuming client its input ledger no longer exists so it must drop-and-notify
+// rather than replay; see resumeAckFlagLedgerLost) and bit1 (historyPaging —
+// declares demand-paged scrollback, see resumeAckFlagHistoryPaging). Older
+// clients ignore the extra bytes, and one that reads the tail masks only the
+// bits it knows; newer clients treat a shorter frame as "tail absent", which
+// reads as no paging.
+func encodeResumeAck(ack uint64, epochNanos int64, committed, oldestIndex uint64, ledgerLost, historyPaging bool) []byte {
 	buf := make([]byte, 0, 35)
 	buf = append(buf, wireMsgResumeAck)
 	buf = binary.LittleEndian.AppendUint64(buf, ack)
@@ -335,6 +349,9 @@ func encodeResumeAck(ack uint64, epochNanos int64, committed, oldestIndex uint64
 	var flags byte
 	if ledgerLost {
 		flags |= resumeAckFlagLedgerLost
+	}
+	if historyPaging {
+		flags |= resumeAckFlagHistoryPaging
 	}
 	buf = append(buf, flags)
 	return buf
@@ -435,7 +452,88 @@ func encodePongMsg() []byte {
 	return buf
 }
 
+// Per-row wire overhead, split out so the ceiling arithmetic below and the
+// tests that pin it read the same numbers as the encoder (see
+// docs/paged-scrollback.md §4.2 — one helper drives stripping, page packing,
+// and the tests so the three cannot drift).
+const (
+	// encodedRowCountSize is the row payload's leading num_runs field.
+	encodedRowCountSize = 2
+	// encodedRunFixedSize is the per-run fixed cost: 2 text_len + 4 fg +
+	// 4 bg + 2 attrs + 4 uc + 2 url_len. Only text and url are variable.
+	encodedRunFixedSize = 18
+	// encodedScrollHeaderSize is encodeScrollMsg's header: 1 type + 8 ack +
+	// 8 firstIndex + 2 numLines. A one-row reply is header + row payload, so
+	// the largest row that can fit a budgeted reply is budget minus this.
+	encodedScrollHeaderSize = 19
+	// pageByteBudget is the hard per-reply bound for a history page. Browser
+	// WebSockets expose no receive backpressure, so a delivered frame IS the
+	// client's memory commitment.
+	pageByteBudget = 256 * 1024
+	// rowByteCeiling is the largest encoded row payload that still fits a
+	// budgeted one-row reply (262125 at the shipped budget). A row above it is
+	// re-encoded with hyperlink URIs stripped, which is arithmetically bounded
+	// (~22 KB at the grid maximum) and therefore always fits.
+	rowByteCeiling = pageByteBudget - encodedScrollHeaderSize
+)
+
+// encodedRowSize returns the exact number of bytes appendRowRuns will write
+// for runs, including the leading num_runs field. It applies the same
+// truncation the encoder applies, so the answer is the real wire size rather
+// than an estimate.
+func encodedRowSize(runs []vt.WireRun) int {
+	size := encodedRowCountSize
+	for _, run := range runs {
+		size += encodedRunFixedSize
+		size += len(truncateUTF8(run.T, 0xFFFF))
+		size += len(truncateUTF8(run.U, 0xFFFF))
+	}
+	return size
+}
+
+// stripRowURIs returns a copy of runs with every hyperlink URI emptied and
+// the autolink bit cleared, so a stripped run is indistinguishable from a
+// never-linked one (rather than carrying AttrAutolink with an empty U, a state
+// the wire format has never carried). Text and styling are untouched.
+//
+// The client re-linkifies stripped rows from VISIBLE text, so a server-stamped
+// autolink whose URL was split by a style change or a soft wrap re-derives a
+// PREFIX href, and an OSC 8 link whose text is not a URL loses its link
+// entirely. That is the accepted degradation, reachable only above
+// rowByteCeiling (see docs/paged-scrollback.md §4.2).
+func stripRowURIs(runs []vt.WireRun) []vt.WireRun {
+	out := make([]vt.WireRun, len(runs))
+	copy(out, runs)
+	for i := range out {
+		out[i].U = ""
+		out[i].A &^= vt.AttrAutolink
+	}
+	return out
+}
+
+// capRowRuns applies the per-row ceiling: a row whose encoding exceeds
+// rowByteCeiling is re-encoded with its URIs stripped. The decision is a PURE
+// FUNCTION of the canonical row — never of remaining frame budget or delivery
+// path — so the same committed row encodes to identical bytes on every path
+// (page, live flush, resume replay, screen) and repeated delivery of one index
+// stays byte-identical, which is what makes the client's idempotence hold.
+func capRowRuns(runs []vt.WireRun) []vt.WireRun {
+	if encodedRowSize(runs) <= rowByteCeiling {
+		return runs
+	}
+	return stripRowURIs(runs)
+}
+
+// appendRowRuns writes one row payload. The per-row ceiling is applied HERE,
+// in the encoder every row-emitting path shares — page replies, live flush
+// frames, resume replay chunks, and screen frames — deliberately including
+// screen so a pathological row displays and pages identically (link-less in
+// both) instead of showing links on screen and losing them the moment it
+// scrolls off. The ceiling bounds every ROW; it does not bound the aggregate
+// multi-row messages, which remain the pre-existing exposure named in
+// docs/paged-scrollback.md §4.2.
 func appendRowRuns(buf []byte, runs []vt.WireRun) []byte {
+	runs = capRowRuns(runs)
 	buf = binary.LittleEndian.AppendUint16(buf, clampU16(len(runs)))
 	for _, run := range runs {
 		text := truncateUTF8(run.T, 0xFFFF)
@@ -504,14 +602,19 @@ func encodeTitleMsg(title string) []byte {
 //
 // The payload originates from an OSC sequence, whose buffer (maxOSCLen) caps it
 // well below the uint16 length limit; the guard below is defensive only.
-func encodeClipboardMsg(ack uint64, text []byte) []byte {
+//
+// The ack field is emitted as zero: this payload is encoded once per flush
+// and fanned out to every client, and withClientAck stamps each client's
+// real ack into the shared offset at write time (like every other payload
+// dispatchFrame carries).
+func encodeClipboardMsg(text []byte) []byte {
 	body := text
 	if len(body) > 0xFFFF {
 		body = body[:0xFFFF]
 	}
 	buf := make([]byte, 0, 11+len(body))
 	buf = append(buf, wireMsgClipboard)
-	buf = binary.LittleEndian.AppendUint64(buf, ack)
+	buf = binary.LittleEndian.AppendUint64(buf, 0)
 	buf = binary.LittleEndian.AppendUint16(buf, clampU16(len(body)))
 	buf = append(buf, body...)
 	return buf

@@ -2,6 +2,7 @@ package terminal
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"os"
 	"strings"
@@ -21,8 +22,17 @@ import (
 func TestNewHandler_appliesDefaults(t *testing.T) {
 	h := NewHandler([]string{"/bin/sh"})
 
-	if h.cfg.scrollbackCapacity != 1000 {
-		t.Fatalf("default scrollbackCapacity = %d, want 1000", h.cfg.scrollbackCapacity)
+	// Pinned against the CONSTANT, not a literal: the number is a sizing
+	// decision documented at its definition, and a test repeating the digits
+	// only asserts that someone typed them twice.
+	if h.cfg.scrollbackCapacity != defaultScrollbackCapacity {
+		t.Fatalf("default scrollbackCapacity = %d, want %d", h.cfg.scrollbackCapacity, defaultScrollbackCapacity)
+	}
+	// The default must clear the paging cliff, or every consumer that does not
+	// configure a capacity silently loses demand-paged scrollback.
+	if defaultScrollbackCapacity < MinPagingCapacity {
+		t.Errorf("the default (%d) is below MinPagingCapacity (%d): paging would be off by default",
+			defaultScrollbackCapacity, MinPagingCapacity)
 	}
 	if h.cfg.logger != slog.Default() {
 		t.Fatal("default logger is not slog.Default()")
@@ -42,8 +52,11 @@ func TestNewHandler_appliesDefaults(t *testing.T) {
 	if h.screen.Height != defaultRows || h.screen.Width != defaultCols {
 		t.Fatalf("screen %dx%d, want %dx%d", h.screen.Height, h.screen.Width, defaultRows, defaultCols)
 	}
-	if cap(h.scrollback.buf) != 1000 {
-		t.Fatalf("scrollback ring cap = %d, want 1000", cap(h.scrollback.buf))
+	if h.scrollback.capacity != defaultScrollbackCapacity {
+		t.Fatalf("scrollback ring capacity = %d, want %d", h.scrollback.capacity, defaultScrollbackCapacity)
+	}
+	if got := cap(h.scrollback.buf); got != 0 {
+		t.Fatalf("fresh ring allocated %d slots; want 0 — the default capacity must cost nothing until history exists", got)
 	}
 	if h.registry == nil {
 		t.Fatal("registry is nil")
@@ -59,14 +72,37 @@ func TestNewHandler_appliesDefaults(t *testing.T) {
 	}
 }
 
-// TestNewHandler_WithScrollbackCapacity verifies custom scrollback capacity.
+// TestNewHandler_WithScrollbackCapacity verifies custom scrollback capacity:
+// the option reaches the ring, the ring allocates NOTHING up front, and the
+// capacity is enforced by eviction once it is actually reached.
+//
+// The no-upfront-allocation half replaced an assertion on cap(buf), which
+// pinned a preallocating ring. Capacity is an operator-set number that is meant
+// to be settable absurdly high (WT_SCROLLBACK), so allocating at it charged
+// every session for history it might never produce.
 func TestNewHandler_WithScrollbackCapacity(t *testing.T) {
 	h := NewHandler([]string{"/bin/sh"}, WithScrollbackCapacity(500))
 	if h.cfg.scrollbackCapacity != 500 {
 		t.Fatalf("scrollbackCapacity = %d, want 500", h.cfg.scrollbackCapacity)
 	}
-	if cap(h.scrollback.buf) != 500 {
-		t.Fatalf("scrollback ring cap = %d, want 500", cap(h.scrollback.buf))
+	if h.scrollback.capacity != 500 {
+		t.Fatalf("scrollback ring capacity = %d, want 500", h.scrollback.capacity)
+	}
+	if got := cap(h.scrollback.buf); got != 0 {
+		t.Errorf("fresh ring allocated %d slots; want 0 (it must grow on demand)", got)
+	}
+
+	// Past capacity: retention is the capacity, and the oldest lines are gone.
+	lines := make([][]vt.WireRun, 600)
+	for i := range lines {
+		lines[i] = []vt.WireRun{{T: fmt.Sprintf("L%d", i)}}
+	}
+	h.scrollback.Append(lines)
+	if got := h.scrollback.Len(); got != 500 {
+		t.Errorf("retained %d lines, want 500", got)
+	}
+	if got := h.scrollback.OldestIndex(); got != 100 {
+		t.Errorf("oldest retained index = %d, want 100", got)
 	}
 }
 
@@ -169,8 +205,8 @@ func TestNewHandler_OptionOrderIndependent(t *testing.T) {
 // slice is skipped rather than called (a nil func pointer would panic).
 func TestNewHandler_NoOptions_NilSlice(t *testing.T) {
 	h := NewHandler([]string{"/bin/sh"}, nil)
-	if h.cfg.scrollbackCapacity != 1000 {
-		t.Fatalf("scrollbackCapacity = %d after nil option", h.cfg.scrollbackCapacity)
+	if h.cfg.scrollbackCapacity != defaultScrollbackCapacity {
+		t.Fatalf("scrollbackCapacity = %d after nil option, want %d", h.cfg.scrollbackCapacity, defaultScrollbackCapacity)
 	}
 }
 

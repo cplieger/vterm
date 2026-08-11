@@ -20,6 +20,8 @@ package terminal
 // a wrong assumption about either survive.
 
 import (
+	"fmt"
+	"os"
 	"testing"
 	"time"
 )
@@ -39,15 +41,61 @@ func exitedHandler(t *testing.T, command ...string) *Handler {
 
 // waitExited blocks until the child has been reaped, failing the test if it
 // never is.
+//
+// Waits on the channel the process monitor closes rather than polling Exited(),
+// for two reasons. It returns the instant the monitor latches, so a generous
+// budget costs the happy path nothing — which matters because none of these
+// tests assert anything about how FAST a reap is, only that the outcome is final
+// before they classify it. And the old 5s poll was an arbitrary number that
+// failed the suite for slowness it never meant to measure: it fired once under
+// full-suite load, where a machine running the scheduler tests' real-time sleeps
+// alongside dozens of child processes can starve this monitor goroutine well
+// past 5s without anything being wrong.
+//
+// The failure message diagnoses instead of just reporting the timeout: it says
+// whether the child is still running, already a zombie (so the exit happened and
+// only the monitor is behind), or gone entirely.
 func waitExited(t *testing.T, h *Handler) {
 	t.Helper()
-	deadline := time.Now().Add(5 * time.Second)
-	for !h.Exited() {
-		if time.Now().After(deadline) {
-			t.Fatal("child process was not reaped within 5s")
-		}
-		time.Sleep(5 * time.Millisecond)
+	const budget = 30 * time.Second
+	timer := time.NewTimer(budget)
+	defer timer.Stop()
+	select {
+	case <-h.procExitCh:
+		return
+	case <-timer.C:
+		t.Fatalf("child was not reaped within %v: %s", budget, childStateForDiag(h))
 	}
+}
+
+// childStateForDiag describes the child's procfs state for a reap-timeout
+// message, so the failure names which half stalled: the process not exiting, or
+// the monitor not latching an exit that already happened.
+func childStateForDiag(h *Handler) string {
+	h.mu.Lock()
+	cmd := h.cmd
+	h.mu.Unlock()
+	if cmd == nil || cmd.Process == nil {
+		return "no child process on the handler"
+	}
+	pid := cmd.Process.Pid
+	b, err := os.ReadFile(fmt.Sprintf("/proc/%d/stat", pid))
+	if err != nil {
+		return fmt.Sprintf("pid %d is gone from /proc, so it exited and the monitor never latched", pid)
+	}
+	// State is the field after the closing paren of the parenthesized comm,
+	// which may itself contain spaces and parens (see alive()).
+	s := string(b)
+	i := len(s) - 1
+	for ; i >= 0 && s[i] != ')'; i-- {
+	}
+	if i < 0 || i+2 >= len(s) {
+		return fmt.Sprintf("pid %d has an unparseable /proc stat line", pid)
+	}
+	if s[i+2] == 'Z' {
+		return fmt.Sprintf("pid %d is a zombie, so it exited and the monitor has not latched yet", pid)
+	}
+	return fmt.Sprintf("pid %d is still running in state %q", pid, s[i+2:i+3])
 }
 
 // TestExitOutcomeClassification walks the documented boundary with real

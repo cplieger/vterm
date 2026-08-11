@@ -110,20 +110,34 @@ func (r *clientRegistry) MinLiveSize() (cols, rows int, ok bool) {
 	return cols, rows, ok
 }
 
-// Snapshot returns a map of connected clients to their session ack
-// values. The returned map is safe to use without holding the lock.
-func (r *clientRegistry) Snapshot() map[*websocket.Conn]uint64 {
+// Snapshot returns the connected clients with everything a dispatch pass
+// needs to write to them safely without the lock: each client's session ack
+// value, its clientState (whose writeMu/resumeGen gate the actual writes —
+// see dispatchFrame), and the resume generation observed NOW. A frame built
+// against this snapshot is written to a client only while its generation is
+// unchanged; a resume that begins after the snapshot bumps the generation,
+// which is what keeps a frame built before the resume's own screen snapshot
+// from being written after it (the stale-after-newer inversion).
+func (r *clientRegistry) Snapshot() (
+	acks map[*websocket.Conn]uint64,
+	writers map[*websocket.Conn]*clientState,
+	gens map[*websocket.Conn]uint64,
+) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	m := make(map[*websocket.Conn]uint64, len(r.clients))
+	acks = make(map[*websocket.Conn]uint64, len(r.clients))
+	writers = make(map[*websocket.Conn]*clientState, len(r.clients))
+	gens = make(map[*websocket.Conn]uint64, len(r.clients))
 	for ws, state := range r.clients {
 		var ack uint64
 		if sess := state.session.Load(); sess != nil {
 			ack = sess.bytesReceived
 		}
-		m[ws] = ack
+		acks[ws] = ack
+		writers[ws] = state
+		gens[ws] = state.resumeGen.Load()
 	}
-	return m
+	return acks, writers, gens
 }
 
 // ResolveSession looks up or creates a session for the given ID,
@@ -270,13 +284,26 @@ func (r *clientRegistry) AckSweepTargets() map[*websocket.Conn]uint64 {
 
 // NoteAcksSent records the ack values a dispatched content frame carried to
 // each client (via withClientAck), so the next AckSweepTargets pass does not
-// send a redundant ackOnly for a value the client already received.
+// send a redundant ackOnly for a value the client already received. The
+// store is monotonic (forward-only): a generation-stripped durable write
+// lands AFTER the resume batch that already recorded a newer resumeAck, and
+// its older-but-genuinely-carried ack must not regress lastAckSent ("the
+// highest ack this socket was told" — the invariant the sweep's dedupe
+// reads). Legitimate backward re-syncs (ledger replacement) go through
+// handleResume's unconditional Store, never through here.
 func (r *clientRegistry) NoteAcksSent(acks map[*websocket.Conn]uint64) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	for ws, ack := range acks {
-		if state, ok := r.clients[ws]; ok {
-			state.lastAckSent.Store(ack)
+		state, ok := r.clients[ws]
+		if !ok {
+			continue
+		}
+		for {
+			old := state.lastAckSent.Load()
+			if ack <= old || state.lastAckSent.CompareAndSwap(old, ack) {
+				break
+			}
 		}
 	}
 }

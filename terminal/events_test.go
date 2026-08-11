@@ -339,13 +339,7 @@ func TestListExitedWinsOverStaleSweptStatus(t *testing.T) {
 
 	// The process dies with no further sweep: exit must win over the stale done.
 	h.Shutdown()
-	deadline := time.Now().Add(2 * time.Second)
-	for !h.Exited() && time.Now().Before(deadline) {
-		time.Sleep(5 * time.Millisecond)
-	}
-	if !h.Exited() {
-		t.Fatal("process did not exit after handler Shutdown")
-	}
+	waitExited(t, h)
 	for _, info := range m.List() {
 		if info.ID == id && info.Status != StatusExited {
 			t.Fatalf("List status = %q, want %q (exit outranks the stale swept status)", info.Status, StatusExited)
@@ -365,10 +359,7 @@ func TestComputeStatusExited(t *testing.T) {
 		t.Fatalf("Create: %v", err)
 	}
 	h := handlerOf(t, m, id)
-	deadline := time.Now().Add(2 * time.Second)
-	for !h.Exited() && time.Now().Before(deadline) {
-		time.Sleep(5 * time.Millisecond)
-	}
+	waitExited(t, h)
 	if st := m.computeStatusFromHandler(h, &statusTracker{}); st != StatusExited {
 		t.Fatalf("status = %q, want %q", st, StatusExited)
 	}

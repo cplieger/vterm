@@ -53,8 +53,10 @@ constant StatusDone
 #
 # WithWorkDir: vibekit/internal/hub/shell.go:47, web-terminal-kiro/routes.go:277,
 #   web-terminal-server/main.go:482.
-# WithScrollbackCapacity: web-terminal-kiro/routes.go:278 (5000, the client
-#   store's retention cap), web-terminal-server/main.go:478 (configurable).
+# WithScrollbackCapacity: web-terminal-server/main.go and
+#   web-terminal-kiro/routes.go, both CONDITIONALLY -- neither app holds a depth
+#   of its own any more, so the option is appended only when the operator set
+#   WT_SCROLLBACK and otherwise omitted so the engine's default applies.
 # WithKeepUnfocused: web-terminal-kiro/routes.go:279 -- load-bearing, it is what
 #   keeps kiro-cli emitting the OSC 9 notifications the status dots latch on
 #   (pinned by web-terminal-kiro/session_keep_unfocused_test.go:41).
@@ -264,3 +266,27 @@ function StartZombieReaper
 # A format's producer owning its reader is the point; the engine already
 # maintained the mirror in a test.
 function ReadWireManifest
+
+
+# --- The shared scrollback knob: published API whose entire purpose is to be
+# read by the three apps embedding this handler, which live in other MODULES.
+#
+# The engine owns the operator variable's NAME, its default, and the one policy
+# call that interprets its awkward middle, precisely so three consumers cannot
+# each invent an interpretation of it. In-module there is nothing to reference
+# them from: the engine deliberately never reads the environment itself (no
+# cplieger library calls os.Getenv), so the only in-repo callers are the tests
+# that pin the policy.
+#
+# DefaultScrollbackCapacity: web-terminal-server/main.go (the startup line's
+#   reported depth, and the value loadConfig starts from),
+#   web-terminal-kiro/main.go (same startup line).
+# ClampScrollbackCapacity: web-terminal-server/main.go and
+#   web-terminal-kiro/main.go, both on the WT_SCROLLBACK path -- it raises the
+#   range where asking for LESS server history would cost the client more.
+#
+# ScrollbackEnvVar and MinPagingCapacity are not listed: both are referenced from
+# non-test engine code (the clamp's own messages and its threshold), so punused
+# already sees them.
+constant DefaultScrollbackCapacity
+function ClampScrollbackCapacity

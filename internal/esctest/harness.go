@@ -2,12 +2,13 @@
 // (github.com/ThomasDickey/esctest2, George Nachman's esctest with Thomas
 // Dickey's fixes) against the engine's vt.Screen.
 //
-// esctest2 is GPL-2.0; the engine is GPL-3.0. To keep the incompatible-for-
-// combination licenses at arm's length, esctest2 is NEVER vendored into this
-// repo. It is fetched separately (see scripts/esctest.sh) and located at run
-// time via the ESCTEST2_DIR environment variable. The suite is executed as an
-// ordinary subprocess and communicated with over a PTY — it is never linked
-// into the engine — so this is mere aggregation, not a derived work.
+// esctest2 is GPL-2.0; the engine is MPL-2.0. Those cannot be COMBINED into one
+// work in this direction: MPL-2.0 §3.3 lets MPL files enter a GPL work, not GPL
+// code enter an MPL one. To keep the licenses at arm's length, esctest2 is NEVER
+// vendored into this repo. It is fetched separately (see scripts/esctest.sh) and
+// located at run time via the ESCTEST2_DIR environment variable. The suite is
+// executed as an ordinary subprocess and communicated with over a PTY — it is
+// never linked into the engine — so this is mere aggregation, not a derived work.
 //
 // The model: esctest runs as the child process of a terminal. It writes escape
 // sequences to its stdout (which the terminal renders) and reads state back

@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # Fetch the esctest2 VT conformance suite and run it against the engine's VT.
 #
-# esctest2 (github.com/ThomasDickey/esctest2) is GPL-2.0; the engine is GPL-3.0,
-# which are incompatible for COMBINING into one work. So esctest2 is NOT
+# esctest2 (github.com/ThomasDickey/esctest2) is GPL-2.0; the engine is MPL-2.0.
+# Those cannot be COMBINED into one work in this direction: MPL-2.0 §3.3 lets MPL
+# files enter a GPL work, not GPL code enter an MPL one. So esctest2 is NOT
 # vendored: this script fetches it into a gitignored checkout and the suite runs
 # as a subprocess over a PTY (never linked into the engine), which is mere
 # aggregation. See internal/esctest/harness.go and .kiro steering testing.md.

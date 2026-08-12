@@ -70,6 +70,7 @@
     "!src/**/test-helpers",
     "!src/**/fc-strict-setup.ts",
     "jsr.json",
+    "LICENSE",
     "wire-compatibility.json"
   ]
 }

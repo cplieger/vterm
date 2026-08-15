@@ -6,7 +6,6 @@ package terminal
 // proctitle_linux_test.go.
 
 import (
-	"context"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -277,7 +276,7 @@ func TestSessionManagerPinnedTitleREST(t *testing.T) {
 	}
 	do := func(t *testing.T, method, sessionID, body string) int {
 		t.Helper()
-		req, _ := http.NewRequestWithContext(context.Background(), method,
+		req, _ := http.NewRequestWithContext(t.Context(), method,
 			srv.URL+"/api/sessions/"+sessionID+"/pinned-title", strings.NewReader(body))
 		resp, err := http.DefaultClient.Do(req)
 		if err != nil {

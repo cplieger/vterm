@@ -21,7 +21,7 @@ import (
 // dialSession dials a manager-routed WS for the session and returns the conn.
 func dialSession(t *testing.T, srv *httptest.Server, id string) *websocket.Conn {
 	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 	defer cancel()
 	//nolint:bodyclose // coder/websocket Dial nils resp.Body on success
 	ws, _, err := websocket.Dial(ctx, "ws"+strings.TrimPrefix(srv.URL, "http")+"/ws?session="+id, nil)
@@ -49,7 +49,7 @@ func startWSReader(t *testing.T, ws *websocket.Conn) <-chan wsReadResult {
 	go func() {
 		defer close(results)
 		for {
-			typ, data, err := ws.Read(context.Background())
+			typ, data, err := ws.Read(t.Context())
 			select {
 			case results <- wsReadResult{typ: typ, data: data, err: err}:
 			case <-done:
@@ -143,7 +143,7 @@ func TestFlushScheduler_isolatedEchoBeatsTickAlignment(t *testing.T) {
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 	defer cancel()
 	//nolint:bodyclose // coder/websocket Dial nils resp.Body on success
 	ws, _, err := websocket.Dial(ctx, "ws"+strings.TrimPrefix(srv.URL, "http")+"/ws", nil)
@@ -186,7 +186,7 @@ func TestFlushScheduler_sustainedOutputRetainsBatching(t *testing.T) {
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 	defer cancel()
 	//nolint:bodyclose // coder/websocket Dial nils resp.Body on success
 	ws, _, err := websocket.Dial(ctx, "ws"+strings.TrimPrefix(srv.URL, "http")+"/ws", nil)
@@ -295,7 +295,7 @@ func TestFlushScheduler_resizeReprintHeldUntilSettled(t *testing.T) {
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 	defer cancel()
 	//nolint:bodyclose // coder/websocket Dial nils resp.Body on success
 	ws, _, err := websocket.Dial(ctx, "ws"+strings.TrimPrefix(srv.URL, "http")+"/ws", nil)
@@ -351,7 +351,7 @@ func TestFlushScheduler_reprintLongerThanCapCoalesces(t *testing.T) {
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	ctx, cancel := context.WithTimeout(t.Context(), 20*time.Second)
 	defer cancel()
 	//nolint:bodyclose // coder/websocket Dial nils resp.Body on success
 	ws, _, err := websocket.Dial(ctx, "ws"+strings.TrimPrefix(srv.URL, "http")+"/ws", nil)

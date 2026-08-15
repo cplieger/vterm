@@ -47,7 +47,7 @@ func TestExitedAttachServesReplayBefore4001(t *testing.T) {
 	h.RegisterRoutes(mux)
 	srv := httptest.NewServer(mux)
 	defer srv.Close()
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 	defer cancel()
 	//nolint:bodyclose // library contract: Body is nil on success
 	ws, _, err := websocket.Dial(ctx, "ws"+strings.TrimPrefix(srv.URL, "http")+"/ws", nil)
@@ -99,7 +99,7 @@ func TestProcessExitClosesWith4001(t *testing.T) {
 	ws, cleanup := dialHandler(t, []string{"/bin/sh", "-c", "sleep 0.2"})
 	defer cleanup()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 	defer cancel()
 
 	// Trigger the lazy process start; the byte is harmless (sh is running

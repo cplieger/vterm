@@ -5,7 +5,7 @@ import (
 	"bytes"
 	"io"
 	"os"
-	"sort"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -67,7 +67,7 @@ func TestConformance(t *testing.T) {
 		}
 	}
 
-	sort.Strings(res.Failed)
+	slices.Sort(res.Failed)
 	t.Logf("esctest: %d passed, %d skipped/known-bug, %d failed", res.Passed, res.Skipped, len(res.Failed))
 	// "Full run" means no ESCTEST_INCLUDE subset filter; both the pass-count
 	// floor and the stale-entry check below apply only to a full run. Derive

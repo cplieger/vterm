@@ -243,7 +243,7 @@ func TestMountAPINoStoreOnRealHandlers(t *testing.T) {
 	// the wrapper's no-store would land first and the conventional no-cache
 	// middleboxes sniff for would be lost.
 	t.Run("SSE keeps its own policy", func(t *testing.T) {
-		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		ctx, cancel := context.WithTimeout(t.Context(), 3*time.Second)
 		defer cancel()
 		srv := httptest.NewServer(mux)
 		t.Cleanup(srv.Close)

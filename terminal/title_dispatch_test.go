@@ -35,7 +35,7 @@ func TestWindowTitleReachesClient(t *testing.T) {
 // leading byte of a frame is its wire message type.
 func readFrameOfType(t *testing.T, ws *websocket.Conn, msgType byte, want []byte, timeout time.Duration) bool {
 	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	ctx, cancel := context.WithTimeout(t.Context(), timeout)
 	defer cancel()
 	for {
 		_, msg, err := ws.Read(ctx)

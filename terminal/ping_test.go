@@ -36,7 +36,7 @@ func TestPingLoop_repeatedFailuresCancel(t *testing.T) {
 	defer srv.Close()
 
 	wsURL := "ws" + strings.TrimPrefix(srv.URL, "http") + "/"
-	dctx, dcancel := context.WithTimeout(context.Background(), 5*time.Second)
+	dctx, dcancel := context.WithTimeout(t.Context(), 5*time.Second)
 	//nolint:bodyclose // coder/websocket Dial nils resp.Body on success
 	ws, _, err := websocket.Dial(dctx, wsURL, nil)
 	dcancel()
@@ -48,7 +48,7 @@ func TestPingLoop_repeatedFailuresCancel(t *testing.T) {
 	// blocking until the pong timeout.
 	_ = ws.CloseNow()
 
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
 	canceled := make(chan struct{})
 	var once sync.Once
@@ -74,7 +74,7 @@ func TestPingLoop_repeatedFailuresCancel(t *testing.T) {
 // handlePingFailure returns stop=false and does NOT call cancel.
 func TestPinger_continuesBackoffBelowFailureThreshold(t *testing.T) {
 	p := &pinger{stat: newPingStat(), logger: slog.Default()} // consecFails starts at 0
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
 
 	stop := p.handlePingFailure(errors.New("ping miss"), time.Second, time.Second, cancel)
@@ -99,7 +99,7 @@ func TestPinger_continuesBackoffBelowFailureThreshold(t *testing.T) {
 // caught.
 func TestPinger_cancelsConnectionAtFailureThreshold(t *testing.T) {
 	p := &pinger{stat: newPingStat(), logger: slog.Default(), consecFails: maxConsecutiveFailures - 1}
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
 
 	stop := p.handlePingFailure(errors.New("ping miss"), time.Second, time.Second, cancel)

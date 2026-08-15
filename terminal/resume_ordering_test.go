@@ -49,7 +49,7 @@ func wsPair(t *testing.T) (sws, cws *websocket.Conn, cleanup func()) {
 		<-done // hold the handler (and with it the conn) open until cleanup
 	}))
 	wsURL := "ws" + strings.TrimPrefix(srv.URL, "http") + "/"
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 	//nolint:bodyclose // library contract: Body is nil on success
 	c, _, err := websocket.Dial(ctx, wsURL, nil)
 	cancel()
@@ -72,6 +72,9 @@ func wsPair(t *testing.T) (sws, cws *websocket.Conn, cleanup func()) {
 func framePump(t *testing.T, cws *websocket.Conn) <-chan []byte {
 	t.Helper()
 	frames := make(chan []byte, 8192)
+	// context.Background() (not t.Context()): the pump must stay readable for the
+	// test's whole life, so its ctx is cancelled by t.Cleanup below rather than at
+	// t.Context() cancellation, which precedes the cleanups that close the conn.
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 	go func() {
@@ -152,7 +155,7 @@ func assertNoContentFrames(t *testing.T, frames <-chan []byte, window time.Durat
 // writeBinary sends raw PTY input bytes (a binary frame with no 0x00 sentinel).
 func writeBinary(t *testing.T, ws *websocket.Conn, b []byte) {
 	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	ctx, cancel := context.WithTimeout(t.Context(), time.Second)
 	defer cancel()
 	if err := ws.Write(ctx, websocket.MessageBinary, b); err != nil {
 		t.Fatalf("binary write: %v", err)
@@ -412,7 +415,7 @@ func dialOwnHandler(t *testing.T, cmd []string) (*Handler, *websocket.Conn, func
 	h.RegisterRoutes(mux)
 	srv := httptest.NewServer(mux)
 	wsURL := "ws" + strings.TrimPrefix(srv.URL, "http") + "/ws"
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 	//nolint:bodyclose // library contract: Body is nil on success
 	ws, _, err := websocket.Dial(ctx, wsURL, nil)
 	cancel()

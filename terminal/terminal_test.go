@@ -30,7 +30,7 @@ func dialHandler(t *testing.T, cmd []string) (*websocket.Conn, func()) {
 	srv := httptest.NewServer(mux)
 
 	wsURL := "ws" + strings.TrimPrefix(srv.URL, "http") + "/ws"
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 	// coder/websocket's Dial nils out resp.Body on success; its
 	// godoc is explicit: "You never need to close resp.Body
 	// yourself." The bodyclose linter is stdlib-oriented and
@@ -55,7 +55,7 @@ func dialHandler(t *testing.T, cmd []string) (*websocket.Conn, func()) {
 // far on timeout to aid debugging.
 func readUntil(t *testing.T, ws *websocket.Conn, want []byte, timeout time.Duration) []byte {
 	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	ctx, cancel := context.WithTimeout(t.Context(), timeout)
 	defer cancel()
 	var got bytes.Buffer
 	for {
@@ -80,7 +80,7 @@ func sendControl(t *testing.T, ws *websocket.Conn, v any) {
 	frame := make([]byte, len(body)+1)
 	frame[0] = 0
 	copy(frame[1:], body)
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	ctx, cancel := context.WithTimeout(t.Context(), time.Second)
 	defer cancel()
 	if err := ws.Write(ctx, websocket.MessageBinary, frame); err != nil {
 		t.Fatalf("control write: %v", err)
@@ -99,7 +99,7 @@ func TestEchoThroughPTY(t *testing.T) {
 	sendControl(t, ws, map[string]any{
 		"type": "resize", "cols": 100, "rows": 40,
 	})
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	ctx, cancel := context.WithTimeout(t.Context(), time.Second)
 	defer cancel()
 	if err := ws.Write(ctx, websocket.MessageBinary, []byte("hello\n")); err != nil {
 		t.Fatalf("write: %v", err)
@@ -119,7 +119,7 @@ func TestResizeControlIsAccepted(t *testing.T) {
 	sendControl(t, ws, map[string]any{
 		"type": "resize", "cols": 100, "rows": 40,
 	})
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	ctx, cancel := context.WithTimeout(t.Context(), time.Second)
 	defer cancel()
 	if err := ws.Write(ctx, websocket.MessageBinary, []byte("after-resize\n")); err != nil {
 		t.Fatalf("post-resize write: %v", err)
@@ -137,7 +137,7 @@ func TestBadControlMessageIgnored(t *testing.T) {
 	sendControl(t, ws, map[string]any{
 		"type": "resize", "cols": 100, "rows": 40,
 	})
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	ctx, cancel := context.WithTimeout(t.Context(), time.Second)
 	defer cancel()
 	// 0x00 prefix + garbage JSON.
 	if err := ws.Write(ctx, websocket.MessageBinary, []byte{0x00, '{', 'x'}); err != nil {
@@ -160,7 +160,7 @@ func TestEmptyCommandFails(t *testing.T) {
 	defer srv.Close()
 
 	wsURL := "ws" + strings.TrimPrefix(srv.URL, "http") + "/ws"
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	ctx, cancel := context.WithTimeout(t.Context(), 2*time.Second)
 	defer cancel()
 	//nolint:bodyclose // library contract: Body is nil on success
 	ws, _, err := websocket.Dial(ctx, wsURL, nil)
@@ -210,7 +210,7 @@ func serverSideConn(t *testing.T) (*websocket.Conn, func()) {
 		}
 	}))
 	wsURL := "ws" + strings.TrimPrefix(srv.URL, "http") + "/"
-	dctx, dcancel := context.WithTimeout(context.Background(), 5*time.Second)
+	dctx, dcancel := context.WithTimeout(t.Context(), 5*time.Second)
 	//nolint:bodyclose // coder/websocket Dial nils resp.Body on success
 	client, _, err := websocket.Dial(dctx, wsURL, nil)
 	dcancel()
@@ -406,7 +406,7 @@ func TestHandleControl_pingElicitsPong(t *testing.T) {
 	// scroll frames race the pong. The only frame the server sends is the pong.
 	sendControl(t, ws, map[string]any{"type": ctlTypePing})
 
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	ctx, cancel := context.WithTimeout(t.Context(), 2*time.Second)
 	defer cancel()
 	for {
 		_, msg, err := ws.Read(ctx)
@@ -804,7 +804,7 @@ func dualConn(t *testing.T) (server, client *websocket.Conn, cleanup func()) {
 		}
 	}))
 	wsURL := "ws" + strings.TrimPrefix(srv.URL, "http") + "/"
-	dctx, dcancel := context.WithTimeout(context.Background(), 5*time.Second)
+	dctx, dcancel := context.WithTimeout(t.Context(), 5*time.Second)
 	//nolint:bodyclose // coder/websocket Dial nils resp.Body on success
 	client, _, err := websocket.Dial(dctx, wsURL, nil)
 	dcancel()
@@ -835,7 +835,7 @@ func readServerFrames(t *testing.T, client *websocket.Conn, idle time.Duration) 
 	t.Helper()
 	var frames [][]byte
 	for {
-		ctx, cancel := context.WithTimeout(context.Background(), idle)
+		ctx, cancel := context.WithTimeout(t.Context(), idle)
 		_, msg, err := client.Read(ctx)
 		cancel()
 		if err != nil {
@@ -1564,7 +1564,7 @@ func TestDispatchFrame_suppressesRedundantAckSweep(t *testing.T) {
 // sendText writes a raw TEXT WebSocket message (the v4 control transport).
 func sendText(t *testing.T, ws *websocket.Conn, payload []byte) {
 	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	ctx, cancel := context.WithTimeout(t.Context(), time.Second)
 	defer cancel()
 	if err := ws.Write(ctx, websocket.MessageText, payload); err != nil {
 		t.Fatalf("text write: %v", err)
@@ -1586,7 +1586,7 @@ func bootstrapResume(t *testing.T, ws *websocket.Conn, sessionID string) {
 // returning the close status (or failing on timeout / non-close errors).
 func readUntilClose(t *testing.T, ws *websocket.Conn, timeout time.Duration) websocket.StatusCode {
 	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	ctx, cancel := context.WithTimeout(t.Context(), timeout)
 	defer cancel()
 	for {
 		_, _, err := ws.Read(ctx)
@@ -1618,7 +1618,7 @@ func TestTypedFraming_latchSequence(t *testing.T) {
 	defer srv.Close()
 
 	wsURL := "ws" + strings.TrimPrefix(srv.URL, "http") + "/ws"
-	dctx, dcancel := context.WithTimeout(context.Background(), 5*time.Second)
+	dctx, dcancel := context.WithTimeout(t.Context(), 5*time.Second)
 	//nolint:bodyclose // library contract: Body is nil on success
 	ws, _, err := websocket.Dial(dctx, wsURL, nil)
 	dcancel()
@@ -1636,7 +1636,7 @@ func TestTypedFraming_latchSequence(t *testing.T) {
 
 	// The F1 payload: valid v3 control bytes sent as post-latch binary input.
 	payload := append([]byte{0x00}, []byte(`{"type":"ping"}`)...)
-	wctx, wcancel := context.WithTimeout(context.Background(), time.Second)
+	wctx, wcancel := context.WithTimeout(t.Context(), time.Second)
 	defer wcancel()
 	if err := ws.Write(wctx, websocket.MessageBinary, payload); err != nil {
 		t.Fatalf("binary write: %v", err)
@@ -1645,7 +1645,7 @@ func TestTypedFraming_latchSequence(t *testing.T) {
 	// Drain frames until cat's echo carries the JSON — and assert no pong
 	// (wireMsgPong) ever arrives: the decisive negative that the payload was
 	// NOT consumed as a control ping.
-	rctx, rcancel := context.WithTimeout(context.Background(), 2*time.Second)
+	rctx, rcancel := context.WithTimeout(t.Context(), 2*time.Second)
 	defer rcancel()
 	var echoed bytes.Buffer
 	for !bytes.Contains(echoed.Bytes(), []byte(`{"type":"ping"}`)) {
@@ -1707,7 +1707,7 @@ func TestTypedFraming_textSizeLimits(t *testing.T) {
 		sendText(t, ws, msg) // latches; a close here would fail the next step
 		// Prove the connection survived and latched: post-latch binary input
 		// with a leading NUL reaches the PTY.
-		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		ctx, cancel := context.WithTimeout(t.Context(), time.Second)
 		defer cancel()
 		if err := ws.Write(ctx, websocket.MessageBinary, []byte{0x00, 'O', 'K', '9'}); err != nil {
 			t.Fatalf("post-limit write: %v", err)
@@ -1775,7 +1775,7 @@ func TestTypedFraming_preLatchKeepsV3Semantics(t *testing.T) {
 	sendControl(t, ws, map[string]any{"type": "resize", "cols": 90, "rows": 30})
 
 	// P2 parse-fallback: 0x00-leading non-JSON binary is INPUT, delivered whole.
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	ctx, cancel := context.WithTimeout(t.Context(), time.Second)
 	defer cancel()
 	if err := ws.Write(ctx, websocket.MessageBinary, []byte{0x00, 'Z', 'Q', '7'}); err != nil {
 		t.Fatalf("fallback write: %v", err)
@@ -1795,7 +1795,7 @@ func TestParseFallback_countsBytes(t *testing.T) {
 	defer srv.Close()
 
 	wsURL := "ws" + strings.TrimPrefix(srv.URL, "http") + "/ws"
-	dctx, dcancel := context.WithTimeout(context.Background(), 5*time.Second)
+	dctx, dcancel := context.WithTimeout(t.Context(), 5*time.Second)
 	//nolint:bodyclose // library contract: Body is nil on success
 	ws, _, err := websocket.Dial(dctx, wsURL, nil)
 	dcancel()
@@ -1807,7 +1807,7 @@ func TestParseFallback_countsBytes(t *testing.T) {
 	sendControl(t, ws, map[string]any{"type": "resize", "cols": 100, "rows": 40})
 	bootstrapResume(t, ws, "sid-count")
 
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	ctx, cancel := context.WithTimeout(t.Context(), time.Second)
 	defer cancel()
 	// A solitary NUL and a NUL-leading frame — both fallback input.
 	if err := ws.Write(ctx, websocket.MessageBinary, []byte{0x00}); err != nil {
@@ -1862,7 +1862,7 @@ func TestWireCompatibility_declaredClientVersionPolicy(t *testing.T) {
 				"protocolVersion": tc.version,
 			})
 
-			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+			ctx, cancel := context.WithTimeout(t.Context(), 2*time.Second)
 			defer cancel()
 			if tc.wantRejected {
 				for {

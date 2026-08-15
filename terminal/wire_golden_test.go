@@ -6,7 +6,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/cplieger/web-terminal-engine/v3/vt"
+	"github.com/cplieger/web-terminal-engine/v4/vt"
 )
 
 // The golden frames are the cross-language wire contract. This Go encoder MUST

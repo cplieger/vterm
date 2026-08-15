@@ -16,7 +16,7 @@ import (
 	"os"
 	"time"
 
-	"github.com/cplieger/web-terminal-engine/v3/terminal"
+	"github.com/cplieger/web-terminal-engine/v4/terminal"
 )
 
 const harnessPage = `<!doctype html><html><head><meta charset="utf-8"></head>

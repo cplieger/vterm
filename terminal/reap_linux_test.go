@@ -302,7 +302,7 @@ func TestReapMarkerSurvivesADuplicateKeyFromWithEnv(t *testing.T) {
 	if err := h.ensureStarted(80, 24); err != nil {
 		t.Fatalf("ensureStarted: %v", err)
 	}
-	defer h.Shutdown()
+	defer h.Close()
 
 	if h.reap == nil {
 		t.Fatal("no reap domain was minted for a session with reaping on by default")
@@ -334,7 +334,7 @@ func TestReapMarkerSurvivesAnInheritedMarker(t *testing.T) {
 	if err := h.ensureStarted(80, 24); err != nil {
 		t.Fatalf("ensureStarted: %v", err)
 	}
-	defer h.Shutdown()
+	defer h.Close()
 
 	if h.reap == nil {
 		t.Fatal("no reap domain was minted for a session with reaping on by default")

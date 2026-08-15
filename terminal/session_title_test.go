@@ -63,7 +63,7 @@ func TestEffectiveTitlePrecedence(t *testing.T) {
 // title instead of replacing it.
 func TestPinnedTitleOutranksAutomaticSources(t *testing.T) {
 	m := NewSessionManager(catFactory)
-	t.Cleanup(m.Shutdown)
+	t.Cleanup(func() { shutdownManager(t, m) })
 
 	id, err := m.Create()
 	if err != nil {
@@ -122,7 +122,7 @@ func TestPinnedTitleOutranksAutomaticSources(t *testing.T) {
 // basename is "cat".
 func TestAutoTitleSeededFromCommand(t *testing.T) {
 	m := NewSessionManager(catFactory)
-	t.Cleanup(m.Shutdown)
+	t.Cleanup(func() { shutdownManager(t, m) })
 	m.stopSweep() // no sweep has run, so only the Create-time seed can answer
 
 	id, err := m.Create()
@@ -143,7 +143,7 @@ func TestAutoTitleSeededFromCommand(t *testing.T) {
 // bypass the confirmation window and disagree with the live status stream.
 func TestListReadsConfirmedAutoTitle(t *testing.T) {
 	m := NewSessionManager(catFactory)
-	t.Cleanup(m.Shutdown)
+	t.Cleanup(func() { shutdownManager(t, m) })
 	m.stopSweep()
 
 	id, err := m.Create()
@@ -169,7 +169,7 @@ func TestListReadsConfirmedAutoTitle(t *testing.T) {
 // directory name), and the shell regaining the foreground rests immediately.
 func TestConfirmAutoTitleWindow(t *testing.T) {
 	m := NewSessionManager(catFactory)
-	t.Cleanup(m.Shutdown)
+	t.Cleanup(func() { shutdownManager(t, m) })
 
 	// newCase builds an isolated session + tracker; confirmAutoTitle needs no
 	// manager lock here because nothing else touches these.
@@ -266,7 +266,7 @@ func TestConfirmAutoTitleWindow(t *testing.T) {
 // both 404 on an unknown id.
 func TestSessionManagerPinnedTitleREST(t *testing.T) {
 	m := NewSessionManager(catFactory)
-	t.Cleanup(m.Shutdown)
+	t.Cleanup(func() { shutdownManager(t, m) })
 	srv := httptest.NewServer(m.RESTHandler())
 	t.Cleanup(srv.Close)
 
@@ -363,7 +363,7 @@ func TestSessionManagerPinnedTitleREST(t *testing.T) {
 // another until some unrelated change happened to push an event.
 func TestDiffStatusesEmitsPinnedTitleChange(t *testing.T) {
 	m := NewSessionManager(catFactory)
-	t.Cleanup(m.Shutdown)
+	t.Cleanup(func() { shutdownManager(t, m) })
 	m.stopSweep()
 
 	id, err := m.Create()

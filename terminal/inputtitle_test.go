@@ -299,7 +299,7 @@ func TestInputTitleReachesTheWireOverWS(t *testing.T) {
 	srv := httptest.NewServer(mux)
 	t.Cleanup(func() {
 		srv.Close()
-		h.Shutdown()
+		h.Close()
 	})
 
 	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
@@ -338,7 +338,7 @@ func TestInputTitleReachesTheWireOverWS(t *testing.T) {
 // typed.
 func TestInputTitleOffByDefault(t *testing.T) {
 	h := NewHandler([]string{"/bin/cat"}, WithLogger(nil))
-	t.Cleanup(h.Shutdown)
+	t.Cleanup(h.Close)
 	h.observeInputTitle([]byte("refactor the auth module\r"))
 	if _, derived := h.titles(); derived != "" {
 		t.Fatalf("derived title = %q with WithInputTitle unset, want empty", derived)
@@ -353,7 +353,7 @@ func TestInputTitleInSessionPrecedence(t *testing.T) {
 	m := NewSessionManager(func(string) *Handler {
 		return NewHandler([]string{"/bin/cat"}, WithLogger(nil), WithInputTitle())
 	})
-	t.Cleanup(m.Shutdown)
+	t.Cleanup(func() { shutdownManager(t, m) })
 	m.stopSweep()
 
 	id, err := m.Create()
@@ -407,7 +407,7 @@ func TestInputTitlePushedOnTheStatusStream(t *testing.T) {
 	m := NewSessionManager(func(string) *Handler {
 		return NewHandler([]string{"/bin/cat"}, WithLogger(nil), WithInputTitle())
 	})
-	t.Cleanup(m.Shutdown)
+	t.Cleanup(func() { shutdownManager(t, m) })
 	m.stopSweep()
 
 	id, err := m.Create()

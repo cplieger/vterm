@@ -32,7 +32,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/cplieger/web-terminal-engine/v3/vt"
+	"github.com/cplieger/web-terminal-engine/v4/vt"
 	"github.com/creack/pty"
 )
 

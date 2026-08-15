@@ -208,7 +208,7 @@ func TestAutoTitleLadderThroughManager(t *testing.T) {
 	m := NewSessionManager(func(string) *Handler {
 		return NewHandler([]string{"/bin/sh"}, WithLogger(nil))
 	})
-	t.Cleanup(m.Shutdown)
+	t.Cleanup(func() { shutdownManager(t, m) })
 
 	id, err := m.Create()
 	if err != nil {

@@ -15,7 +15,7 @@ import (
 	"time"
 
 	"github.com/coder/websocket"
-	"github.com/cplieger/web-terminal-engine/v3/vt"
+	"github.com/cplieger/web-terminal-engine/v4/vt"
 )
 
 // dialHandler stands up the handler on an httptest server and opens
@@ -234,24 +234,24 @@ func serverSideConn(t *testing.T) (*websocket.Conn, func()) {
 	return server, cleanup
 }
 
-// TestShutdown_callsCancel verifies Shutdown invokes the stored cancel func
+// TestClose_callsCancel verifies Close invokes the stored cancel func
 // when the handler has been started.
-func TestShutdown_callsCancel(t *testing.T) {
+func TestClose_callsCancel(t *testing.T) {
 	h := NewHandler([]string{"/bin/sh"})
 	called := false
 	h.cancel = func() { called = true }
-	h.started.Store(true) // Shutdown returns early unless started
+	h.started.Store(true) // Close returns early unless started
 
-	h.Shutdown()
+	h.Close()
 
 	if !called {
-		t.Errorf("Shutdown did not invoke h.cancel; want it called")
+		t.Errorf("Close() did not invoke h.cancel; want it called")
 	}
 }
 
-// TestShutdown_closesPtmx verifies Shutdown closes the PTY file. The close is
+// TestClose_closesPtmx verifies Close closes the PTY file. The close is
 // observed by a second Close returning an already-closed error.
-func TestShutdown_closesPtmx(t *testing.T) {
+func TestClose_closesPtmx(t *testing.T) {
 	h := NewHandler([]string{"/bin/sh"})
 	f, err := os.CreateTemp(t.TempDir(), "ptmx")
 	if err != nil {
@@ -261,10 +261,10 @@ func TestShutdown_closesPtmx(t *testing.T) {
 	h.cancel = func() {} // non-nil no-op so the cancel branch never panics
 	h.started.Store(true)
 
-	h.Shutdown()
+	h.Close()
 
 	if err := h.ptmx.Close(); err == nil {
-		t.Errorf("re-Close after Shutdown returned nil; Shutdown did not close ptmx")
+		t.Errorf("re-Close after h.Close() returned nil; Close did not close ptmx")
 	}
 }
 
@@ -275,7 +275,7 @@ func TestEnsureStarted_colsNotDefaultedWhenPositive(t *testing.T) {
 	if err := h.ensureStarted(1, 24); err != nil {
 		t.Fatalf("ensureStarted(1, 24): %v", err)
 	}
-	defer h.Shutdown()
+	defer h.Close()
 
 	h.mu.Lock()
 	w := h.screen.Width
@@ -292,7 +292,7 @@ func TestEnsureStarted_rowsNotDefaultedWhenPositive(t *testing.T) {
 	if err := h.ensureStarted(24, 1); err != nil {
 		t.Fatalf("ensureStarted(24, 1): %v", err)
 	}
-	defer h.Shutdown()
+	defer h.Close()
 
 	h.mu.Lock()
 	ht := h.screen.Height
@@ -307,7 +307,7 @@ func TestEnsureStarted_rowsNotDefaultedWhenPositive(t *testing.T) {
 // clients.
 func TestBuildFrame_appendsScrollLinesToRing(t *testing.T) {
 	h := NewHandler([]string{"/bin/cat"}, WithLogger(nil))
-	defer h.Shutdown()
+	defer h.Close()
 
 	// Tiny screen + many newlines forces lines to scroll off into the drain.
 	h.screen = vt.New(3, 20)
@@ -335,7 +335,7 @@ func TestBuildFrame_appendsScrollLinesToRing(t *testing.T) {
 // message starts the child process and sizes the screen.
 func TestHandleControl_resizeStartsProcess(t *testing.T) {
 	h := NewHandler([]string{"/bin/cat"}, WithLogger(nil))
-	defer h.Shutdown()
+	defer h.Close()
 
 	payload := mustJSON(t, controlMsg{Type: ctlTypeResize, Cols: 100, Rows: 40})
 	h.handleControl(nil, &clientState{}, payload, nil)
@@ -355,7 +355,7 @@ func TestHandleControl_resizeStartsProcess(t *testing.T) {
 // type is neither resume nor resize is ignored and does not start the process.
 func TestHandleControl_unknownTypeDoesNotStart(t *testing.T) {
 	h := NewHandler([]string{"/bin/cat"}, WithLogger(nil))
-	defer h.Shutdown()
+	defer h.Close()
 
 	payload := mustJSON(t, controlMsg{Type: "bogus"})
 	h.handleControl(nil, &clientState{}, payload, nil)
@@ -370,7 +370,7 @@ func TestHandleControl_unknownTypeDoesNotStart(t *testing.T) {
 // the session on the client state.
 func TestHandleControl_resumeResolvesSession(t *testing.T) {
 	h := NewHandler([]string{"/bin/cat"}, WithLogger(nil))
-	defer h.Shutdown()
+	defer h.Close()
 	ws, cleanup := serverSideConn(t)
 	defer cleanup()
 
@@ -423,7 +423,7 @@ func TestHandleControl_pingElicitsPong(t *testing.T) {
 // minResizeCols is applied unchanged.
 func TestHandleResize_colsAboveMinNotFloored(t *testing.T) {
 	h := NewHandler([]string{"/bin/cat"}, WithLogger(nil))
-	defer h.Shutdown()
+	defer h.Close()
 
 	h.handleResize(&clientState{}, 100, 40)
 
@@ -439,7 +439,7 @@ func TestHandleResize_colsAboveMinNotFloored(t *testing.T) {
 // minResizeRows is applied unchanged.
 func TestHandleResize_rowsAboveMinNotFloored(t *testing.T) {
 	h := NewHandler([]string{"/bin/cat"}, WithLogger(nil))
-	defer h.Shutdown()
+	defer h.Close()
 
 	h.handleResize(&clientState{}, 100, 40)
 
@@ -459,7 +459,7 @@ func TestHandleResize_rowsAboveMinNotFloored(t *testing.T) {
 // different size must arm.
 func TestApplySize_sizeChangeArmsRedrawSettle(t *testing.T) {
 	h := NewHandler([]string{"/bin/cat"}, WithLogger(nil))
-	defer h.Shutdown()
+	defer h.Close()
 
 	h.handleResize(&clientState{}, 100, 40)
 	h.mu.Lock()
@@ -500,7 +500,7 @@ func TestApplySize_sizeChangeArmsRedrawSettle(t *testing.T) {
 // hold must survive the ESU.
 func TestRedrawSettle_ESUDoesNotRelease(t *testing.T) {
 	h := NewHandler([]string{"/bin/cat"}, WithLogger(nil))
-	defer h.Shutdown()
+	defer h.Close()
 
 	h.handleResize(&clientState{}, 100, 40)
 	h.handleResize(&clientState{}, 90, 30) // size change: arms the settle hold
@@ -526,7 +526,7 @@ func TestRedrawSettle_ESUDoesNotRelease(t *testing.T) {
 // redrawSettleQuiet releases (and disarms) the hold.
 func TestRedrawSettle_releasesOnQuietAndExtendsOnOutput(t *testing.T) {
 	h := NewHandler([]string{"/bin/cat"}, WithLogger(nil))
-	defer h.Shutdown()
+	defer h.Close()
 
 	h.handleResize(&clientState{}, 100, 40)
 	h.handleResize(&clientState{}, 90, 30)
@@ -566,7 +566,7 @@ func TestRedrawSettle_releasesOnQuietAndExtendsOnOutput(t *testing.T) {
 // the cap, never until the stream pauses.
 func TestRedrawSettle_capBoundsContinuousOutput(t *testing.T) {
 	h := NewHandler([]string{"/bin/cat"}, WithLogger(nil))
-	defer h.Shutdown()
+	defer h.Close()
 
 	now := time.Now()
 	h.mu.Lock()
@@ -646,7 +646,7 @@ func TestRedrawSettle_buildFrameHeldThenSettles(t *testing.T) {
 // flaky under load.
 func TestRedrawSettle_capLapseCoalescesThenDisarms(t *testing.T) {
 	h := NewHandler([]string{"/bin/true"}, WithLogger(nil))
-	defer h.Shutdown()
+	defer h.Close()
 
 	t0 := time.Now()
 	h.mu.Lock()
@@ -697,7 +697,7 @@ func TestRedrawSettle_capLapseCoalescesThenDisarms(t *testing.T) {
 // requesting one would cost every settled resize an extra whole-screen frame.
 func TestRedrawSettle_quietReleaseDoesNotCoalesce(t *testing.T) {
 	h := NewHandler([]string{"/bin/true"}, WithLogger(nil))
-	defer h.Shutdown()
+	defer h.Close()
 
 	t0 := time.Now()
 	h.mu.Lock()
@@ -720,7 +720,7 @@ func TestRedrawSettle_quietReleaseDoesNotCoalesce(t *testing.T) {
 // if an earlier one spent it.
 func TestRedrawSettle_freshArmRestoresBudget(t *testing.T) {
 	h := NewHandler([]string{"/bin/true"}, WithLogger(nil))
-	defer h.Shutdown()
+	defer h.Close()
 
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -1162,7 +1162,7 @@ func TestHandleResume_replayChunksCarryAscendingAbsoluteIndices(t *testing.T) {
 // `rows < minResizeRows` floor branches were unexercised.
 func TestHandleResize_belowMinimumIsFlooredUp(t *testing.T) {
 	h := NewHandler([]string{"/bin/cat"}, WithLogger(nil))
-	defer h.Shutdown()
+	defer h.Close()
 
 	h.handleResize(&clientState{}, 1, 1)
 
@@ -1195,7 +1195,7 @@ func TestEnsureStarted_reaperInvokesOnProcessExitWithStatus(t *testing.T) {
 		WithLogger(nil),
 		WithOnProcessExit(func(err error) { exitErr <- err }),
 	)
-	defer h.Shutdown()
+	defer h.Close()
 
 	if err := h.ensureStarted(80, 24); err != nil {
 		t.Fatalf("ensureStarted: %v", err)
@@ -1361,7 +1361,7 @@ func TestHandleResume_frameOrderByAltState(t *testing.T) {
 // wrapper over it, exercised via maybeHealSize in the test below).
 func TestHealSize_growsSurvivorAfterBindingClientLeaves(t *testing.T) {
 	h := NewHandler([]string{"/bin/cat"}, WithLogger(nil))
-	defer h.Shutdown()
+	defer h.Close()
 
 	// Real (throwaway-server) conns, not zero-value fakes: the handler is
 	// started, so its flush scheduler is live and may dispatch to every
@@ -1404,7 +1404,7 @@ func TestHealSize_growsSurvivorAfterBindingClientLeaves(t *testing.T) {
 // holds the current size).
 func TestMaybeHealSize_onlyArmsForTheBindingClient(t *testing.T) {
 	h := NewHandler([]string{"/bin/cat"}, WithLogger(nil))
-	defer h.Shutdown()
+	defer h.Close()
 
 	// No registered client: the started handler's flush scheduler dispatches
 	// to every registered conn, and a write to a zero-value websocket.Conn

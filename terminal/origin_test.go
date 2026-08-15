@@ -261,7 +261,7 @@ func TestOriginPolicy_handlerSocket(t *testing.T) {
 		t.Fatalf("setup: invalid = %v", invalid)
 	}
 	h := NewHandler([]string{"/bin/cat"}, WithOriginPolicy(p), WithLogger(nil))
-	defer h.Shutdown()
+	defer h.Close()
 
 	mux := http.NewServeMux()
 	mux.Handle("/ws", h)
@@ -300,7 +300,7 @@ func TestOriginPolicy_managerUnknownSessionSocket(t *testing.T) {
 	}
 	factory := func(string) *Handler { return NewHandler([]string{"/bin/cat"}, WithLogger(nil)) }
 	m := NewSessionManager(factory, WithManagerOriginPolicy(p), WithManagerLogger(nil))
-	defer m.Shutdown()
+	defer shutdownManager(t, m)
 
 	mux := http.NewServeMux()
 	mux.Handle("/ws", m.WebSocketHandler())
@@ -340,10 +340,10 @@ func TestOriginPolicy_managerUnknownSessionSocket(t *testing.T) {
 // both sockets even though no policy was ever built.
 func TestOriginPolicy_defaultIsSameOriginOnly(t *testing.T) {
 	h := NewHandler([]string{"/bin/cat"}, WithLogger(nil))
-	defer h.Shutdown()
+	defer h.Close()
 	factory := func(string) *Handler { return NewHandler([]string{"/bin/cat"}, WithLogger(nil)) }
 	m := NewSessionManager(factory, WithManagerLogger(nil))
-	defer m.Shutdown()
+	defer shutdownManager(t, m)
 
 	mux := http.NewServeMux()
 	mux.Handle("/ws", h)
@@ -429,7 +429,7 @@ func TestAcceptWSRefusalIsLogSafe(t *testing.T) {
 	var buf bytes.Buffer
 	h := NewHandler([]string{"/bin/cat"},
 		WithLogger(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn}))))
-	defer h.Shutdown()
+	defer h.Close()
 
 	mux := http.NewServeMux()
 	mux.Handle("/ws", h)

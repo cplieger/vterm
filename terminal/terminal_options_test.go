@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/cplieger/web-terminal-engine/v3/vt"
+	"github.com/cplieger/web-terminal-engine/v4/vt"
 )
 
 // Functional-options API: verify NewHandler applies defaults, each WithX
@@ -235,7 +235,7 @@ func TestNewHandler_ENVInjection(t *testing.T) {
 	if err := h.ensureStarted(80, 24); err != nil {
 		t.Fatalf("ensureStarted: %v", err)
 	}
-	defer h.Shutdown()
+	defer h.Close()
 
 	var hasTerm, hasColorterm, hasTermProgram, hasTermProgramVersion bool
 	for _, e := range h.cmd.Env {
@@ -274,7 +274,7 @@ func TestNewHandler_ENVCustomOverride(t *testing.T) {
 	if err := h.ensureStarted(80, 24); err != nil {
 		t.Fatalf("ensureStarted: %v", err)
 	}
-	defer h.Shutdown()
+	defer h.Close()
 
 	lastTerm := ""
 	for _, e := range h.cmd.Env {
@@ -332,7 +332,7 @@ func TestNewHandler_NilLoggerDoesNotPanic(t *testing.T) {
 	if err := h.ensureStarted(80, 24); err != nil {
 		t.Fatalf("ensureStarted: %v", err)
 	}
-	defer h.Shutdown()
+	defer h.Close()
 }
 
 // commandCaptureHandler records every slog record for command-attr assertions.
@@ -360,7 +360,7 @@ func startAndCollectRecords(t *testing.T, opts ...Option) []slog.Record {
 	if err := h.ensureStarted(24, 80); err != nil {
 		t.Fatalf("ensureStarted: %v", err)
 	}
-	defer h.Shutdown()
+	defer h.Close()
 	return records
 }
 

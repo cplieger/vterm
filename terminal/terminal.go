@@ -36,7 +36,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/coder/websocket"
-	"github.com/cplieger/web-terminal-engine/v3/vt"
+	"github.com/cplieger/web-terminal-engine/v4/vt"
 	"github.com/creack/pty"
 )
 
@@ -648,7 +648,7 @@ type Handler struct {
 	// in ensureStarted AFTER this write: goroutine creation is synchronized before
 	// the goroutine runs. Holding h.mu at the write is not what makes those reads
 	// safe, since neither reader takes it. Any NEW reader outside those two
-	// goroutines needs h.mu or an atomic, including anything added to Shutdown.
+	// goroutines needs h.mu or an atomic, including anything added to Close.
 	// (It is also reassigned to nil on the start-failure path below.)
 	contain *sessionCgroup
 	// reap is this session's marker reap domain, nil when the consumer opted
@@ -656,6 +656,18 @@ type Handler struct {
 	// before the monitor goroutine is created, read only by that goroutine.
 	reap       *sessionReap
 	procExitCh chan struct{}
+	// done closes once EVERY goroutine this handler started has returned: the PTY
+	// reader, the flush scheduler, the cost sampler, and the process monitor with
+	// all of its teardown (child reaped, containment ended, clients notified, the
+	// marker domain swept). Nil until ensureStarted runs, which is what makes
+	// wait() a no-op on a handler that never spawned anything.
+	//
+	// It is derived from h.wg rather than closed by hand, so it carries ONE
+	// meaning. Closing it as the monitor's own last act would have reported
+	// "teardown finished" while the reader and flush loops were still unwinding,
+	// which is a different claim and the one a leak test does not want. Guarded
+	// by h.mu.
+	done chan struct{}
 	// dirty is the flush scheduler's wakeup: 1-buffered so any number of
 	// markDirty pokes coalesce into one pending signal. flushLoop sleeps on
 	// it when idle — no ticker, no periodic wakeups (P4).
@@ -679,14 +691,19 @@ type Handler struct {
 	cfg          handlerConfig
 	bootEpoch    int64
 	lastActivity atomic.Int64
-	mu           sync.Mutex
-	started      atomic.Bool
+	// wg counts every goroutine ensureStarted launches, so the handler can answer
+	// "is anything of mine still running" instead of leaving the caller to assume
+	// it from the process having exited. Added to only from ensureStarted, which
+	// holds h.mu, and never after done is armed.
+	wg      sync.WaitGroup
+	mu      sync.Mutex
+	started atomic.Bool
 	// shutdownRequested latches true when the SERVER asked this session to end
-	// (Shutdown, which is also what SessionManager.Close and the idle reaper
-	// call). It is the input that keeps a server-initiated teardown out of the
-	// crashed classification — see crashedExit. Atomic, not h.mu-guarded: the
-	// process monitor reads it after cmd.Wait() returns, and Shutdown holds h.mu
-	// while it stores.
+	// (Close, which is also what SessionManager.Close, the idle reaper and
+	// Shutdown reach it through). It is the input that keeps a server-initiated
+	// teardown out of the crashed classification — see crashedExit. Atomic, not
+	// h.mu-guarded: the process monitor reads it after cmd.Wait() returns, and
+	// Close holds h.mu while it stores.
 	shutdownRequested atomic.Bool
 	// redrawRearms counts how many times the redraw-settle cap has lapsed
 	// mid-redraw and coalesced instead of releasing, bounding the coalescing at
@@ -771,14 +788,26 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	h.handleWS(w, r)
 }
 
-// Shutdown cancels the readLoop and flushLoop goroutines and closes
-// the PTY. Safe to call even if the process was never started.
+// Close ends the session and returns immediately, without waiting for the
+// teardown it starts. Safe to call even if the process was never started, and
+// safe to call more than once.
+//
+// It kills the child (SIGKILL, via the cancelled context) and closes the PTY.
+// Everything after that runs on the process monitor's goroutine and outlives
+// this call: reaping the child, ending the containment cgroup, sweeping the
+// marker domain for escapees, and telling attached clients the process is gone.
+// Use Shutdown when the caller must know that work finished.
+//
+// This is the form for a caller that must not block: SessionManager.Close serves
+// an HTTP DELETE, and the idle reaper runs on a ticker. Neither can afford the
+// several seconds a teardown may legitimately take, and neither needs to,
+// because the server keeps running and the monitor completes on its own.
 //
 // It latches "the server ended this session", which the exit classification
 // reads: a child the server kills (SIGKILL via the cancelled context, or SIGHUP
 // from the PTY closing) exited because it was told to, and reporting that as a
 // crash would paint every routine restart red. See crashedExit.
-func (h *Handler) Shutdown() {
+func (h *Handler) Close() {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	// Stored before cancel() so the store is ordered ahead of the kill it
@@ -793,6 +822,69 @@ func (h *Handler) Shutdown() {
 	}
 	if h.ptmx != nil {
 		_ = h.ptmx.Close() // best-effort during shutdown
+	}
+}
+
+// Shutdown ends the session and waits for its teardown to finish, bounded by
+// ctx. It returns ctx.Err() if the budget expires first and nil once every
+// goroutine the handler started has returned.
+//
+// This is the form for a caller that is about to stop the process. Close alone
+// leaves the cgroup teardown, the /proc sweep and the client notification in
+// flight, and a process that exits underneath them loses whatever had not
+// finished. Under a container that is absorbed by the runtime tearing the
+// container down; outside one, or across an in-process restart, it is not.
+//
+// The wait is worth more than its own success: an expiry is the only signal that
+// a teardown exceeded its budget, which is otherwise silent. Log it. There is no
+// useful branch to take, because the caller is stopping either way.
+//
+// Timing to size ctx against: cmd.WaitDelay bounds the child's reap at 5s, and
+// the containment and marker-domain ladders each spend up to three containGrace
+// windows plus a /proc scan. A grace shorter than that is a deliberate choice to
+// hear about the overrun rather than to wait it out.
+func (h *Handler) Shutdown(ctx context.Context) error {
+	h.Close()
+	return h.wait(ctx)
+}
+
+// wait blocks until every goroutine ensureStarted launched has returned, or ctx
+// expires. Returns nil for a handler that never started one.
+//
+// Unexported because the only caller that needs the halves apart is
+// SessionManager, which must signal all of its sessions before waiting on any of
+// them so their teardown windows overlap instead of summing. A consumer holding
+// one handler wants Shutdown.
+func (h *Handler) wait(ctx context.Context) error {
+	h.mu.Lock()
+	done := h.done
+	h.mu.Unlock()
+	if done == nil {
+		return nil
+	}
+	return waitClosed(ctx, done)
+}
+
+// waitClosed blocks until done closes or ctx expires, preferring done when both
+// are already ready.
+//
+// The default case is load-bearing, not an optimization. A bare two-case select
+// chooses UNIFORMLY AT RANDOM among ready cases, so a teardown that had already
+// finished would report an expiry roughly half the time whenever the caller's
+// budget had also run out — which is exactly the shape of a second Shutdown on a
+// fatal path, and a wrong answer that only shows up in half the runs is worse
+// than a consistently wrong one.
+func waitClosed(ctx context.Context, done <-chan struct{}) error {
+	select {
+	case <-done:
+		return nil
+	default:
+	}
+	select {
+	case <-done:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
 	}
 }
 
@@ -860,15 +952,15 @@ func (h *Handler) exitOutcome() (exited, crashed bool) {
 // The rule, and why each case falls where it does:
 //
 //   - werr == nil — exit status 0. Clean, never a crash.
-//   - serverInitiated — the SERVER ended this session (Shutdown, and therefore
-//     SessionManager.Close and the idle reaper too). The child is killed by the
+//   - serverInitiated — the SERVER ended this session (Close, and therefore
+//     Shutdown, SessionManager.Close and the idle reaper too). The child is killed by the
 //     cancelled context (SIGKILL) or hung up by the PTY closing, so its wait
 //     status is signalled through no fault of its own. Not a crash: classifying
 //     it as one would turn every routine server shutdown, every closed tab and
 //     every reap into a fleet of red dots — the single worst failure mode this
 //     boundary has, so the server's own intent outranks the wait status.
 //   - SIGHUP — the controlling terminal went away. The only thing that closes
-//     this session's PTY master is the engine itself (Shutdown, or the monitor
+//     this session's PTY master is the engine itself (Close, or the monitor
 //     after the child is already reaped), so a hangup means "the session ended",
 //     not "the program failed". Excluded independently of serverInitiated
 //     because the PTY close and the flag are set by the same teardown but
@@ -1105,7 +1197,7 @@ func (h *Handler) ensureStarted(cols, rows int) error {
 	ctx, cancel := context.WithCancel(context.Background())
 	h.cancel = cancel
 	cmd := exec.CommandContext(ctx, h.command[0], h.command[1:]...) // #nosec G204
-	// Force-kill a child that ignores the PTY-close SIGHUP: Shutdown/reap cancels ctx
+	// Force-kill a child that ignores the PTY-close SIGHUP: Close/reap cancels ctx
 	// (default Cancel = SIGKILL) and WaitDelay bounds the grace so cmd.Wait cannot
 	// block the monitor goroutine forever.
 	cmd.WaitDelay = 5 * time.Second
@@ -1148,9 +1240,9 @@ func (h *Handler) ensureStarted(cols, rows int) error {
 		"pid", pid, "command", loggedCommand, "cols", cols, "rows", rows)
 
 	// PTY reader goroutine — feeds VT screen and notifies clients.
-	go h.readLoop(ctx)
+	h.wg.Go(func() { h.readLoop(ctx) })
 	// Flush scheduler — sends screen updates to all clients.
-	go h.flushLoop(ctx)
+	h.wg.Go(func() { h.flushLoop(ctx) })
 	// Periodic per-session cost line, when the consumer asked for one. Stopped
 	// explicitly by the monitor before teardown, not just by ctx.
 	stopSampler := h.startCostSampler(ctx)
@@ -1158,7 +1250,7 @@ func (h *Handler) ensureStarted(cols, rows int) error {
 	// zombie), fires the documented onProcessExit callback with the
 	// exit status, and cancels the read/flush loops on natural child
 	// exit so the scheduler goroutine does not leak after the process dies.
-	go func() {
+	h.wg.Go(func() {
 		werr := cmd.Wait() // reap; werr carries the exit status
 		// os/exec is done with this pid, so the zombie sweep may stop excluding
 		// it. One mutex, no allocation, and ahead of anything that can block.
@@ -1185,8 +1277,8 @@ func (h *Handler) ensureStarted(cols, rows int) error {
 			close(h.procExitCh)
 			cancel() // stop readLoop/flushLoop on child exit
 			// Free the PTY master fd immediately on natural exit; otherwise an
-			// exited-but-undeleted session holds it until Shutdown/reap (reaper
-			// is off by default). A later Shutdown's second Close is a no-op.
+			// exited-but-undeleted session holds it until Close/reap (reaper
+			// is off by default). A later Close's second ptmx.Close is a no-op.
 			h.mu.Lock()
 			if h.ptmx != nil {
 				_ = h.ptmx.Close() // #nosec G104 -- best-effort; child already exited
@@ -1196,8 +1288,8 @@ func (h *Handler) ensureStarted(cols, rows int) error {
 				h.cfg.logger.Error("terminal: onProcessExit callback panicked", "panic", r)
 			}
 		}()
-		// Containment teardown is owned HERE, and only here. Shutdown does not
-		// run it: Shutdown holds h.mu, and cancelling the context kills the head
+		// Containment teardown is owned HERE, and only here. Close does not
+		// run it: Close holds h.mu, and cancelling the context kills the head
 		// process, so this Wait returns and teardown happens on that path too.
 		// One owner plus the handle's own sync.Once means a crash-then-close
 		// sequence cannot double-run it.
@@ -1223,7 +1315,15 @@ func (h *Handler) ensureStarted(cols, rows int) error {
 		if h.cfg.onProcessExit != nil {
 			h.cfg.onProcessExit(werr)
 		}
-	}()
+	})
+	// Arm the completion signal. A bare `go` on purpose: this goroutine's whole
+	// job is to observe h.wg, so counting it in h.wg would deadlock. It holds no
+	// session state and ends with the four above.
+	h.done = make(chan struct{})
+	go func(done chan struct{}) {
+		h.wg.Wait()
+		close(done)
+	}(h.done)
 	return nil
 }
 

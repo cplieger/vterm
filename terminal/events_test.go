@@ -47,7 +47,7 @@ func handlerOf(t *testing.T, m *SessionManager, id string) *Handler {
 // output), then an active progress signal (the turn resuming) clears it.
 func TestComputeStatusLatchesInput(t *testing.T) {
 	m := NewSessionManager(catFactory, WithStatusClassifier(inputClassifier))
-	t.Cleanup(m.Shutdown)
+	t.Cleanup(func() { shutdownManager(t, m) })
 	id, err := m.Create()
 	if err != nil {
 		t.Fatalf("Create: %v", err)
@@ -76,7 +76,7 @@ func TestComputeStatusLatchesInput(t *testing.T) {
 // ("Response complete") replaces an input latch with the done state.
 func TestComputeStatusDoneSupersedesInput(t *testing.T) {
 	m := NewSessionManager(catFactory, WithStatusClassifier(inputClassifier))
-	t.Cleanup(m.Shutdown)
+	t.Cleanup(func() { shutdownManager(t, m) })
 	id, err := m.Create()
 	if err != nil {
 		t.Fatalf("Create: %v", err)
@@ -99,7 +99,7 @@ func TestComputeStatusDoneSupersedesInput(t *testing.T) {
 // nothing is latched.
 func TestComputeStatusWorkingFromProgress(t *testing.T) {
 	m := NewSessionManager(catFactory, WithStatusClassifier(inputClassifier))
-	t.Cleanup(m.Shutdown)
+	t.Cleanup(func() { shutdownManager(t, m) })
 	id, err := m.Create()
 	if err != nil {
 		t.Fatalf("Create: %v", err)
@@ -121,7 +121,7 @@ func TestComputeStatusWorkingFromProgress(t *testing.T) {
 // latches done through the quiet gap, and the next working progress clears it.
 func TestComputeStatusDoneLatchPersistsThenClears(t *testing.T) {
 	m := NewSessionManager(catFactory, WithStatusClassifier(inputClassifier))
-	t.Cleanup(m.Shutdown)
+	t.Cleanup(func() { shutdownManager(t, m) })
 	id, err := m.Create()
 	if err != nil {
 		t.Fatalf("Create: %v", err)
@@ -166,7 +166,7 @@ func TestComputeStatusFreshLatchOutranksActiveProgress(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			m := NewSessionManager(catFactory, WithStatusClassifier(inputClassifier))
-			t.Cleanup(m.Shutdown)
+			t.Cleanup(func() { shutdownManager(t, m) })
 			tr := &statusTracker{}
 
 			// Sweep N: the poisoned snapshot — fresh notification, progress
@@ -192,7 +192,7 @@ func TestComputeStatusFreshLatchOutranksActiveProgress(t *testing.T) {
 // session reports working, exactly as before the fix.
 func TestComputeStatusStaleLatchStillClearedByWorking(t *testing.T) {
 	m := NewSessionManager(catFactory, WithStatusClassifier(inputClassifier))
-	t.Cleanup(m.Shutdown)
+	t.Cleanup(func() { shutdownManager(t, m) })
 	tr := &statusTracker{}
 
 	in := &statusRaw{progress: 3, notifMsg: "Response complete", notifSeq: 1}
@@ -223,7 +223,7 @@ func TestComputeStatusStaleLatchStillClearedByWorking(t *testing.T) {
 // The reveal gate then keeps such a session's tab dot hidden.
 func TestComputeStatusNoWorkingFromOutput(t *testing.T) {
 	m := NewSessionManager(catFactory) // no classifier: a generic shell
-	t.Cleanup(m.Shutdown)
+	t.Cleanup(func() { shutdownManager(t, m) })
 	id, err := m.Create()
 	if err != nil {
 		t.Fatalf("Create: %v", err)
@@ -243,7 +243,7 @@ func TestComputeStatusNoWorkingFromOutput(t *testing.T) {
 // dot stays revealed while the session idles rather than flickering away.
 func TestReportsActivitySticky(t *testing.T) {
 	m := NewSessionManager(catFactory)
-	t.Cleanup(m.Shutdown)
+	t.Cleanup(func() { shutdownManager(t, m) })
 	id, err := m.Create()
 	if err != nil {
 		t.Fatalf("Create: %v", err)
@@ -281,7 +281,7 @@ func TestReportsActivitySticky(t *testing.T) {
 // back to the hollow idle state until the next real status transition.
 func TestListCarriesRefinedStatus(t *testing.T) {
 	m := NewSessionManager(catFactory, WithStatusClassifier(inputClassifier))
-	t.Cleanup(m.Shutdown)
+	t.Cleanup(func() { shutdownManager(t, m) })
 	m.stopSweep() // drive the sweep by hand, deterministically
 
 	id, err := m.Create()
@@ -326,7 +326,7 @@ func TestListCarriesRefinedStatus(t *testing.T) {
 // done/working.
 func TestListExitedWinsOverStaleSweptStatus(t *testing.T) {
 	m := NewSessionManager(catFactory, WithStatusClassifier(inputClassifier))
-	t.Cleanup(m.Shutdown)
+	t.Cleanup(func() { shutdownManager(t, m) })
 	m.stopSweep()
 
 	id, err := m.Create()
@@ -338,7 +338,7 @@ func TestListExitedWinsOverStaleSweptStatus(t *testing.T) {
 	_ = m.diffStatuses() // the sweep records done
 
 	// The process dies with no further sweep: exit must win over the stale done.
-	h.Shutdown()
+	h.Close()
 	waitExited(t, h)
 	for _, info := range m.List() {
 		if info.ID == id && info.Status != StatusExited {
@@ -353,7 +353,7 @@ func TestComputeStatusExited(t *testing.T) {
 	m := NewSessionManager(func(string) *Handler {
 		return NewHandler([]string{"/bin/true"}, WithLogger(nil))
 	})
-	t.Cleanup(m.Shutdown)
+	t.Cleanup(func() { shutdownManager(t, m) })
 	id, err := m.Create()
 	if err != nil {
 		t.Fatalf("Create: %v", err)
@@ -369,7 +369,7 @@ func TestComputeStatusExited(t *testing.T) {
 // receives the current status of existing sessions (initial sync).
 func TestEventsHandlerInitialSync(t *testing.T) {
 	m := NewSessionManager(catFactory)
-	t.Cleanup(m.Shutdown)
+	t.Cleanup(func() { shutdownManager(t, m) })
 	id, err := m.Create()
 	if err != nil {
 		t.Fatalf("Create: %v", err)
@@ -411,7 +411,7 @@ func TestEventsHandlerInitialSync(t *testing.T) {
 // literal 10) so it tracks maxSubscribers if the cap ever changes.
 func TestEventsHandlerSubscriberCap(t *testing.T) {
 	m := NewSessionManager(catFactory)
-	t.Cleanup(m.Shutdown)
+	t.Cleanup(func() { shutdownManager(t, m) })
 	m.stopSweep() // deterministic: no background broadcast racing on m.subs
 
 	// Fill exactly maxSubscribers slots; each must be admitted.
@@ -474,7 +474,7 @@ func TestSupportsFlush(t *testing.T) {
 // opens (200 + text/event-stream) and delivers the initial sync.
 func TestEventsHandlerFlushesBehindMiddleware(t *testing.T) {
 	m := NewSessionManager(catFactory)
-	t.Cleanup(m.Shutdown)
+	t.Cleanup(func() { shutdownManager(t, m) })
 	id, err := m.Create()
 	if err != nil {
 		t.Fatalf("Create: %v", err)
@@ -530,7 +530,7 @@ func (m *SessionManager) stopSweep() {
 // unchanged OSC-derived Title.
 func TestDiffStatusesEmitsClientTitleChange(t *testing.T) {
 	m := NewSessionManager(catFactory)
-	t.Cleanup(m.Shutdown)
+	t.Cleanup(func() { shutdownManager(t, m) })
 	// Drive diffStatuses by hand: stop the background sweep (it has not ticked
 	// yet — its first tick is 250ms out) so it cannot race on m.trackers between
 	// the change and the assertion.
@@ -592,7 +592,7 @@ func TestDiffStatusesEmitsClientTitleChange(t *testing.T) {
 // broadcast, the overflowing send would block this goroutine forever.
 func TestBroadcastDropsSlowSubscriber(t *testing.T) {
 	m := NewSessionManager(catFactory)
-	t.Cleanup(m.Shutdown)
+	t.Cleanup(func() { shutdownManager(t, m) })
 	m.stopSweep() // no background sweep broadcasts racing on m.subs
 
 	ch, ok := m.subscribe()
@@ -640,7 +640,7 @@ func TestBroadcastDropsSlowSubscriber(t *testing.T) {
 // WS attach, SSE subscribe) for as long as it stayed stuck.
 func TestDiffStatusesWedgedHandlerDoesNotStallManager(t *testing.T) {
 	m := NewSessionManager(catFactory)
-	t.Cleanup(m.Shutdown)
+	t.Cleanup(func() { shutdownManager(t, m) })
 	id, err := m.Create()
 	if err != nil {
 		t.Fatalf("Create: %v", err)

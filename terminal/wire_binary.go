@@ -77,7 +77,7 @@ import (
 	"fmt"
 	"unicode/utf8"
 
-	"github.com/cplieger/web-terminal-engine/v3/vt"
+	"github.com/cplieger/web-terminal-engine/v4/vt"
 )
 
 const (

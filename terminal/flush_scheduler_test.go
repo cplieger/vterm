@@ -9,7 +9,7 @@ import (
 	"time"
 
 	"github.com/coder/websocket"
-	"github.com/cplieger/web-terminal-engine/v3/vt"
+	"github.com/cplieger/web-terminal-engine/v4/vt"
 )
 
 // P4 (event-driven flush + zero-client render suspension) completion-criteria
@@ -134,7 +134,7 @@ func assertNoFrame(t *testing.T, results <-chan wsReadResult, duration time.Dura
 // must arrive well inside flushInterval/2 (25 ms) plus scheduling slack.
 func TestFlushScheduler_isolatedEchoBeatsTickAlignment(t *testing.T) {
 	h := NewHandler([]string{"/bin/cat"}, WithLogger(nil))
-	t.Cleanup(h.Shutdown)
+	t.Cleanup(h.Close)
 	if err := h.StartEager(); err != nil {
 		t.Fatalf("StartEager: %v", err)
 	}
@@ -177,7 +177,7 @@ func TestFlushScheduler_isolatedEchoBeatsTickAlignment(t *testing.T) {
 // rate. The tolerance covers delivery time between dispatch and this reader.
 func TestFlushScheduler_sustainedOutputRetainsBatching(t *testing.T) {
 	h := NewHandler([]string{"/bin/cat"}, WithLogger(nil))
-	t.Cleanup(h.Shutdown)
+	t.Cleanup(h.Close)
 	if err := h.StartEager(); err != nil {
 		t.Fatalf("StartEager: %v", err)
 	}
@@ -248,7 +248,7 @@ func TestFlushScheduler_zeroClientSuspensionRetainsHistory(t *testing.T) {
 // rather than waiting for the next poke (which would never come).
 func TestFlushScheduler_heldRedrawFlushesAtDeadline(t *testing.T) {
 	m := NewSessionManager(catFactory)
-	t.Cleanup(m.Shutdown)
+	t.Cleanup(func() { shutdownManager(t, m) })
 	id, err := m.Create()
 	if err != nil {
 		t.Fatalf("Create: %v", err)
@@ -286,7 +286,7 @@ func TestFlushScheduler_heldRedrawFlushesAtDeadline(t *testing.T) {
 // one post-quiet batch.
 func TestFlushScheduler_resizeReprintHeldUntilSettled(t *testing.T) {
 	h := NewHandler([]string{"/bin/cat"}, WithLogger(nil))
-	t.Cleanup(h.Shutdown)
+	t.Cleanup(h.Close)
 	if err := h.StartEager(); err != nil {
 		t.Fatalf("StartEager: %v", err)
 	}
@@ -342,7 +342,7 @@ func TestFlushScheduler_resizeReprintHeldUntilSettled(t *testing.T) {
 // derived from the constants, so changing them cannot silently make this vacuous.
 func TestFlushScheduler_reprintLongerThanCapCoalesces(t *testing.T) {
 	h := NewHandler([]string{"/bin/cat"}, WithLogger(nil))
-	t.Cleanup(h.Shutdown)
+	t.Cleanup(h.Close)
 	if err := h.StartEager(); err != nil {
 		t.Fatalf("StartEager: %v", err)
 	}

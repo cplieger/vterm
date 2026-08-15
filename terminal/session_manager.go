@@ -21,6 +21,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -233,7 +234,12 @@ type SessionManager struct {
 	classifier   func(string) (string, bool)
 	reaperCancel context.CancelFunc
 	sweepCancel  context.CancelFunc
-	idleSince    time.Time
+	// loopsDone closes once reapLoop and sweepLoop have both returned, so
+	// Shutdown can wait for the manager's OWN goroutines and not only for its
+	// sessions'. Derived from m.wg by an observer started in NewSessionManager
+	// after both loops are counted.
+	loopsDone chan struct{}
+	idleSince time.Time
 	// order is the display order every viewer shares: session ids, and exactly
 	// the keys of sessions. Maintained at the four sites that change the session
 	// set (create appends, Close removes, the reaper and Shutdown clear it) so a
@@ -248,6 +254,7 @@ type SessionManager struct {
 	// and cap words are scalars, so ending the struct's pointer-scan range at its
 	// data pointer keeps 16 bytes out of the GC's scan (govet fieldalignment).
 	order         []string
+	wg            sync.WaitGroup
 	mu            sync.Mutex
 	subsMu        sync.Mutex
 	idleWindow    time.Duration
@@ -286,14 +293,21 @@ func NewSessionManager(factory func(id string) *Handler, opts ...ManagerOption) 
 	if m.idleWindow > 0 {
 		ctx, cancel := context.WithCancel(context.Background())
 		m.reaperCancel = cancel
-		go m.reapLoop(ctx)
+		m.wg.Go(func() { m.reapLoop(ctx) })
 	}
 	// The status sweep computes per-session status and pushes changes to
 	// subscribers. It runs regardless of subscribers (cheap, a near-no-op when
 	// there are none) so status is current the instant a client subscribes.
 	sctx, scancel := context.WithCancel(context.Background())
 	m.sweepCancel = scancel
-	go m.sweepLoop(sctx)
+	m.wg.Go(func() { m.sweepLoop(sctx) })
+	// Both loops are counted before this observer starts, which is what makes the
+	// Wait below safe against a loop that returns immediately.
+	m.loopsDone = make(chan struct{})
+	go func(done chan struct{}) {
+		m.wg.Wait()
+		close(done)
+	}(m.loopsDone)
 	return m
 }
 
@@ -586,7 +600,7 @@ func (m *SessionManager) Close(id string) bool {
 	if !ok {
 		return false
 	}
-	s.handler.Shutdown()
+	s.handler.Close()
 	m.logger.Info("session: closed", "session", LogID(id))
 	return true
 }
@@ -630,8 +644,20 @@ func (m *SessionManager) ClearSessionPinnedTitle(id string) bool {
 	return m.SetSessionPinnedTitle(id, "")
 }
 
-// Shutdown stops the reaper and terminates every session.
-func (m *SessionManager) Shutdown() {
+// Shutdown stops the manager's loops, ends every session, and waits for their
+// teardown to finish, bounded by ctx. It returns an error wrapping ctx.Err() when
+// the budget expired with teardowns outstanding, naming how many, and nil when
+// everything finished.
+//
+// A manager is SINGLE-USE. Shutdown cancels the status sweep and the idle reaper
+// and nothing restarts them, so a manager reused afterwards serves sessions with
+// no status stream and no idle reaping. Build a new one instead.
+//
+// Sessions are signalled first and waited on second, deliberately. Each teardown
+// can spend several containGrace windows, so closing and waiting one session at a
+// time would make the total scale with the tab count; signalling all of them
+// first overlaps those windows inside one budget.
+func (m *SessionManager) Shutdown(ctx context.Context) error {
 	m.mu.Lock()
 	if m.reaperCancel != nil {
 		m.reaperCancel()
@@ -647,10 +673,28 @@ func (m *SessionManager) Shutdown() {
 	}
 	m.sessions = make(map[string]*session)
 	m.order = nil
+	loopsDone := m.loopsDone
 	m.mu.Unlock()
 	for _, s := range victims {
-		s.handler.Shutdown()
+		s.handler.Close()
 	}
+
+	outstanding := 0
+	for _, s := range victims {
+		if err := s.handler.wait(ctx); err != nil {
+			outstanding++
+		}
+	}
+	if outstanding > 0 {
+		return fmt.Errorf("terminal: %d of %d session teardowns unfinished: %w",
+			outstanding, len(victims), ctx.Err())
+	}
+	if loopsDone != nil {
+		if err := waitClosed(ctx, loopsDone); err != nil {
+			return fmt.Errorf("terminal: manager loops unfinished: %w", err)
+		}
+	}
+	return nil
 }
 
 // WebSocketHandler serves the terminal stream at WSPath (/ws?session=<id>).
@@ -974,7 +1018,7 @@ func (m *SessionManager) maybeReap() {
 	m.reaped += uint64(len(victims))
 	m.mu.Unlock()
 	for _, s := range victims {
-		s.handler.Shutdown()
+		s.handler.Close()
 		m.logger.Info("session: reaped (no client for idle window)", "session", LogID(s.id))
 	}
 }

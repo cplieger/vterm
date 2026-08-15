@@ -30,9 +30,29 @@ func hasDirective(header, want string) bool {
 	return false
 }
 
+// shutdownManager tears a manager down and fails the test if any teardown did
+// not finish inside the budget. Most callers use it from t.Cleanup, which is why
+// it builds its own context instead of taking t.Context(): t.Context is already
+// cancelled by the time cleanups run, so a wait against it would report an
+// expiry on every single test.
+//
+// The budget is deliberately generous against the real ceiling (cmd.WaitDelay
+// bounds the child reap at 5s, and the containment and marker ladders each spend
+// up to three containGrace windows), so a failure here means teardown genuinely
+// hung rather than that the runner was loaded.
+func shutdownManager(t *testing.T, m *SessionManager) {
+	t.Helper()
+	const budget = 20 * time.Second
+	ctx, cancel := context.WithTimeout(context.Background(), budget)
+	defer cancel()
+	if err := m.Shutdown(ctx); err != nil {
+		t.Errorf("SessionManager.Shutdown(ctx) = %v, want nil (teardown must finish within %v)", err, budget)
+	}
+}
+
 func TestSessionManagerCreateListClose(t *testing.T) {
 	m := NewSessionManager(catFactory)
-	t.Cleanup(m.Shutdown)
+	t.Cleanup(func() { shutdownManager(t, m) })
 
 	id1, err := m.Create()
 	if err != nil {
@@ -75,7 +95,7 @@ func TestSessionManagerCreateListClose(t *testing.T) {
 // background ticker (the 1h window keeps that goroutine quiet during the test).
 func TestSessionManagerReaperOwnershipKeyed(t *testing.T) {
 	m := NewSessionManager(catFactory, WithIdleReaper(time.Hour))
-	t.Cleanup(m.Shutdown)
+	t.Cleanup(func() { shutdownManager(t, m) })
 
 	if _, err := m.Create(); err != nil {
 		t.Fatalf("Create: %v", err)
@@ -111,7 +131,7 @@ func (m *SessionManager) forceIdleSince(ts time.Time) {
 
 func TestSessionManagerREST(t *testing.T) {
 	m := NewSessionManager(catFactory)
-	t.Cleanup(m.Shutdown)
+	t.Cleanup(func() { shutdownManager(t, m) })
 	srv := httptest.NewServer(m.RESTHandler())
 	t.Cleanup(srv.Close)
 
@@ -165,7 +185,7 @@ func TestSessionManagerREST(t *testing.T) {
 
 func TestSessionManagerWSUnknownSession(t *testing.T) {
 	m := NewSessionManager(catFactory)
-	t.Cleanup(m.Shutdown)
+	t.Cleanup(func() { shutdownManager(t, m) })
 	srv := httptest.NewServer(m.WebSocketHandler())
 	t.Cleanup(srv.Close)
 
@@ -189,7 +209,7 @@ func TestSessionManagerWSUnknownSession(t *testing.T) {
 // presence is tracked around the attachment.
 func TestSessionManagerWSAttach(t *testing.T) {
 	m := NewSessionManager(catFactory)
-	t.Cleanup(m.Shutdown)
+	t.Cleanup(func() { shutdownManager(t, m) })
 	id, err := m.Create()
 	if err != nil {
 		t.Fatalf("Create: %v", err)
@@ -222,7 +242,7 @@ func TestSessionManagerWSAttach(t *testing.T) {
 // the only remover. Uses a done-channel barrier so no new import is needed.
 func TestSessionManager_ConcurrentCreateCloseList(t *testing.T) {
 	m := NewSessionManager(catFactory)
-	t.Cleanup(m.Shutdown)
+	t.Cleanup(func() { shutdownManager(t, m) })
 
 	const goroutines = 9
 	const iters = 12
@@ -264,7 +284,7 @@ func TestSessionManager_ConcurrentCreateCloseList(t *testing.T) {
 // false.
 func TestSessionManagerSetSessionTitle(t *testing.T) {
 	m := NewSessionManager(catFactory)
-	t.Cleanup(m.Shutdown)
+	t.Cleanup(func() { shutdownManager(t, m) })
 	id, err := m.Create()
 	if err != nil {
 		t.Fatalf("Create: %v", err)
@@ -330,7 +350,7 @@ func TestSessionManagerSetSessionTitle(t *testing.T) {
 // body that cannot be decoded.
 func TestSessionManagerSetTitleREST(t *testing.T) {
 	m := NewSessionManager(catFactory)
-	t.Cleanup(m.Shutdown)
+	t.Cleanup(func() { shutdownManager(t, m) })
 	srv := httptest.NewServer(m.RESTHandler())
 	t.Cleanup(srv.Close)
 
@@ -416,7 +436,7 @@ func TestSanitizeTitle(t *testing.T) {
 // server) to an endless reconnect loop.
 func TestWebSocketUnknownSessionClosesDefinitively(t *testing.T) {
 	m := NewSessionManager(catFactory)
-	t.Cleanup(m.Shutdown)
+	t.Cleanup(func() { shutdownManager(t, m) })
 	mux := http.NewServeMux()
 	m.MountAPI(mux)
 	srv := httptest.NewServer(mux)
@@ -452,7 +472,7 @@ func TestWebSocketUnknownSessionClosesDefinitively(t *testing.T) {
 // its own middleware after upgrading is relying on these assertions holding.
 func TestSessionSurfaceRefusesCaching(t *testing.T) {
 	m := NewSessionManager(catFactory)
-	t.Cleanup(m.Shutdown)
+	t.Cleanup(func() { shutdownManager(t, m) })
 
 	t.Run("REST", func(t *testing.T) {
 		srv := httptest.NewServer(m.RESTHandler())
@@ -540,7 +560,7 @@ func snapHeader(rec *httptest.ResponseRecorder) http.Header {
 // the handler table could have covered them.
 func TestSessionRESTNoStoreCoversEveryResponse(t *testing.T) {
 	m := NewSessionManager(catFactory)
-	t.Cleanup(m.Shutdown)
+	t.Cleanup(func() { shutdownManager(t, m) })
 	h := m.RESTHandler()
 
 	// liveID creates a session for ONE case to act on, so a case that closes or
@@ -628,7 +648,7 @@ func TestSessionRESTNoStoreCoversEveryResponse(t *testing.T) {
 // so that prohibition is not the consumer's to relax.
 func TestSessionRESTNoStorePrecedence(t *testing.T) {
 	m := NewSessionManager(catFactory)
-	t.Cleanup(m.Shutdown)
+	t.Cleanup(func() { shutdownManager(t, m) })
 
 	const outer = "max-age=60"
 	// preset is the outer consumer: a wrapper that states its own policy before
@@ -707,7 +727,7 @@ func (f *firstWriteHeader) Write(b []byte) (int, error) {
 // visible to a test reading it — while sending no header on the wire at all.
 func TestSessionRESTNoStoreSetBeforeBody(t *testing.T) {
 	m := NewSessionManager(catFactory)
-	t.Cleanup(m.Shutdown)
+	t.Cleanup(func() { shutdownManager(t, m) })
 	h := m.RESTHandler()
 
 	// One response of each shape: a body written by a handler, a body written by

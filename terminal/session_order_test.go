@@ -96,7 +96,7 @@ func TestRankOfPutsAStrayLast(t *testing.T) {
 // corruption of the order.
 func TestSetSessionOrderRequiresTheExactLiveSet(t *testing.T) {
 	m := NewSessionManager(catFactory)
-	t.Cleanup(m.Shutdown)
+	t.Cleanup(func() { shutdownManager(t, m) })
 	ids := make([]string, 0, 3)
 	for range 3 {
 		id, err := m.Create()
@@ -147,7 +147,7 @@ func TestSetSessionOrderRequiresTheExactLiveSet(t *testing.T) {
 // at all.
 func TestSetSessionOrderDoesNotAliasTheCallerSlice(t *testing.T) {
 	m := NewSessionManager(catFactory)
-	t.Cleanup(m.Shutdown)
+	t.Cleanup(func() { shutdownManager(t, m) })
 	first, err := m.Create()
 	if err != nil {
 		t.Fatalf("Create: %v", err)
@@ -174,7 +174,7 @@ func TestSetSessionOrderDoesNotAliasTheCallerSlice(t *testing.T) {
 // session can linger in the order or a live one can be missing from it.
 func TestOrderTracksTheSessionSet(t *testing.T) {
 	m := NewSessionManager(catFactory, WithIdleReaper(time.Hour))
-	t.Cleanup(m.Shutdown)
+	t.Cleanup(func() { shutdownManager(t, m) })
 
 	assertConsistent := func(t *testing.T, stage string) {
 		t.Helper()
@@ -265,7 +265,7 @@ func TestListAndSnapshotAgreeOnOrderEveryCall(t *testing.T) {
 		repeats  = 20
 	)
 	m := NewSessionManager(catFactory)
-	t.Cleanup(m.Shutdown)
+	t.Cleanup(func() { shutdownManager(t, m) })
 	ids := make([]string, 0, sessions)
 	for range sessions {
 		id, err := m.Create()
@@ -337,7 +337,7 @@ func short(ids []string) []string {
 // races the assertions and no sleep is needed.
 func TestReorderBroadcastsToOtherClients(t *testing.T) {
 	m := NewSessionManager(catFactory)
-	t.Cleanup(m.Shutdown)
+	t.Cleanup(func() { shutdownManager(t, m) })
 	m.stopSweep()
 	ids := make([]string, 0, 3)
 	for range 3 {
@@ -400,7 +400,7 @@ func TestEventsHandlerInitialSyncIsOrdered(t *testing.T) {
 		connects = 5
 	)
 	m := NewSessionManager(catFactory)
-	t.Cleanup(m.Shutdown)
+	t.Cleanup(func() { shutdownManager(t, m) })
 	ids := make([]string, 0, sessions)
 	for range sessions {
 		id, err := m.Create()
@@ -458,7 +458,7 @@ func readInitialSync(t *testing.T, url string, want int) []string {
 // client branches on, and that a success is visible to the next reader.
 func TestSetOrderRoute(t *testing.T) {
 	m := NewSessionManager(catFactory)
-	t.Cleanup(m.Shutdown)
+	t.Cleanup(func() { shutdownManager(t, m) })
 	ids := make([]string, 0, 2)
 	for range 2 {
 		id, err := m.Create()
@@ -523,7 +523,7 @@ func TestSetOrderRoute(t *testing.T) {
 // before that check can run.
 func TestSetOrderRouteRejectsAnOversizedBody(t *testing.T) {
 	m := NewSessionManager(catFactory)
-	t.Cleanup(m.Shutdown)
+	t.Cleanup(func() { shutdownManager(t, m) })
 	if _, err := m.Create(); err != nil {
 		t.Fatalf("Create: %v", err)
 	}
@@ -555,7 +555,7 @@ func TestSetOrderRouteRejectsAnOversizedBody(t *testing.T) {
 // reconcile replaced the value.
 func TestCreateEchoesTheStoredCreatedAt(t *testing.T) {
 	m := NewSessionManager(catFactory)
-	t.Cleanup(m.Shutdown)
+	t.Cleanup(func() { shutdownManager(t, m) })
 	srv := httptest.NewServer(m.RESTHandler())
 	t.Cleanup(srv.Close)
 
@@ -599,7 +599,7 @@ func TestCreateEchoesTheStoredCreatedAt(t *testing.T) {
 // jump when the next status event corrected it.
 func TestCreateEchoesThePositionItAppendedTo(t *testing.T) {
 	m := NewSessionManager(catFactory)
-	t.Cleanup(m.Shutdown)
+	t.Cleanup(func() { shutdownManager(t, m) })
 	srv := httptest.NewServer(m.RESTHandler())
 	t.Cleanup(srv.Close)
 
@@ -657,8 +657,14 @@ func newSSEDataReader(t *testing.T, body io.Reader, want int) io.Reader {
 // invariant test above cannot reach: it asserts under the lock rather than
 // through a public reader, because every public reader is empty after Shutdown
 // whether or not the order was cleared. Without it, deleting `m.order = nil` from
-// Shutdown is a silent mutant — and a manager reused after Shutdown then ranks
-// live sessions behind the ghosts of dead ones.
+// Shutdown is a silent mutant.
+//
+// It used to prove the same mutant a second way, by creating a session after
+// Shutdown and asserting it ranked at position 0 rather than behind the dead ids.
+// That witness is gone with the reuse it depended on: Shutdown cancels the status
+// sweep and the idle reaper and restarts neither, so a manager is single-use and a
+// post-Shutdown Create is not a shape the API offers. The snapshot below kills the
+// mutant on its own.
 func TestShutdownClearsTheOrder(t *testing.T) {
 	m := NewSessionManager(catFactory)
 	first, err := m.Create()
@@ -673,21 +679,9 @@ func TestShutdownClearsTheOrder(t *testing.T) {
 		t.Fatal("SetSessionOrder = false, want true")
 	}
 
-	m.Shutdown()
+	shutdownManager(t, m)
 	if got := m.orderSnapshot(); len(got) != 0 {
-		t.Fatalf("order after Shutdown = %v, want empty", short(got))
-	}
-
-	// A session created after Shutdown must be position 0, not queued behind the
-	// dead ids.
-	revived, err := m.Create()
-	if err != nil {
-		t.Fatalf("Create after Shutdown: %v", err)
-	}
-	t.Cleanup(m.Shutdown)
-	list := m.List()
-	if len(list) != 1 || list[0].ID != revived || list[0].Order != 0 {
-		t.Fatalf("List after Shutdown+Create = %+v, want one session at order 0", list)
+		t.Fatalf("orderSnapshot() after Shutdown = %v, want empty", short(got))
 	}
 }
 
@@ -704,7 +698,7 @@ func TestShutdownClearsTheOrder(t *testing.T) {
 // to hit.
 func TestSweepReadsTheOrderAfterPhaseTwo(t *testing.T) {
 	m := NewSessionManager(catFactory)
-	t.Cleanup(m.Shutdown)
+	t.Cleanup(func() { shutdownManager(t, m) })
 	m.stopSweep()
 	ids := make([]string, 0, 3)
 	for range 3 {
@@ -819,7 +813,7 @@ func TestSetOrderRouteRejectsAMalformedEnvelope(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			m := NewSessionManager(catFactory)
-			t.Cleanup(m.Shutdown)
+			t.Cleanup(func() { shutdownManager(t, m) })
 			for range tc.sessions {
 				if _, err := m.Create(); err != nil {
 					t.Fatalf("Create: %v", err)
@@ -851,7 +845,7 @@ func TestSetOrderRouteRejectsAMalformedEnvelope(t *testing.T) {
 // share a raw rank and would otherwise both claim the same position.
 func TestListPublishesDensePositions(t *testing.T) {
 	m := NewSessionManager(catFactory)
-	t.Cleanup(m.Shutdown)
+	t.Cleanup(func() { shutdownManager(t, m) })
 	ids := make([]string, 0, 3)
 	for range 3 {
 		id, err := m.Create()

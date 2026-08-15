@@ -106,7 +106,7 @@ func TestMountAPIWiresManagerHandlers(t *testing.T) {
 		return NewHandler([]string{"/bin/cat"})
 	}
 	mgr := NewSessionManager(factory)
-	t.Cleanup(mgr.Shutdown)
+	t.Cleanup(func() { shutdownManager(t, mgr) })
 
 	mux := http.NewServeMux()
 	mgr.MountAPI(mux)
@@ -222,7 +222,7 @@ func TestMountSessionRoutesNoStore(t *testing.T) {
 // and the SSE stream keeps its own stricter value rather than inheriting it.
 func TestMountAPINoStoreOnRealHandlers(t *testing.T) {
 	mgr := NewSessionManager(catFactory)
-	t.Cleanup(mgr.Shutdown)
+	t.Cleanup(func() { shutdownManager(t, mgr) })
 	mux := http.NewServeMux()
 	mgr.MountAPI(mux)
 

@@ -22,7 +22,7 @@ import (
 // with an endlessly flashing reconnect" report.
 func TestExitedAttachServesReplayBefore4001(t *testing.T) {
 	h := NewHandler([]string{"/bin/sh", "-c", "echo deadwords; exit 1"}, WithWorkDir("/"))
-	defer h.Shutdown()
+	defer h.Close()
 	if err := h.StartEager(); err != nil {
 		t.Fatalf("StartEager: %v", err)
 	}

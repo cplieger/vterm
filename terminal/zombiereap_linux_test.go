@@ -79,7 +79,7 @@ func TestSessionPidIsRegisteredWhileExecOwnsItAndReleasedAfter(t *testing.T) {
 	if err := h.ensureStarted(80, 24); err != nil {
 		t.Fatalf("ensureStarted: %v", err)
 	}
-	defer h.Shutdown()
+	defer h.Close()
 	pid := h.cmd.Process.Pid
 
 	var werr error

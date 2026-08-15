@@ -85,7 +85,7 @@ const (
 // branching on whether the host supported it.
 //
 // Teardown runs exactly once per handler, owned by the process monitor after
-// cmd.Wait returns. Shutdown deliberately does not run it: Shutdown holds the
+// cmd.Wait returns. Close deliberately does not run it: Close holds the
 // handler lock, and cancelling the context kills the head process, so the
 // monitor's Wait returns and teardown happens there for both paths.
 func WithContainment(c *Containment, id string) Option {
@@ -150,7 +150,7 @@ func (h *Handler) startCostSampler(ctx context.Context) (stop func()) {
 		return func() {}
 	}
 	sampleCtx, cancel := context.WithCancel(ctx)
-	go h.costSampleLoop(sampleCtx, h.cfg.containSample)
+	h.wg.Go(func() { h.costSampleLoop(sampleCtx, h.cfg.containSample) })
 	return cancel
 }
 

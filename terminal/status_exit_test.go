@@ -31,7 +31,7 @@ import (
 func exitedHandler(t *testing.T, command ...string) *Handler {
 	t.Helper()
 	h := NewHandler(command, WithWorkDir("/"), WithLogger(nil))
-	t.Cleanup(h.Shutdown)
+	t.Cleanup(h.Close)
 	if err := h.StartEager(); err != nil {
 		t.Fatalf("StartEager(%v): %v", command, err)
 	}
@@ -118,7 +118,7 @@ func TestExitOutcomeClassification(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			m := NewSessionManager(catFactory)
-			t.Cleanup(m.Shutdown)
+			t.Cleanup(func() { shutdownManager(t, m) })
 			h := exitedHandler(t, tc.command...)
 			if st := m.computeStatusFromHandler(h, &statusTracker{}); st != tc.want {
 				t.Errorf("%v: status = %q, want %q (ExitError = %v)", tc.command, st, tc.want, h.ExitError())
@@ -158,7 +158,7 @@ func TestExitOutcomeNonZeroRetainsError(t *testing.T) {
 // mistakes "still running" for "ended cleanly" as long as it checks Exited too.
 func TestExitOutcomeBeforeExitIsClean(t *testing.T) {
 	h := NewHandler([]string{"/bin/sh", "-c", "sleep 30"}, WithWorkDir("/"), WithLogger(nil))
-	t.Cleanup(h.Shutdown)
+	t.Cleanup(h.Close)
 	if err := h.StartEager(); err != nil {
 		t.Fatalf("StartEager: %v", err)
 	}
@@ -185,11 +185,11 @@ func TestServerInitiatedShutdownIsExitedNotCrashed(t *testing.T) {
 		end func(t *testing.T, m *SessionManager) *Handler
 	}{
 		{
-			name: "handler Shutdown",
+			name: "handler Close",
 			end: func(t *testing.T, m *SessionManager) *Handler {
 				t.Helper()
 				h := sleepSession(t, m)
-				h.Shutdown()
+				h.Close()
 				return h
 			},
 		},
@@ -230,7 +230,7 @@ func TestServerInitiatedShutdownIsExitedNotCrashed(t *testing.T) {
 			// so it never fires inside the test) and only the reaper case above
 			// drives a pass by hand.
 			m := NewSessionManager(sleepFactory, WithIdleReaper(time.Minute))
-			t.Cleanup(m.Shutdown)
+			t.Cleanup(func() { shutdownManager(t, m) })
 			m.stopSweep()
 
 			h := tc.end(t, m)
@@ -309,7 +309,7 @@ func TestCrashedOutranksEveryProgressStateAndLatch(t *testing.T) {
 		{name: "crashed exit", crashed: true, want: StatusCrashed},
 	}
 	m := NewSessionManager(catFactory, WithStatusClassifier(inputClassifier))
-	t.Cleanup(m.Shutdown)
+	t.Cleanup(func() { shutdownManager(t, m) })
 	for _, ex := range exits {
 		for _, ps := range progressStates {
 			for _, la := range latches {
@@ -337,7 +337,7 @@ func TestListReportsCrashedForAFailedExit(t *testing.T) {
 	m := NewSessionManager(func(string) *Handler {
 		return NewHandler([]string{"/bin/sh", "-c", "exit 3"}, WithWorkDir("/"), WithLogger(nil))
 	})
-	t.Cleanup(m.Shutdown)
+	t.Cleanup(func() { shutdownManager(t, m) })
 	m.stopSweep()
 
 	id, err := m.Create()

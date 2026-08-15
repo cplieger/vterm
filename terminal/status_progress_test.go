@@ -55,7 +55,7 @@ func TestComputeStatusProgressStateMapping(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			m := NewSessionManager(catFactory) // no classifier: the generic consumer
-			t.Cleanup(m.Shutdown)
+			t.Cleanup(func() { shutdownManager(t, m) })
 			tr := &statusTracker{}
 			in := &statusRaw{progress: tc.progress, progressValue: -1}
 			if st := m.computeStatus(in, tr); st != tc.want {
@@ -77,7 +77,7 @@ func TestComputeStatusProgressStateMapping(t *testing.T) {
 // repeated sweeps below are what such a path would have to survive.
 func TestComputeStatusFailedPersistsUntilProgressChanges(t *testing.T) {
 	m := NewSessionManager(catFactory)
-	t.Cleanup(m.Shutdown)
+	t.Cleanup(func() { shutdownManager(t, m) })
 	id, err := m.Create()
 	if err != nil {
 		t.Fatalf("Create: %v", err)
@@ -136,7 +136,7 @@ func TestComputeStatusFreshNotificationOutranksProgressState(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			m := NewSessionManager(catFactory, WithStatusClassifier(inputClassifier))
-			t.Cleanup(m.Shutdown)
+			t.Cleanup(func() { shutdownManager(t, m) })
 			tr := &statusTracker{}
 			in := &statusRaw{progress: tc.progress, progressValue: -1, notifMsg: tc.msg, notifSeq: 1}
 			if st := m.computeStatus(in, tr); st != tc.want {
@@ -170,7 +170,7 @@ func TestComputeStatusNewProgressStateSupersedesStaleLatch(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			m := NewSessionManager(catFactory, WithStatusClassifier(inputClassifier))
-			t.Cleanup(m.Shutdown)
+			t.Cleanup(func() { shutdownManager(t, m) })
 			tr := &statusTracker{}
 
 			// Sweep 1: the turn ends, done latches.
@@ -227,7 +227,7 @@ func TestComputeStatusPausedStateDoesNotStealLatch(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			m := NewSessionManager(catFactory, WithStatusClassifier(inputClassifier))
-			t.Cleanup(m.Shutdown)
+			t.Cleanup(func() { shutdownManager(t, m) })
 			tr := &statusTracker{}
 
 			for sweep := 1; sweep <= 4; sweep++ {
@@ -259,7 +259,7 @@ func TestComputeStatusPausedStateDoesNotStealLatch(t *testing.T) {
 // defer to, a paused report is the session's status exactly as before.
 func TestComputeStatusPausedStateStandsAloneWithoutLatch(t *testing.T) {
 	m := NewSessionManager(catFactory, WithStatusClassifier(inputClassifier))
-	t.Cleanup(m.Shutdown)
+	t.Cleanup(func() { shutdownManager(t, m) })
 	tr := &statusTracker{}
 	in := &statusRaw{progress: 4, progressValue: 40, notifMsg: "", notifSeq: 0}
 	if st := m.computeStatus(in, tr); st != StatusWarning {
@@ -276,7 +276,7 @@ func TestComputeStatusPausedStateStandsAloneWithoutLatch(t *testing.T) {
 // carries the text and its sequence number, and delivering one latches no status.
 func TestDiffStatusesDeliversNotificationWithoutClassifier(t *testing.T) {
 	m := NewSessionManager(catFactory) // no classifier: the generic consumer
-	t.Cleanup(m.Shutdown)
+	t.Cleanup(func() { shutdownManager(t, m) })
 	id, err := m.Create()
 	if err != nil {
 		t.Fatalf("Create: %v", err)
@@ -316,7 +316,7 @@ func TestDiffStatusesDeliversNotificationWithoutClassifier(t *testing.T) {
 // determinate bar has to be able to tell those apart.
 func TestDiffStatusesCarriesProgressValue(t *testing.T) {
 	m := NewSessionManager(catFactory)
-	t.Cleanup(m.Shutdown)
+	t.Cleanup(func() { shutdownManager(t, m) })
 	id, err := m.Create()
 	if err != nil {
 		t.Fatalf("Create: %v", err)
@@ -361,7 +361,7 @@ func TestDiffStatusesCarriesProgressValue(t *testing.T) {
 // ever saw and only moves when something unrelated happens to move.
 func TestDiffStatusesEmitsOnProgressValueChange(t *testing.T) {
 	m := NewSessionManager(catFactory)
-	t.Cleanup(m.Shutdown)
+	t.Cleanup(func() { shutdownManager(t, m) })
 	id, err := m.Create()
 	if err != nil {
 		t.Fatalf("Create: %v", err)

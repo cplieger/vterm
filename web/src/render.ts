@@ -494,6 +494,11 @@ function queueRowsViewportFirst(): void {
  * history; the existing per-frame budget spreads a large backlog across frames
  * so the switch never janks. Used by bind(); also safe to call directly to
  * force a full repaint of the current store.
+ *
+ * The wipe covers content space in full: the rows AND the four overlays anchored
+ * into it (see collapseContentSpaceOverlays). Leaving the overlays behind left
+ * the container a measured 81081px of scroll range over zero rows of content,
+ * which is a black pane the bottom pin refuses to correct.
  */
 export function rebuild(): void {
   // The wipe is the largest content shrink this module performs, and it happens
@@ -515,6 +520,9 @@ export function rebuild(): void {
   // Fresh surface: a stale give-up streak from a prior store must not deny the
   // rebuilt surface its full transient-retry budget.
   renderNoProgressStreak = 0;
+  // The rows are not the only thing in content space. Collapse the overlays
+  // with them, BEFORE the offset below is read.
+  collapseContentSpaceOverlays();
   // Alt screen paints from the ephemeral grid in the flush, so it needs no
   // absolute-index queueing here.
   if (!store.isAlt()) {
@@ -522,6 +530,60 @@ export function rebuild(): void {
   }
   scroll.noteContentShrink(scrollTopBeforeWipe);
   scheduleFlush();
+}
+
+/**
+ * Drop every CONTENT-SPACE overlay's hold on the scroll container, as part of a
+ * wipe. Four elements sit INSIDE the container carrying a `top` in content
+ * coordinates — the caret, the predicted cursor, the IME view and the consumer's
+ * hidden textarea — so each one holds the container's scrollable overflow at the
+ * offset it was last placed at. `output.replaceChildren()` removes the rows and
+ * leaves all four.
+ *
+ * Measured on a 4769-row tab in Chromium: after the wipe the scroller had ZERO
+ * rows of content and an 81081px scroll range, held by the caret and the
+ * textarea still sitting at 81064px, with the viewport parked at 80281px over
+ * nothing. Two consequences, and the second is why this is not cosmetic:
+ *
+ *   - The reader sees that empty region, which paints the terminal's background:
+ *     a black pane, and then a partial row clipped to the top edge once the
+ *     drain's growing block reaches the parked offset.
+ *   - `stickToBottom` is DISARMED. It measures `distanceFromBottom()` against
+ *     the phantom height, reads 0 — already at the bottom — and pins nothing, so
+ *     the invariant that would otherwise rescue the view refuses to act for
+ *     exactly as long as the phantom height survives.
+ *
+ * The renderer heals all four at the END of the first flush
+ * (`positionCursorOverlay` plus `onCursorMove`), so the window is normally one
+ * frame and invisible. It stops being one frame whenever that tail does not
+ * run on time: a long frame (the wipe tears down thousands of rows), a throw
+ * mid-drain (the catch skips the tail and the bounded give-up can stop
+ * rescheduling), or a full reset arriving with the switch's reconnect. The
+ * reported symptom is a scroll tick clearing it, which fits: a scroll re-enters
+ * the built block, and the block sits at the TOP of the phantom range.
+ *
+ * Collapsing here also makes the wipe's clamp SYNCHRONOUS, which two callers
+ * need. `noteContentShrink` arms only when it observes the position actually
+ * move, so a deferred clamp left the wipe — the largest shrink this module
+ * performs — with nothing to announce. And `bind` records
+ * `pendingRestore.lastWrote` from the same offset, so a deferred clamp
+ * (measured: 80281 -> 4346) then read as a 76000px foreign write and threw away
+ * the reading position the switch was restoring.
+ */
+function collapseContentSpaceOverlays(): void {
+  // `cursorAbs` is -1 by now, which is the state positionCursorOverlay already
+  // hides for; go through it rather than restating the class name here.
+  positionCursorOverlay(undefined);
+  // The outgoing session's prediction cannot describe the incoming screen
+  // either. The consumer re-pushes it from the `onCursorMove` below, which is
+  // its call to make and cannot re-inflate anything: `rowEls` is empty, so
+  // setPredictedCursor's own fallback places it at the content origin.
+  predCursorEl?.classList.remove("visible");
+  // The IME view and the hidden textarea are the CONSUMER's, reachable only
+  // through the cursor seam — and after a wipe the cursor genuinely has no row,
+  // so the seam is accurate rather than borrowed. `getCursorPx` reports the
+  // content origin while `rowEls` is empty, so the handler moves them there.
+  onCursorMove?.();
 }
 
 /**

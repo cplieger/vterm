@@ -1,9 +1,12 @@
 # Tab-switch repaint: what to change, and what to measure first
 
-**Status:** r3. r1 refuted the first draft's central proposal; r2 found that two
-of the four changes the r2 draft called safe were not. Both rounds are applied.
-Section 3 is implementable. Section 4 is harmless tidy-up. Section 5 is blocked
-on measurement and must not be built blind.
+**Status:** r4. The premise is now PROVEN and the mechanism is fixed. r1 refuted
+the first draft's central proposal; r2 found that two of the four changes the r2
+draft called safe were not; sections 3 and 4 are implemented. **Section 6.2 was
+the answer, and it was filed under "structural notes, nothing proposed" for three
+rounds** — see section 2's "The measurement, and what it found". Section 5 stays
+blocked on measurement and must not be built blind; it is now also unnecessary
+for the reported symptom.
 
 **Surface:** `web-terminal-engine/web/src/render.ts`;
 `web-terminal-ui/css/{40-animations,01-scope}.css`,
@@ -94,11 +97,82 @@ restore-cannot-land mechanism is not it, at least on the eviction path. The pagi
 path is still untested here, because the harness has no paging capability to drop a
 browse cache from.
 
+**`parkedInVoid` had a third blind spot, and it hid the answer.** It requires a
+built row to be past — `output.children.length > 0` — so it cannot fire on the one
+frame where there are NO rows at all. That frame is the fault.
+
+### The measurement, and what it found
+
+A geometry recorder (real `render.ts` and `scroll.ts` bundled with the real
+`web-terminal-ui` stylesheet, driven through actual `render.bind()` switches in
+headed Chromium 151, sampling the scroll geometry on every animation frame)
+measured a 4769-row tab switching to another 5000-row tab:
+
+| frame | DOM rows | `scrollTop` | `scrollHeight` | caret `top` | textarea `top` | `distanceFromBottom` |
+| --- | --- | --- | --- | --- | --- | --- |
+| settled (outgoing) | 4769 | 80285 | 81085 | 81064px | 81064px | 0 |
+| 0 (post-wipe) | **0** | **80281** | **81081** | 81064px | 81064px | **0** |
+| 1 (first flush) | 302 | 4346 | 5146 | 5125px | 5125px | 0 |
+
+**Frame 0 is the reported symptom, and its cause is section 6.2.** The wipe removes
+the rows and leaves the four content-space overlays where they were, so the
+scroller keeps its ENTIRE former scroll range — 81081px of it — held up by the
+caret and the hidden textarea still sitting at 81064px. The viewport is parked at
+80281px over nothing, which paints the terminal's background: a black pane.
+
+Two things follow, and the second is why the pane stays black rather than
+correcting itself:
+
+- **`stickToBottom` is disarmed.** It measures `distanceFromBottom()` against the
+  phantom height, reads 0 — already at the bottom — and pins nothing. The one
+  invariant that would rescue a following view refuses to act for exactly as long
+  as the phantom height survives.
+- **A scroll is the recovery, and it lands at the top.** The built block occupies
+  the TOP of the phantom range, so any scroll re-enters content there. That is O1
+  and O3 exactly: a partial row clipped to the top edge, not the row that ends up
+  at the bottom of the settled view, gone once the geometry resolves.
+
+Frame 1 shows the self-heal: `positionCursorOverlay` and `onCursorMove` run at the
+END of `flushRenderInner`, the height collapses 81081 -> 5146, and the browser
+clamps `scrollTop` 80281 -> 4346. **So the window is normally one frame**, which is
+why every switch does not look broken. It stops being one frame whenever that tail
+is late: a long frame (the wipe tears down thousands of rows and the same frame
+builds 300 more), a throw mid-drain (the catch skips the tail entirely, and after
+`MAX_RENDER_NO_PROGRESS_RETRIES` the bounded give-up stops rescheduling — a STABLE
+parked-in-void surface, cleared only by §3.1's scroll-driven resume or an inbound
+frame), or a full reset arriving with the switch's own reconnect. A user who has
+time to scroll is in the stable case, so `vterm: render error` in the console is
+the discriminator worth asking for.
+
+**Second defect on the same seam, found by the same measurement.** `bind` records
+`pendingRestore.lastWrote` from the post-`rebuild` offset, so with the clamp
+deferred to frame 1 the browser's own 76000px correction (80281 -> 4346) read as a
+foreign write through the 1px detector and DISCARDED the reading position the
+switch was restoring. One fix closes both.
+
+### The fix
+
+`rebuild` collapses the four content-space overlays as part of its wipe, before it
+reads the offset (`collapseContentSpaceOverlays`, `render.ts`): the caret through
+`positionCursorOverlay`'s own `cursorAbs < 0` branch, the predicted cursor by
+class, and the consumer's IME view plus hidden textarea through `onCursorMove` —
+the only seam that reaches them, and an accurate one, because after a wipe the
+cursor genuinely has no row. Measured after: frame 0 becomes
+`scrollTop 0 / scrollHeight 800 / 0 rows`. The scroller collapses to exactly the
+viewport, so **there is no offset at which the reader can be looking at nothing**,
+whatever happens to the drain afterwards. The holding case also lands its restore
+on frame 1 (`scrollTop 0` for a saved anchor near the top of history, against
+4346 — the clamped tail — before).
+
+This removes the fault class rather than shortening its window, so it does not
+depend on which ingredient stretches frame 0 in the field.
+
 **The one plausible aggravator that survived both rounds:** an animation runs on
 a subtree mutated on every frame of its 200 ms, and the class that ends it is
 removed on a timer unrelated to either the animation or the drain. The second
 half is a defect on its own terms; section 3 fixes it. The first half is C3, and
-r2 showed it is not safe to fix yet.
+r2 showed it is not safe to fix yet. **It is not the reported symptom**, and
+section 5 is no longer on the path to fixing it.
 
 ---
 
@@ -302,12 +376,15 @@ already bounds what C1 could reveal.
 
 ### 4.3 Correct the stale prose
 
-`scroll.ts`'s comment on `noteContentShrink` names "a wipe whose `scrollHeight`
-is held up by an absolutely-positioned overlay" while listing the removals its
-arm must not predict. In this code that case is live rather than illustrative:
-the caret overlay, the predicted cursor, the IME view and the hidden textarea all
-carry a `top` in content coordinates, and `rebuild` does not reset them, while
-`init` does (`render.ts:326-333`). Say so, and point at 6.2.
+Done, then superseded by the fix. `scroll.ts`'s comment on `noteContentShrink`
+names "a wipe whose `scrollHeight` is held up by an absolutely-positioned overlay"
+while listing the removals its arm must not predict. That case WAS live rather than
+illustrative, and it was the bug (section 2): the caret overlay, the predicted
+cursor, the IME view and the hidden textarea all carry a `top` in content
+coordinates, `init` reset the two it owns and `rebuild` reset none. `rebuild` now
+collapses all four, so the clamp it announces is real; the comment says that, and
+notes that a caller removing content without collapsing whatever else is anchored
+in that space arms nothing.
 
 ---
 
@@ -443,13 +520,18 @@ bounded DOM.
 
 ### 6.2 Overlays out of content space
 
-The caret overlay, the predicted cursor and the IME view sit inside the scroll
-container with a `top` in content coordinates, recomputed per flush. A stale one
+**This was the bug. See section 2.** The caret overlay, the predicted cursor and
+the IME view sit inside the scroll container with a `top` in content coordinates,
+recomputed per flush, and the consumer's hidden textarea is a fourth. A stale one
 holds `scrollHeight` above the built content (4.3), and their place in the stack
-is what makes C1's overlay fade unavoidable. Only the hidden textarea has a
-reason to stay, because iOS places the soft keyboard relative to the focused
-input. Moving the three read-only overlays into pane space needs one measurement:
-the caret must not visibly lag a fast scroll.
+is what makes C1's overlay fade unavoidable. `rebuild` now collapses all four at
+the wipe, which is the fix, and it says nothing about where they should LIVE.
+
+The remaining item is unchanged: only the hidden textarea has a reason to stay in
+content space, because iOS places the soft keyboard relative to the focused input.
+Moving the three read-only overlays into pane space needs one measurement — the
+caret must not visibly lag a fast scroll — and would make this whole class
+unreachable rather than handled.
 
 ### 6.3 A scroll controller per tab
 
@@ -474,43 +556,60 @@ reads, so it is a decision, not an obvious win.
 Section 4 needs no evidence. Section 3 needs the sampling below to run first,
 because 3.1 changes a discriminator. Section 5 needs all of it.
 
-**Step 1 has been run, and it did NOT reproduce.** A harness that bundles the real
-UI and engine with the real stylesheet, fakes only the transport, and pushes
-content straight into the bound store measured 12 switches and 96 pixel samples in
-each of two launch configurations: zero frames where the geometry said rows covered
-the viewport and the pixels said otherwise. Ink never fell below 3.9% of the probe.
-One to three samples per switch landed while a `wt-switching*` class was on
-`.term`, so the animation window was sampled rather than missed, and between 16 and
-19 samples per run were discarded because the geometry moved under the camera.
-Five caveats bound that result, and the last two are why it is weak rather than
-dispositive: the container has no GPU (`--enable-unsafe-swiftshader`), so
-compositing is software; each screenshot costs about 85 ms, so a single-frame miss
-can hide between samples; the workload is faked too, since the silent socket never
-produces the resume traffic a real switch's reconnect generates; **a CDP screenshot
-requests a compositing pass rather than reading an already-presented frame, so a
-lost-invalidation or stale-surface fault is invisible to this instrument by
-construction**; and `CDPScreenshotNewSurface` chooses which surface is rendered
-into rather than whether rendering happens, so removing it (also clean) is not the
-explanation. Harness, method and caveats: `_adv-switchpaint/harness/`.
+**Superseded for the reported symptom.** The fault is measured and fixed
+(section 2); everything below still governs section 5, which is now optional
+performance work rather than a bug fix.
 
-So section 5 stays blocked, and the remaining steps are the ones that need real
-hardware.
+**Step 1's first attempt did NOT reproduce, and the instrument was the reason.** A
+harness that bundles the real UI and engine with the real stylesheet, fakes only the
+transport, and pushes content straight into the bound store measured 12 switches and
+96 pixel samples in each of two launch configurations: zero frames where the
+geometry said rows covered the viewport and the pixels said otherwise. Ink never
+fell below 3.9% of the probe. One to three samples per switch landed while a
+`wt-switching*` class was on `.term`, so the animation window was sampled rather
+than missed, and between 16 and 19 samples per run were discarded because the
+geometry moved under the camera. Five caveats bound that result, and the last two
+are why it is weak rather than dispositive: the container has no GPU
+(`--enable-unsafe-swiftshader`), so compositing is software; each screenshot costs
+about 85 ms, so a single-frame miss can hide between samples; the workload is faked
+too, since the silent socket never produces the resume traffic a real switch's
+reconnect generates; **a CDP screenshot requests a compositing pass rather than
+reading an already-presented frame, so a lost-invalidation or stale-surface fault is
+invisible to this instrument by construction**; and `CDPScreenshotNewSurface`
+chooses which surface is rendered into rather than whether rendering happens, so
+removing it (also clean) is not the explanation. Harness, method and caveats:
+`_adv-switchpaint/harness/`.
 
-1. **Reproduce and sample.** Done in software rendering, negative. Re-run on a
-   GPU-backed headed browser, on the reporter's engine and version.
-2. **Pin the engine and version, including desktop WebKit.** The candidate
-   mechanisms differ per engine (section 2), and no round has excluded WebKit.
+**What found it was a cheaper instrument aimed at the geometry instead of the
+pixels.** Sampling `scrollTop`, `scrollHeight`, the last built row's bottom and
+each overlay's `top` on every animation frame needs no screenshot, costs no
+compositing pass, cannot miss a frame, and named the fault on the first switch. The
+lesson generalises past this bug: **when the hypothesis is a geometry fault, do not
+buy a camera.** Two rounds of screenshot caveats were spent on an instrument that
+could not have answered the question, while the answer was three numbers per frame.
+
+The remaining steps below apply to section 5 only.
+
+1. **Reproduce and sample.** Done. Screenshot sampling in software rendering was
+   negative; per-frame geometry sampling in headed Chromium 151 was positive on
+   the first switch (section 2).
+2. **Pin the engine and version, including desktop WebKit.** Still open for
+   section 5. Not needed for the fault in section 2, which is CSS-spec scroll
+   overflow rather than engine-specific: the reporter sees it on Gecko, Blink and
+   WebKit, which is what a spec-level geometry fault looks like.
 3. **Separate the three scroll-triggered recoveries.** A repaint is only one of
    them: a scroll can repaint within one round trip through the paging path, and
    a downward tick can re-engage follow so the next flush pins the viewport. The
    harness implements this discriminator (`scrollTop` and the row count either
    side of the tick) and has had nothing to run it on. Do this before landing 3.1.
-4. **Discriminate lost invalidation from tiles-not-ready.** If it is the second,
-   the ordering change in 5.2 is the candidate and C1 does nothing. A rendering
-   forced to a known colour profile, plus frame-ordering timestamps around the
-   bind, the first visible commit and the class add, separates them.
+4. **Discriminate lost invalidation from tiles-not-ready.** Moot for the reported
+   symptom: it was neither. Still the gate on C1 versus 5.2 if section 5 is ever
+   revisited.
 5. **Assert the recovery in the harness, not by eye.** Implemented: the fault is
    a predicate over geometry against pixels, not a screenshot a human compares.
+   Add the zero-row case — `parkedInVoid` requires a built row to be past, so it
+   cannot fire on the frame where the wipe has left none, which is the frame that
+   mattered.
 6. **Then measure, cheapest first:** the 5.2 ordering change, then C1, then C3.
 
 Guard rails: the engine and UI batteries, and the existing display-conformance
@@ -520,16 +619,33 @@ tiers.
 
 ## 8. Open questions
 
-1. Is the premise real? Step 7.1 can refute it. Three reviewers called it
-   unproven at r1 and none withdrew that at r2.
-2. Which engine and version, and is it WebKit?
-3. Lost invalidation or tiles not ready?
-4. Is C1's overlay fade acceptable, or must 6.2 land first?
+1. ~~Is the premise real?~~ **Answered: yes, and it is a geometry fault.** The wipe
+   leaves the scroller its entire former scroll range, held by the content-space
+   overlays, and `stickToBottom` refuses to correct it (section 2). Measured, fixed,
+   red-checked. Three reviewers called the premise unproven at r1 and r2, correctly:
+   the mechanism the drafts proposed was not real. The symptom was.
+2. Which engine and version, and is it WebKit? Open for section 5 only. The fault
+   in section 2 is spec-level scroll overflow and reproduces on all three engines
+   by construction, which matches the report.
+3. ~~Lost invalidation or tiles not ready?~~ **Neither.** No paint fault was
+   involved; the pane was black because the viewport was pointed at empty content
+   space.
+4. Is C1's overlay fade acceptable, or must 6.2 land first? Open, and now purely a
+   section 5 question.
 5. What does a held below-window queue report as the store's frontier, given
    `maybeFetchHistory` runs after every flush and on every scroll? This gates
    C3, and it is the question that moved C3 out of the implement set.
 6. Does a repositioned `role="status"` gap marker re-announce in real assistive
    technology?
+7. **What makes frame 0 last long enough to see?** The fix makes the answer
+   cosmetic rather than load-bearing, so this is a curiosity with one cheap probe:
+   ask for `vterm: render error` in the console. A stable parked-in-void surface
+   (the user has time to scroll) means the drain threw and the bounded give-up
+   stopped rescheduling; a transient one means the frame merely ran long.
+8. **Finding 18 is still open**, and unrelated to this fix: the background
+   browse-cache sweep passes `-1` ("no reader: no position to exempt") when the
+   tabs feature HAS saved that tab's reading position, so it can drop the page the
+   saved position names. It wants its own review.
 
 ---
 
@@ -696,3 +812,40 @@ landed; check the disk for the artifact first.
   its own review.
 
 Reports: `_adv-switchpaint/report-code-r{1,2}-*.md`.
+
+### r5 (the measurement that found it)
+
+The reporter confirmed the switch is an APP tab switch, not a browser tab, which
+retired the `document.visibilityState` reading of the report for good. A per-frame
+geometry recorder (real `render.ts`/`scroll.ts` bundled with the real
+`web-terminal-ui` stylesheet, driven through actual `render.bind()` switches in
+headed Chromium 151) then named the fault on the first switch, and section 6.2 —
+filed under "structural notes, nothing proposed" since r1 — was it.
+
+- **The wipe leaves the scroller its entire former scroll range.** Measured on a
+  4769-row tab: zero DOM rows, `scrollHeight` 81081, `scrollTop` 80281, held by the
+  caret and the hidden textarea still at 81064px. The viewport is pointed at empty
+  content space, which paints as a black pane.
+- **`stickToBottom` refuses to correct it**, because `distanceFromBottom()` against
+  the phantom height reads 0. The invariant that exists to rescue a following view
+  is disarmed for exactly as long as the phantom height survives.
+- **The recovery lands at the top** because the built block occupies the top of the
+  phantom range, which is O1 and O3 verbatim, and is what the reporter described
+  independently ("when I touch the screen or scroll the content appears at the
+  top").
+- **`bind`'s restore was a second casualty.** With the clamp deferred to frame 1,
+  the browser's own 76000px correction tripped `applyPendingRestore`'s 1px
+  foreign-write detector and discarded the reading position the switch was
+  restoring.
+- **Fix:** `rebuild` collapses the four content-space overlays as part of its wipe,
+  before it reads the offset. Frame 0 becomes `scrollTop 0 / scrollHeight 800`, so
+  no offset exists at which the reader can be looking at nothing, whatever the
+  drain does next. Three tests in `render-bind.test.ts`, red-checked by removing the
+  call.
+- **Method note worth keeping.** Two rounds were spent bounding a screenshot
+  harness that could not answer the question, while the answer was three numbers
+  per frame. When the hypothesis is geometry, sample the geometry: it needs no
+  compositing pass, cannot miss a frame, and costs nothing to run.
+- **Predicate note.** `parkedInVoid` requires a built row to be past, so it cannot
+  fire on the frame where the wipe has left none. That was its third blind spot and
+  it hid the fault through two rounds of sampling.

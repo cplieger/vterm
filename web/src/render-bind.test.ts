@@ -161,6 +161,72 @@ describe("render.bind / rebuild (per-tab store swap)", () => {
     expect(shown).toContain("alt0");
     expect(shown).toContain("alt1");
   });
+
+  // --- The wipe covers content space, not just the rows ---
+  //
+  // The caret, the predicted cursor, the IME view and the consumer's hidden
+  // textarea all sit INSIDE the scroll container with a `top` in content
+  // coordinates, so each one holds the container's scrollable overflow at the
+  // offset it was last placed at. Measured in Chromium on a 4769-row tab:
+  // leaving them behind left the scroller with ZERO rows of content and an
+  // 81081px scroll range, the viewport parked at 80281px over nothing (which
+  // paints as a black pane), and `stickToBottom` refusing to correct it because
+  // it measured `distanceFromBottom() === 0` against the phantom height.
+  //
+  // happy-dom has no layout, so these pin the mechanical resets the geometry
+  // depends on, and each one is synchronous inside `bind` on purpose: the
+  // browser paints once between the switch and the first flush, and the clamp
+  // has to land before `noteContentShrink` and `pendingRestore.lastWrote` read
+  // the offset.
+
+  it("hides the caret overlay synchronously in bind, before any frame runs", async () => {
+    render.handleScreen({
+      ...screenMsg(0, [row("live")], [0], [0, 2]),
+      cursorHidden: false,
+    });
+    await tick();
+    const caret = termWrap.querySelector(".term-cursor-overlay");
+    expect(caret?.classList.contains("visible")).toBe(true);
+
+    // No frame is pumped after this: the caret must already be out of content
+    // space when bind returns.
+    render.bind(new LineStore(), { view: null });
+    expect(caret?.classList.contains("visible")).toBe(false);
+  });
+
+  it("hides the predicted cursor synchronously in bind", async () => {
+    render.handleScreen(screenMsg(0, [row("a"), row("b")], [0, 1]));
+    await tick();
+    render.setPredictedCursor(1, 5, true);
+    const pred = termWrap.querySelector(".pred-cursor");
+    expect(pred?.classList.contains("visible")).toBe(true);
+
+    render.bind(new LineStore(), { view: null });
+    expect(pred?.classList.contains("visible")).toBe(false);
+  });
+
+  it("fires onCursorMove during the wipe, so the consumer's overlays move too", async () => {
+    // The IME view and the hidden textarea are the CONSUMER's and sit in the
+    // same content space; the cursor seam is the only way to reach them, and it
+    // has to fire while the DOM is wiped rather than a frame later.
+    const moves: number[] = [];
+    render.init({
+      output: outputEl,
+      termWrap,
+      onCursorMove: () => {
+        moves.push(render.getCursorPx().top);
+      },
+    });
+    render.updateFontMetrics();
+    render.handleScroll(scrollMsg(0, ["a", "b", "c"]));
+    await tick();
+    const beforeBind = moves.length;
+    expect(beforeBind).toBeGreaterThan(0);
+
+    render.bind(new LineStore(), { view: null });
+    // Synchronous: no frame has run since bind returned.
+    expect(moves.length).toBe(beforeBind + 1);
+  });
 });
 
 describe("render.init maxLines (the consumer-plumbed retained-line cap)", () => {

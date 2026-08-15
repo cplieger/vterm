@@ -240,7 +240,7 @@ func TestOriginPolicy_acceptOptions(t *testing.T) {
 // refusal, and returning it would push that obligation onto every caller.
 func dialWithOrigin(t *testing.T, url, origin string) (conn *websocket.Conn, status int, err error) {
 	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 	defer cancel()
 	opts := &websocket.DialOptions{HTTPHeader: http.Header{}}
 	opts.HTTPHeader.Set("Origin", origin)
@@ -314,7 +314,7 @@ func TestOriginPolicy_managerUnknownSessionSocket(t *testing.T) {
 			t.Fatalf("dial from an allowed origin failed: %v", err)
 		}
 		defer ws.Close(websocket.StatusNormalClosure, "")
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 		defer cancel()
 		_, _, readErr := ws.Read(ctx)
 		if got := websocket.CloseStatus(readErr); got != statusUnknownSession {

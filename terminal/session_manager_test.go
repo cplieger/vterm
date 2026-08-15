@@ -143,7 +143,7 @@ func TestSessionManagerREST(t *testing.T) {
 	}
 
 	// DELETE removes it (204), a second DELETE is 404.
-	req, _ := http.NewRequestWithContext(context.Background(), http.MethodDelete, srv.URL+"/api/sessions/"+created.ID, nil)
+	req, _ := http.NewRequestWithContext(t.Context(), http.MethodDelete, srv.URL+"/api/sessions/"+created.ID, nil)
 	respD, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatalf("DELETE: %v", err)
@@ -152,7 +152,7 @@ func TestSessionManagerREST(t *testing.T) {
 	if respD.StatusCode != http.StatusNoContent {
 		t.Fatalf("DELETE status = %d, want 204", respD.StatusCode)
 	}
-	req2, _ := http.NewRequestWithContext(context.Background(), http.MethodDelete, srv.URL+"/api/sessions/"+created.ID, nil)
+	req2, _ := http.NewRequestWithContext(t.Context(), http.MethodDelete, srv.URL+"/api/sessions/"+created.ID, nil)
 	respD2, err := http.DefaultClient.Do(req2)
 	if err != nil {
 		t.Fatalf("DELETE 2: %v", err)
@@ -198,7 +198,7 @@ func TestSessionManagerWSAttach(t *testing.T) {
 	t.Cleanup(srv.Close)
 
 	wsURL := "ws" + strings.TrimPrefix(srv.URL, "http") + "/ws?session=" + id
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 	defer cancel()
 	//nolint:bodyclose // coder/websocket Dial nils resp.Body on success
 	ws, _, err := websocket.Dial(ctx, wsURL, nil)
@@ -341,7 +341,7 @@ func TestSessionManagerSetTitleREST(t *testing.T) {
 
 	put := func(t *testing.T, sessionID, body string) int {
 		t.Helper()
-		req, _ := http.NewRequestWithContext(context.Background(), http.MethodPut,
+		req, _ := http.NewRequestWithContext(t.Context(), http.MethodPut,
 			srv.URL+"/api/sessions/"+sessionID+"/title", strings.NewReader(body))
 		resp, err := http.DefaultClient.Do(req)
 		if err != nil {
@@ -422,7 +422,7 @@ func TestWebSocketUnknownSessionClosesDefinitively(t *testing.T) {
 	srv := httptest.NewServer(mux)
 	defer srv.Close()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 	defer cancel()
 	//nolint:bodyclose // coder/websocket Dial nils resp.Body on success
 	ws, _, err := websocket.Dial(ctx, "ws"+strings.TrimPrefix(srv.URL, "http")+WSPath+"?session=nope", nil)
@@ -490,7 +490,7 @@ func TestSessionSurfaceRefusesCaching(t *testing.T) {
 		srv := httptest.NewServer(m.EventsHandler())
 		t.Cleanup(srv.Close)
 
-		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		ctx, cancel := context.WithTimeout(t.Context(), 3*time.Second)
 		defer cancel()
 		req, _ := http.NewRequestWithContext(ctx, http.MethodGet, srv.URL, nil)
 		resp, err := http.DefaultClient.Do(req)

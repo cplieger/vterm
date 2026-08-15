@@ -377,7 +377,7 @@ func TestEventsHandlerInitialSync(t *testing.T) {
 	srv := httptest.NewServer(m.EventsHandler())
 	t.Cleanup(srv.Close)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	ctx, cancel := context.WithTimeout(t.Context(), 3*time.Second)
 	defer cancel()
 	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, srv.URL, nil)
 	resp, err := http.DefaultClient.Do(req)
@@ -485,7 +485,7 @@ func TestEventsHandlerFlushesBehindMiddleware(t *testing.T) {
 	srv := httptest.NewServer(wrapped)
 	t.Cleanup(srv.Close)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	ctx, cancel := context.WithTimeout(t.Context(), 3*time.Second)
 	defer cancel()
 	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, srv.URL, nil)
 	resp, err := http.DefaultClient.Do(req)

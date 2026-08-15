@@ -5,7 +5,7 @@
 # web-terminal-engine is a LIBRARY that ships a `main` package
 # (internal/e2etestserver), so cplieger/ci's app-mode detection ("a main package
 # exists") gates it on punused -- but its exported surface is a PUBLISHED Go
-# proxy API (github.com/cplieger/web-terminal-engine/v3), consumed by vibekit,
+# proxy API (github.com/cplieger/web-terminal-engine/v4), consumed by vibekit,
 # web-terminal-kiro and web-terminal-server. punused's own README states it "does
 # not detect references from outside of your project", and run.go asks gopls for
 # `textDocument/references` scoped to this module only, so EVERY symbol a
@@ -310,3 +310,23 @@ function ReadWireManifest
 # already sees them.
 constant DefaultScrollbackCapacity
 function ClampScrollbackCapacity
+
+
+# (*Handler).Shutdown (terminal/terminal.go) -- EU1001, and the "test only" here
+# is a DESIGN consequence rather than a gap. Shutdown is Close plus the wait, and
+# the engine's own SessionManager deliberately does not use it: it calls Close on
+# every session FIRST and waits on each afterwards (terminal/session_manager.go,
+# Shutdown), so the sessions' teardown windows overlap inside one budget instead
+# of summing. Routing the manager through this method would serialize them, which
+# is the behavior it exists to avoid, so wiring it up in-repo would be a
+# regression rather than a fix.
+#
+# The consumer it is published for holds a bare Handler with no manager in front
+# of it: vibekit/internal/hub/shell.go's ShellManager, which owns one PTY for the
+# built-in shell. web-terminal-kiro and web-terminal-server reach the wait through
+# SessionManager.Shutdown instead.
+#
+# Covered in-repo by terminal/shutdown_test.go (TestShutdownWaitsForTeardown,
+# TestShutdownReportsAnExpiredBudget, TestShutdownOnAnUnstartedHandlerReturnsNil,
+# TestShutdownReportsSuccessAfterCompletion), each red-checked against a mutant.
+method (*Handler).Shutdown

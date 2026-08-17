@@ -79,14 +79,15 @@ type SessionInfo struct {
 	ReportsActivity bool `json:"reportsActivity"`
 }
 
-// Session status values. The manager computes working/idle/exited from process
-// liveness, OSC 9;4 progress, and output activity; a consumer's classifier maps
-// an OSC 9 notification to a latched needs-input or done state.
+// Session status values. The manager derives every one of them from two inputs —
+// process liveness and OSC 9;4 progress — plus the needs-input/done latch a
+// consumer's classifier sets from an OSC 9 notification. Raw output activity is
+// deliberately NOT an input; computeStatus (events.go) states why.
 const (
-	StatusWorking = "working" // agent working (OSC 9;4 progress active) or recent output
-	StatusIdle    = "idle"    // at rest with no turn yet (the default / new-session state)
+	StatusWorking = "working" // OSC 9;4 progress reports active (state 1 or 3), and nothing else
+	StatusIdle    = "idle"    // at rest: no progress state and no latch (also the new-session default)
 	StatusInput   = "input"   // blocked awaiting user action (latched from a notification)
-	StatusDone    = "done"    // a turn completed (latched from a notification; cleared on next working)
+	StatusDone    = "done"    // a turn completed (latched from a notification; cleared by any progress state but 4)
 	StatusExited  = "exited"  // the process has exited
 	// StatusCrashed is a session whose process exited BADLY: a non-zero exit
 	// status, or a terminating signal it was not asked for. StatusExited is

@@ -1491,6 +1491,13 @@ func (s *Screen) shiftRight(n int) {
 
 func (s *Screen) softReset() {
 	s.style = Style{}
+	// The OSC 8 hyperlink is a pen attribute, so a reset of the rendition
+	// clears it with the rest of them. SGR 0 deliberately does NOT (the OSC 8
+	// contract keeps the link outside the SGR attributes), which leaves DECSTR
+	// and RIS -- which routes here -- as the only sequences that return the pen
+	// to its power-on state. Without this an application that closes its links
+	// by resetting the terminal leaves one open for every cell it writes after.
+	s.hyperlink = ""
 	s.scrollTop = 0
 	s.scrollBottom = s.Height - 1
 	s.mainSaved = savedCursor{}

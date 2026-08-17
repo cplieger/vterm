@@ -802,6 +802,14 @@ func (s *Screen) enterAltScreen(mode int) {
 	if s.InAltScreen {
 		return
 	}
+	// End any open hyperlink before the switch. The pen's link belongs to the
+	// screen the application was drawing on, so carrying it across would attach
+	// that href to unrelated alt-screen text; ghostty ends hyperlink state on
+	// every screen switch for the same reason and asserts the new screen starts
+	// with none. Deliberately NOT part of savedMainStyle: an application that
+	// wants the link back re-opens it, which is one sequence, while restoring it
+	// would resurrect a link whose close may have been written on the alt screen.
+	s.hyperlink = ""
 	// Save main-screen cells (deep copy — the alt buffer mutates in place) and
 	// the main cursor/scroll region for restore on exit.
 	saved := make([][]Cell, len(s.Cells))
@@ -856,6 +864,8 @@ func (s *Screen) exitAltScreen(mode int) {
 	if !s.InAltScreen || s.savedMainCells == nil {
 		return
 	}
+	// Same rule as the enter side: the link belongs to the screen being left.
+	s.hyperlink = ""
 	// Persist (or discard) the alt buffer for a later re-enter.
 	s.altCells = s.Cells
 	if mode == 1047 || mode == 1049 {

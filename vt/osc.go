@@ -647,14 +647,27 @@ func (s *Screen) dynColor(slot int) int32 {
 	}
 }
 
-// handleOsc8 processes the OSC 8 payload (after "8;").
-// Format: params;URI — params may contain id=... separated by ':'.
-// Empty URI closes the current hyperlink.
+// handleOsc8 sets or clears the pen's hyperlink from an OSC 8 payload (the
+// bytes after "8;").
+//
+// Format: params;URI — params may contain id=... separated by ':'. An empty URI
+// closes the current hyperlink.
+//
+// A payload with no second semicolon carries no URI field and is MALFORMED, so
+// it is ignored: the sequence is discarded and whatever hyperlink the pen holds
+// stays. That matches ghostty, whose OSC 8 parser moves to its invalid state
+// when the second separator is missing, and it is the conservative direction —
+// clearing instead would let one corrupt byte inside a URL end a link the
+// application had legitimately opened, mid-label.
+//
+// The unbounded-bleed failure this looks like it should guard against comes from
+// somewhere else entirely: an application that opens a link and never closes it.
+// No spelling of OSC 8 fixes that, and the pen's escape hatches are the three
+// sequences that reset it (empty URI, DECSTR, RIS) plus a screen switch.
 func (s *Screen) handleOsc8(data string) {
 	// Split on first ';' to separate params from URI.
 	_, uri, ok := strings.Cut(data, ";")
 	if !ok {
-		// Malformed: no second semicolon. Ignore.
 		return
 	}
 	// Empty URI closes the hyperlink; non-empty sets it.

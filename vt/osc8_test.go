@@ -84,13 +84,73 @@ func TestOSC8RunsSplitOnURLBoundary(t *testing.T) {
 	}
 }
 
-func TestOSC8MalformedNoSecondSemicolon(t *testing.T) {
+// A malformed OSC 8 carries no URI field, so it is ignored and the pen keeps
+// whatever link it holds. Matches ghostty, whose parser invalidates a payload
+// missing the second separator; clearing instead would let one corrupt byte
+// inside a URL end a link the application legitimately opened.
+func TestOSC8MalformedNoSecondSemicolonIsIgnored(t *testing.T) {
 	s := New(24, 80)
-	// Malformed: no second semicolon — should be ignored
 	s.Write([]byte("\x1b]8;http://example.com\x07"))
 	s.Write([]byte("X"))
-	// No hyperlink should be set (malformed ignored)
-	if s.Cells[0][0].Hyperlink != "" {
-		t.Fatalf("cell hyperlink = %q, want empty (malformed OSC 8)", s.Cells[0][0].Hyperlink)
+	if got := s.Cells[0][0].Hyperlink; got != "" {
+		t.Fatalf("cell hyperlink = %q, want empty (malformed OSC 8 sets no link)", got)
+	}
+
+	s = New(24, 80)
+	s.Write([]byte("\x1b]8;;http://a.com\x07AA"))
+	s.Write([]byte("\x1b]8;\x1b\\")) // one semicolon: no URI field
+	s.Write([]byte("BB"))
+	if got := s.Cells[0][2].Hyperlink; got != "http://a.com" {
+		t.Fatalf("cell after a malformed OSC 8 = %q, want the still-open link", got)
+	}
+}
+
+// The hyperlink is a pen attribute, so DECSTR, RIS and a screen switch clear it
+// while SGR 0 — which the OSC 8 contract keeps separate from the link — does not.
+func TestOSC8PenClearedByResetsAndScreenSwitchButNotBySGR(t *testing.T) {
+	for _, tc := range []struct {
+		name, seq string
+		want      string
+	}{
+		{"SGR 0", "\x1b[0m", "http://a.com"},
+		{"ED 2", "\x1b[2J", "http://a.com"},
+		{"DECSTR", "\x1b[!p", ""},
+		{"RIS", "\x1bc", ""},
+		{"alt screen enter 1049", "\x1b[?1049h", ""},
+		{"alt screen enter 47", "\x1b[?47h", ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := New(24, 80)
+			s.Write([]byte("\x1b]8;;http://a.com\x07A"))
+			if s.hyperlink != "http://a.com" {
+				t.Fatalf("setup: pen = %q, want the opened link", s.hyperlink)
+			}
+			s.Write([]byte(tc.seq))
+			if s.hyperlink != tc.want {
+				t.Errorf("pen after %s = %q, want %q", tc.name, s.hyperlink, tc.want)
+			}
+			s.Write([]byte("B"))
+			// RIS and a screen switch move the cursor, so read where the write landed.
+			cell := s.Cells[s.curY][max(0, s.curX-1)]
+			if cell.Hyperlink != tc.want {
+				t.Errorf("cell written after %s carries hyperlink %q, want %q", tc.name, cell.Hyperlink, tc.want)
+			}
+		})
+	}
+}
+
+// Leaving the alt screen clears the pen too: the link belongs to the screen
+// being left, and its close may have been written there.
+func TestOSC8PenClearedOnAltScreenExit(t *testing.T) {
+	s := New(24, 80)
+	s.Write([]byte("\x1b[?1049h"))                 // to alt
+	s.Write([]byte("\x1b]8;;http://alt.com\x07A")) // open a link on the alt screen
+	s.Write([]byte("\x1b[?1049l"))                 // back to main
+	if s.hyperlink != "" {
+		t.Errorf("pen after leaving the alt screen = %q, want empty", s.hyperlink)
+	}
+	s.Write([]byte("B"))
+	if got := s.Cells[s.curY][max(0, s.curX-1)].Hyperlink; got != "" {
+		t.Errorf("cell written on the main screen carries hyperlink %q, want empty", got)
 	}
 }

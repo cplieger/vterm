@@ -8,7 +8,7 @@ import (
 )
 
 // TestWireManifestMatchesGoConstants is the Go leg of the manifest's three-way
-// conformance guard. The TS leg (web/src/wire-manifest.test.ts) proves the
+// conformance guard. The TS leg (web/src/test-helpers/wire-manifest.test.ts) proves the
 // manifest is regenerable from the TypeScript constants; this proves the same
 // numbers match the Go constants a server actually enforces. Without it the
 // manifest could stay perfectly in sync with a TypeScript half that had itself
@@ -32,7 +32,7 @@ func TestWireManifestMatchesGoConstants(t *testing.T) {
 	path := filepath.Join("..", "web", "wire-compatibility.json")
 	m, err := ReadWireManifest(path)
 	if err != nil {
-		t.Fatalf("ReadWireManifest(%s) (regenerate with: cd web && UPDATE_GOLDEN=1 npx vitest --run src/wire-manifest.test.ts): %v", path, err)
+		t.Fatalf("ReadWireManifest(%s) (regenerate with: cd web && UPDATE_GOLDEN=1 npx vitest --run src/test-helpers/wire-manifest.test.ts): %v", path, err)
 	}
 
 	if m.SchemaVersion != WireManifestSchemaVersion {

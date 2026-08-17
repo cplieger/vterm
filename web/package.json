@@ -67,8 +67,8 @@
   "files": [
     "src/",
     "!src/**/*.test.ts",
-    "!src/**/test-helpers",
-    "!src/**/fc-strict-setup.ts",
+    "!src/**/*-setup.ts",
+    "!src/**/test-helpers/**",
     "jsr.json",
     "LICENSE",
     "wire-compatibility.json"

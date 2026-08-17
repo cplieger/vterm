@@ -8,12 +8,7 @@
   "typescriptChecker": {
     "prioritizePerformanceOverAccuracy": false
   },
-  "mutate": [
-    "src/**/*.ts",
-    "!src/**/*.test.ts",
-    "!src/**/*.fuzz.test.ts",
-    "!src/fc-strict-setup.ts"
-  ],
+  "mutate": ["src/**/*.ts", "!src/**/*.test.ts", "!src/**/*.fuzz.test.ts", "!src/**/*-setup.ts"],
   "mutator": {
     "excludedMutations": ["StringLiteral"]
   },

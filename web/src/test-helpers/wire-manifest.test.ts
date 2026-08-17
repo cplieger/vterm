@@ -9,7 +9,7 @@
 //
 // Regenerate (same code path that compares, so the two can never disagree):
 //
-//   cd web && UPDATE_GOLDEN=1 npx vitest --run src/wire-manifest.test.ts
+//   cd web && UPDATE_GOLDEN=1 npx vitest --run src/test-helpers/wire-manifest.test.ts
 //
 // The third surface, the Go constants, is pinned by
 // terminal/wire_manifest_test.go; between the two, the manifest, the TS
@@ -28,9 +28,9 @@ import {
   MIN_SUPPORTED_SERVER_WIRE_VERSION,
   WIRE_INCOMPATIBLE_CLOSE_CODE,
   WIRE_PROTOCOL_VERSION,
-} from "./wire-compatibility.js";
+} from "../wire-compatibility.js";
 
-const manifestPath = join(dirname(fileURLToPath(import.meta.url)), "..", WIRE_MANIFEST_PATH);
+const manifestPath = join(dirname(fileURLToPath(import.meta.url)), "..", "..", WIRE_MANIFEST_PATH);
 
 describe("generated wire-compatibility manifest", () => {
   it("matches the checked-in artifact byte for byte", () => {
@@ -42,7 +42,7 @@ describe("generated wire-compatibility manifest", () => {
     expect(
       onDisk,
       `web/${WIRE_MANIFEST_PATH} drifted from web/src/wire-compatibility.ts. ` +
-        "Regenerate with: cd web && UPDATE_GOLDEN=1 npx vitest --run src/wire-manifest.test.ts " +
+        "Regenerate with: cd web && UPDATE_GOLDEN=1 npx vitest --run src/test-helpers/wire-manifest.test.ts " +
         "(and re-run `go test ./terminal/ -run TestWireManifest` so the Go constants are re-checked).",
     ).toBe(rendered);
   });

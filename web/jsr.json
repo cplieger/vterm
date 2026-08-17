@@ -7,6 +7,6 @@
   },
   "publish": {
     "include": ["LICENSE", "README.md", "src/**/*.ts", "wire-compatibility.json"],
-    "exclude": ["src/**/*.test.ts", "src/**/__test-helpers__/**"]
+    "exclude": ["src/**/*.test.ts", "src/**/*-setup.ts", "src/**/test-helpers/**"]
   }
 }

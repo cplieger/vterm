@@ -19,7 +19,7 @@ The Go server and TS client agree on a byte-level WebSocket protocol without imp
 - Decoder (TS): `web/src/wire-binary.ts`
 - Client control/input path (TS): `web/src/connection.ts`, `web/src/wire.ts`, `web/src/wsurl.ts`
 - Compatibility metadata (TS): `web/src/wire-compatibility.ts`
-- Generated language-neutral manifest: `web/wire-compatibility.json` (generator `web/src/wire-manifest.ts`)
+- Generated language-neutral manifest: `web/wire-compatibility.json` (generator `web/src/test-helpers/wire-manifest.ts`)
 
 Two rules keep the two halves honest, and both have been broken:
 
@@ -47,17 +47,17 @@ This check was added after v3.2.1 and is a behaviour change for existing callers
 
 ### The generated wire-compatibility manifest
 
-`web/wire-compatibility.json` publishes the compatibility constants to consumers that cannot import TypeScript. It is GENERATED from `WIRE_COMPATIBILITY` by `web/src/wire-manifest.ts` and checked in, because the release pipeline publishes the working tree with no build step (`npm pkg set version` is the only mutation it makes, so a manifest produced at publish time would never reach the tarball). Never hand-edit it, and never restate the numbers there — one source of truth is the whole point of the file.
+`web/wire-compatibility.json` publishes the compatibility constants to consumers that cannot import TypeScript. It is GENERATED from `WIRE_COMPATIBILITY` by `web/src/test-helpers/wire-manifest.ts` and checked in, because the release pipeline publishes the working tree with no build step (`npm pkg set version` is the only mutation it makes, so a manifest produced at publish time would never reach the tarball). Never hand-edit it, and never restate the numbers there — one source of truth is the whole point of the file.
 
 Regenerate after any change to `web/src/wire-compatibility.ts`:
 
 ```sh
-cd web && UPDATE_GOLDEN=1 npx vitest --run src/wire-manifest.test.ts
+cd web && UPDATE_GOLDEN=1 npx vitest --run src/test-helpers/wire-manifest.test.ts
 ```
 
 Three guards keep the surfaces from diverging, all on the normal CI path:
 
-- Drift: `web/src/wire-manifest.test.ts` regenerates the manifest and fails on any byte of difference (same code path that writes it under `UPDATE_GOLDEN=1`).
+- Drift: `web/src/test-helpers/wire-manifest.test.ts` regenerates the manifest and fails on any byte of difference (same code path that writes it under `UPDATE_GOLDEN=1`).
 - TypeScript conformance: the same test pins every manifest value to its `wire-compatibility.ts` constant.
 - Go conformance: `terminal/wire_manifest_test.go` pins the manifest against `WireProtocolVersion` / `WireIncompatibleCloseCode`, checks the client floor cannot exceed the server's revision, and feeds the manifest through `WirePairIncompatibility` to assert the published pair accepts itself.
 

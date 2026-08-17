@@ -33,7 +33,7 @@ export default defineConfig({
     coverage: {
       provider: "v8",
       include: ["src/**/*.ts"],
-      exclude: ["src/**/*.test.ts", "src/**/*.d.ts", "src/fc-strict-setup.ts"],
+      exclude: ["src/**/*.test.ts", "src/**/*.d.ts", "src/**/*-setup.ts"],
       reportOnFailure: true,
       reporter: ["text", "text-summary", "lcov"],
     },

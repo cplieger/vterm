@@ -25,7 +25,7 @@
 // web/README.md for what a consumer may rely on and what counts as a breaking
 // change.
 
-import { WIRE_COMPATIBILITY, type WireCompatibility } from "./wire-compatibility.js";
+import { WIRE_COMPATIBILITY, type WireCompatibility } from "../wire-compatibility.js";
 
 /**
  * Schema revision of the manifest FILE, independent of the wire protocol
@@ -57,7 +57,7 @@ export interface WireManifest {
 export function buildWireManifest(): WireManifest {
   return {
     schemaVersion: WIRE_MANIFEST_SCHEMA_VERSION,
-    generatedBy: "web/src/wire-manifest.ts",
+    generatedBy: "web/src/test-helpers/wire-manifest.ts",
     wireCompatibility: {
       protocolVersion: WIRE_COMPATIBILITY.protocolVersion,
       minimumServerProtocolVersion: WIRE_COMPATIBILITY.minimumServerProtocolVersion,

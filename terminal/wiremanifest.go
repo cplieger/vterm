@@ -9,11 +9,11 @@ import (
 
 // The wire-compatibility manifest is this engine's own published data format:
 // web/wire-compatibility.json, rendered from the TypeScript constants by
-// web/src/wire-manifest.ts and checked in, so it ships inside every npm and JSR
-// release. It exists because a consumer that is neither TypeScript nor Go — a
-// Dockerfile, a shell release gate — had no machine-readable surface for the
-// wire revisions and resorted to scraping the TypeScript source with sed, which
-// breaks on any reformat.
+// web/src/test-helpers/wire-manifest.ts and checked in, so it ships inside every
+// npm and JSR release. It exists because a consumer that is neither TypeScript
+// nor Go — a Dockerfile, a shell release gate — had no machine-readable surface
+// for the wire revisions and resorted to scraping the TypeScript source with sed,
+// which breaks on any reformat.
 //
 // A GO consumer needs it for a less obvious reason, and that is why this decoder
 // exists. The Go module carries the SERVER half as constants, but a release gate

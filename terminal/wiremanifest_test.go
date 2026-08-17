@@ -17,7 +17,7 @@ func TestDecodeWireManifestReadsThePublishedShape(t *testing.T) {
 	t.Parallel()
 	m, err := DecodeWireManifest([]byte(`{
 	  "schemaVersion": 1,
-	  "generatedBy": "web/src/wire-manifest.ts",
+	  "generatedBy": "web/src/test-helpers/wire-manifest.ts",
 	  "wireCompatibility": {
 	    "protocolVersion": 4,
 	    "minimumServerProtocolVersion": 3,

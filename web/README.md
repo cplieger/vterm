@@ -106,7 +106,7 @@ curl -fsSL https://jsr.io/@cplieger/web-terminal-engine/<version>/wire-compatibi
 ```json
 {
   "schemaVersion": 1,
-  "generatedBy": "web/src/wire-manifest.ts",
+  "generatedBy": "web/src/test-helpers/wire-manifest.ts",
   "wireCompatibility": {
     "protocolVersion": 4,
     "minimumServerProtocolVersion": 3,

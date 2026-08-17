@@ -9,7 +9,7 @@
     "test:e2e": "playwright test"
   },
   "devDependencies": {
-    "@cplieger/web-terminal-engine-v3": "npm:@cplieger/web-terminal-engine@2.8.0",
+    "@cplieger/web-terminal-engine-v3": "npm:@cplieger/web-terminal-engine@4.0.1",
     "@eslint/js": "10.0.1",
     "@playwright/test": "1.62.1",
     "@stryker-mutator/core": "9.6.1",

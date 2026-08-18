@@ -62,7 +62,7 @@ constant StatusDone
 # WithScrollbackCapacity: web-terminal-server/main.go and
 #   web-terminal-kiro/routes.go, both CONDITIONALLY -- neither app holds a depth
 #   of its own any more, so the option is appended only when the operator set
-#   WT_SCROLLBACK and otherwise omitted so the engine's default applies.
+#   SCROLLBACK and otherwise omitted so the engine's default applies.
 # WithKeepUnfocused: web-terminal-kiro/routes.go:279 -- load-bearing, it is what
 #   keeps kiro-cli emitting the OSC 9 notifications the status dots latch on
 #   (pinned by web-terminal-kiro/session_keep_unfocused_test.go:41).
@@ -302,7 +302,7 @@ function ReadWireManifest
 #   reported depth, and the value loadConfig starts from),
 #   web-terminal-kiro/main.go (same startup line).
 # ClampScrollbackCapacity: web-terminal-server/main.go and
-#   web-terminal-kiro/main.go, both on the WT_SCROLLBACK path -- it raises the
+#   web-terminal-kiro/main.go, both on the SCROLLBACK path -- it raises the
 #   range where asking for LESS server history would cost the client more.
 #
 # ScrollbackEnvVar and MinPagingCapacity are not listed: both are referenced from

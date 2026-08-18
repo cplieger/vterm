@@ -49,6 +49,12 @@ const (
 	// reapMarkerEnv names the variable every session's process tree inherits.
 	// The engine owns this key: a consumer's WithEnv cannot usefully shadow it,
 	// because the scan matches the full KEY=VALUE pair and the value is random.
+	//
+	// It keeps the WT_ prefix, which the operator-facing knobs (ScrollbackEnvVar
+	// and the consumer convention in the README) dropped. This key is not a knob:
+	// the engine INJECTS it into the child environment, where it shares one flat
+	// namespace with everything else the system and the user's shell set, so the
+	// prefix is real disambiguation rather than a leaked component name.
 	reapMarkerEnv = "WT_SESSION_REAP"
 
 	// reapMarkerBytes sizes the random marker value. 16 bytes is far past

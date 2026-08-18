@@ -251,11 +251,17 @@ const (
 // library that reads process state takes configuration out of its caller's
 // hands. Consumers read it (envx.IntStrict) and pass WithScrollbackCapacity.
 //
+// The name carries no component prefix on purpose. It is set by an operator who
+// knows the app they run, not the library serving its HTTP, so a WT_ prefix
+// leaked an internal name at them and bought no disambiguation. The keys the
+// engine INJECTS into a session's child environment are the opposite case and do
+// keep the prefix — see reapMarkerEnv.
+//
 // Values: 0 disables scrollback; 1..MinPagingCapacity-1 is honoured but too
 // shallow to declare demand paging, so a consumer should clamp up and say so
 // (see MinPagingCapacity); anything larger is retained as asked, and there is no
 // upper bound to trip over — the ring allocates only what it fills.
-const ScrollbackEnvVar = "WT_SCROLLBACK"
+const ScrollbackEnvVar = "SCROLLBACK"
 
 // DefaultScrollbackCapacity is the retained-history depth a handler uses when a
 // consumer sets none. Exported so a consumer can REPORT the effective depth at

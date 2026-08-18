@@ -211,7 +211,7 @@ func lineTexts(lines [][]vt.WireRun) []string {
 // toward capacity instead of being allocated at it.
 //
 // This is load-bearing rather than cosmetic. Capacity is an operator-set number
-// (WT_SCROLLBACK) that is meant to be settable absurdly high — the answer to
+// (SCROLLBACK) that is meant to be settable absurdly high — the answer to
 // "I want unlimited history" is a huge number, not a sentinel — so allocating
 // at it charges every session 24 bytes per CONFIGURED line before it prints
 // anything: 2.3 MB at the 100k default, 240 MB for an operator who asks for

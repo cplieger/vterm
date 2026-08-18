@@ -193,6 +193,25 @@ type WireEnd struct {
 	MinPeer int
 }
 
+// WirePair is the two halves of one Go-server / TS-client pairing, each
+// labelled by the role it plays.
+//
+// It is a struct rather than two adjacent WireEnd parameters because the
+// verdict survives a transposition while the REASON does not: every check
+// below is symmetric in shape, so a swapped call still refuses an incompatible
+// pair, but it names the wrong half — telling a release gate that the Go side
+// is behind when the TS side is. That is the same defect this function already
+// refuses to commit for garbage input, where it declines to give a confident
+// "bump your pin" diagnosis; a keyed literal makes the roles unswappable at
+// the call site.
+type WirePair struct {
+	// Server is the Go half, normally
+	// {WireProtocolVersion, MinSupportedClientWireVersion}.
+	Server WireEnd
+	// Client is the TS half, read from its published constants.
+	Client WireEnd
+}
+
 // WirePairIncompatibility reports whether a Go-server / TS-client PAIR is
 // declared-incompatible before either half runs, and why. It is the
 // peer-less, build-time form of the compatibility decision this package
@@ -236,7 +255,8 @@ type WireEnd struct {
 // always satisfied the invariant (rev 4, floor 3 on both halves) — so a gate
 // that starts failing here is reading garbage, which is exactly the outcome
 // intended.
-func WirePairIncompatibility(server, client WireEnd) string {
+func WirePairIncompatibility(p WirePair) string {
+	server, client := p.Server, p.Client
 	// Case order is load-bearing. Positivity first (a missing constant is the
 	// coarsest garbage), then each half's SELF-consistency, and only then the
 	// cross-side floors. Self-inconsistency must precede the cross-side

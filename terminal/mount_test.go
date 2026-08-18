@@ -102,7 +102,7 @@ func TestMountSessionRoutesCreateGate(t *testing.T) {
 // TestMountAPIWiresManagerHandlers is the convenience-path smoke test: a real
 // manager mounted via MountAPI answers the session list on SessionsPath.
 func TestMountAPIWiresManagerHandlers(t *testing.T) {
-	factory := func(id string) *Handler {
+	factory := func(id SessionID) *Handler {
 		return NewHandler([]string{"/bin/cat"})
 	}
 	mgr := NewSessionManager(factory)

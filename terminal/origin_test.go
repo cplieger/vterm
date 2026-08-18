@@ -298,7 +298,7 @@ func TestOriginPolicy_managerUnknownSessionSocket(t *testing.T) {
 	if len(invalid) != 0 {
 		t.Fatalf("setup: invalid = %v", invalid)
 	}
-	factory := func(string) *Handler { return NewHandler([]string{"/bin/cat"}, WithLogger(nil)) }
+	factory := func(SessionID) *Handler { return NewHandler([]string{"/bin/cat"}, WithLogger(nil)) }
 	m := NewSessionManager(factory, WithManagerOriginPolicy(p), WithManagerLogger(nil))
 	defer shutdownManager(t, m)
 
@@ -341,7 +341,7 @@ func TestOriginPolicy_managerUnknownSessionSocket(t *testing.T) {
 func TestOriginPolicy_defaultIsSameOriginOnly(t *testing.T) {
 	h := NewHandler([]string{"/bin/cat"}, WithLogger(nil))
 	defer h.Close()
-	factory := func(string) *Handler { return NewHandler([]string{"/bin/cat"}, WithLogger(nil)) }
+	factory := func(SessionID) *Handler { return NewHandler([]string{"/bin/cat"}, WithLogger(nil)) }
 	m := NewSessionManager(factory, WithManagerLogger(nil))
 	defer shutdownManager(t, m)
 

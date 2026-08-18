@@ -350,7 +350,7 @@ func TestListExitedWinsOverStaleSweptStatus(t *testing.T) {
 // TestComputeStatusExited verifies an exited process reports exited regardless
 // of activity or latch.
 func TestComputeStatusExited(t *testing.T) {
-	m := NewSessionManager(func(string) *Handler {
+	m := NewSessionManager(func(SessionID) *Handler {
 		return NewHandler([]string{"/bin/true"}, WithLogger(nil))
 	})
 	t.Cleanup(func() { shutdownManager(t, m) })

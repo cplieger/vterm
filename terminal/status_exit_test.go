@@ -248,7 +248,7 @@ func TestServerInitiatedShutdownIsExitedNotCrashed(t *testing.T) {
 
 // sleepFactory builds a session whose child outlives the test unless something
 // kills it, so a shutdown path is the only way it can end.
-func sleepFactory(string) *Handler {
+func sleepFactory(SessionID) *Handler {
 	return NewHandler([]string{"/bin/sh", "-c", "sleep 30"}, WithWorkDir("/"), WithLogger(nil))
 }
 
@@ -334,7 +334,7 @@ func TestCrashedOutranksEveryProgressStateAndLatch(t *testing.T) {
 // sources MUST agree about HOW a session ended, or a reload silently downgrades a
 // crashed tab to a plain exited one.
 func TestListReportsCrashedForAFailedExit(t *testing.T) {
-	m := NewSessionManager(func(string) *Handler {
+	m := NewSessionManager(func(SessionID) *Handler {
 		return NewHandler([]string{"/bin/sh", "-c", "exit 3"}, WithWorkDir("/"), WithLogger(nil))
 	})
 	t.Cleanup(func() { shutdownManager(t, m) })

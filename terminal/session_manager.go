@@ -29,29 +29,36 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 )
 
-// SessionID identifies one session for the life of this manager: the value
-// Create mints (128-bit crypto-random hex), the key /ws?session=<id> routes by,
-// and the resume id. A distinct type rather than a bare string because a
-// session id shares a parameter list with other strings on this surface
-// (SetSessionTitle's title sits right next to it), and a swapped pair
-// type-checks as plain strings while storing the id as a tab label. The type
-// makes the ID position sticky on the manager's own methods, so a misplaced
-// argument there fails to compile.
+// SessionID identifies one session: the value Create mints (128-bit
+// crypto-random hex), the key /ws?session=<id> routes by, and the resume id. A
+// distinct type rather than a bare string because a session id shares a
+// parameter list with other strings on this surface (SetSessionTitle's title
+// sits right next to it), and a swapped pair type-checks as plain strings while
+// storing the id as a tab label. The type makes the ID position sticky, so a
+// misplaced argument fails to compile.
 //
-// Three exported surfaces deliberately keep a plain string id, and a consumer
-// converts at each: NewSessionManager's factory callback (it feeds
-// handler-internal plumbing that is string-typed throughout), LogID (it also
-// truncates handler and containment ids, not only session ids), and
-// WithContainment. Retyping those would push SessionID into the handler and
-// containment layers for no swap it prevents — neither takes a second string
-// beside the id.
+// The type spans TWO populations, and the difference matters at every use:
 //
-// On the wire (SessionInfo.ID, the status stream, URL path segments) an id
-// stays a plain JSON string: SessionID declares no MarshalJSON, so encoding/json
-// emits a defined string type exactly as its underlying string. Convert at the
-// boundary.
+//   - Ids this manager minted. Crypto-random hex, present in its maps.
+//   - Ids a caller ASSERTS. A resume frame's controlMsg.SessionID and the
+//     /ws?session= query value are arbitrary attacker-chosen bytes that arrive
+//     already typed. THE TYPE IS NOT VALIDATION: converting a string to
+//     SessionID checks nothing, and no constructor gates it.
+//
+// So a SessionID is only known to name a real session once a manager lookup
+// says so — that lookup is the gate, not the type. Treat any id that has not
+// been through one as untrusted text: bound it with LogID before it reaches a
+// log, and never join it into a path (Containment.create sanitizes for exactly
+// this reason). What the type buys is that the id cannot be transposed with a
+// title, a path, a command or a cgroup prefix, which is a different and
+// narrower claim than validity.
+//
+// On the wire an id is a plain JSON string: SessionID declares no MarshalJSON,
+// so encoding/json emits a defined string type exactly as its underlying
+// string, and omitempty elides it on empty as before.
 type SessionID string
 
 // SessionInfo is the public description of one session, returned by List and
@@ -387,10 +394,17 @@ func (m *SessionManager) create() (SessionInfo, error) {
 	return SessionInfo{ID: id, Status: StatusIdle, CreatedAt: now, Order: order}, nil
 }
 
+// logIDPrefixBytes is how much of a session token may reach a log: 8 bytes of
+// hex is 32 bits, enough to correlate lines within one process lifetime and far
+// short of the 128-bit token an attacker would need to attach.
+const logIDPrefixBytes = 8
+
 // LogID returns a short, correlation-safe prefix of a session id for logs:
 // the first 8 bytes plus an ellipsis, or the id unchanged when it is already
-// that short. Session ids are cryptographically-random hex, so a byte prefix
-// never splits a rune.
+// that short. Minted ids are crypto-random hex, but a CLIENT-supplied resume id
+// is arbitrary bytes (see SessionID), so the cut lands on a rune boundary: a
+// byte prefix of multi-byte input would put invalid UTF-8 into the log stream,
+// which a JSON handler then escapes to U+FFFD and a text handler emits raw.
 //
 // The full id is a WS routing + resume capability token: logging it whole
 // places a session-access credential into aggregated logs (CWE-532), where
@@ -403,10 +417,14 @@ func (m *SessionManager) create() (SessionInfo, error) {
 // more entropy; a missing call leaks the whole token) unless a test asserts
 // the logged value, which is why consumers should pin it.
 func LogID(id SessionID) string {
-	if len(id) > 8 {
-		return string(id[:8]) + "\u2026"
+	if len(id) <= logIDPrefixBytes {
+		return string(id)
 	}
-	return string(id)
+	cut := logIDPrefixBytes
+	for cut > 0 && !utf8.RuneStart(id[cut]) {
+		cut--
+	}
+	return string(id[:cut]) + "\u2026"
 }
 
 // sessionOrder is one session's sort key for an enumeration: its position in the

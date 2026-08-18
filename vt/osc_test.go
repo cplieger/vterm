@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/cplieger/runesafe"
+	"github.com/cplieger/runesafe/v2"
 )
 
 func TestOSC2SetsTitleBEL(t *testing.T) {
@@ -277,7 +277,7 @@ func TestSanitizeNotification(t *testing.T) {
 	// Every surviving rune is safe under the shared policy — the invariant
 	// the classifier hook and consumer log attributes rely on.
 	for _, r := range sanitizeNotification("a\x1b[31m\u202e\u2028b\u009f") {
-		if runesafe.IsUnsafe(r, false) {
+		if runesafe.IsUnsafeSingleLine(r) {
 			t.Fatalf("unsafe rune %U survived sanitizeNotification", r)
 		}
 	}

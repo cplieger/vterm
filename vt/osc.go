@@ -35,7 +35,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/cplieger/runesafe"
+	"github.com/cplieger/runesafe/v2"
 )
 
 // decodeTitle applies the XTSMTITLE set-mode to an incoming OSC 0/1/2 title
@@ -303,7 +303,7 @@ func isAllDigits(s string) bool {
 // used to hand-roll C0/C1 only, and the missed Bidi/2028-29 classes reached
 // every consumer's classifier and log attributes (the drift the shared
 // predicate exists to prevent). Dropping (not space-replacing) is a composed
-// policy on runesafe.IsUnsafe, keeping the historical output shape.
+// policy on runesafe.IsUnsafeSingleLine, keeping the historical output shape.
 func sanitizeNotification(data string) string {
 	var b strings.Builder
 	n := 0
@@ -311,7 +311,7 @@ func sanitizeNotification(data string) string {
 		if n >= maxNotificationLen {
 			break
 		}
-		if runesafe.IsUnsafe(r, false) {
+		if runesafe.IsUnsafeSingleLine(r) {
 			continue
 		}
 		b.WriteRune(r)

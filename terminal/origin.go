@@ -8,7 +8,7 @@ import (
 	"strings"
 
 	"github.com/coder/websocket"
-	"github.com/cplieger/runesafe"
+	"github.com/cplieger/runesafe/v2"
 )
 
 // OriginPolicy is the set of browser origins allowed to open a terminal

@@ -1574,7 +1574,7 @@ func sendText(t *testing.T, ws *websocket.Conn, payload []byte) {
 // bootstrapResume sends the v3-encoded binary resume that ARMS a connection
 // for the typed-framing upgrade (protocolVersion >= 4), mirroring the client's
 // bootstrap (design §4 phase 1).
-func bootstrapResume(t *testing.T, ws *websocket.Conn, sessionID string) {
+func bootstrapResume(t *testing.T, ws *websocket.Conn, sessionID SessionID) {
 	t.Helper()
 	sendControl(t, ws, map[string]any{
 		"type": "resume", "sessionId": sessionID, "sentBytes": 0,

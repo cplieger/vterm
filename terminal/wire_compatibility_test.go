@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"unicode/utf8"
 )
 
 type publishedWireFixtures struct {
@@ -273,6 +274,38 @@ func TestLogID_neverEmitsAFullToken(t *testing.T) {
 		}
 		if !strings.HasPrefix(string(id), strings.TrimSuffix(got, "\u2026")) {
 			t.Errorf("LogID(%q) = %q, which is not a prefix of the input", id, got)
+		}
+	}
+}
+
+// TestLogID_neverEmitsInvalidUTF8 covers the population SessionID gained when
+// the wire and query-param ids became typed: a client picks its own resume id,
+// so LogID's input is not always crypto-random hex. A blind 8-byte cut through
+// a multi-byte rune would put invalid UTF-8 into every consumer's log stream —
+// a JSON handler silently rewrites it to U+FFFD, a text handler emits the
+// broken bytes raw — so the cut must land on a rune boundary. The output stays
+// a byte prefix (never re-encoded), and it may therefore be SHORTER than 8
+// bytes, which is the correct trade: less token exposure, never more.
+func TestLogID_neverEmitsInvalidUTF8(t *testing.T) {
+	for _, id := range []SessionID{
+		"日本語文字列",     // every rune 3 bytes: cut at 8 splits one
+		"ab日本語文字",    // boundary at 2+3n
+		"😀😀😀",        // 4-byte runes: cut at 8 is exact
+		"aaaaaaaéxx", // 2-byte rune straddling byte 8
+	} {
+		got := LogID(id)
+		if !utf8.ValidString(got) {
+			t.Errorf("LogID(%q) = %q, which is not valid UTF-8", id, got)
+		}
+		body := strings.TrimSuffix(got, "\u2026")
+		if !strings.HasPrefix(string(id), body) {
+			t.Errorf("LogID(%q) = %q, whose body is not a byte prefix of the input", id, got)
+		}
+		if len(body) > 8 {
+			t.Errorf("LogID(%q) kept %d bytes, must never exceed 8", id, len(body))
+		}
+		if strings.Contains(got, string(id)) {
+			t.Errorf("LogID(%q) = %q, which still contains the full id", id, got)
 		}
 	}
 }

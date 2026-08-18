@@ -418,7 +418,7 @@ func TestProbeCloneIntoCgroupRejectsBadFD(t *testing.T) {
 // in.
 func TestContainmentCreateRejectsReservedNames(t *testing.T) {
 	c, _ := newTestContainment(t)
-	for _, id := range []string{containServerLeaf, containProbeLeaf} {
+	for _, id := range []SessionID{containServerLeaf, containProbeLeaf} {
 		if _, err := c.create(id); err == nil {
 			t.Errorf("create(%q) succeeded, want a refusal: it is a reserved internal leaf", id)
 		}
@@ -516,7 +516,7 @@ func TestContainmentSanitizesSessionID(t *testing.T) {
 // interpretation.
 func TestContainmentRejectsUnusableID(t *testing.T) {
 	c, _ := newTestContainment(t)
-	for _, id := range []string{"", "..", "///"} {
+	for _, id := range []SessionID{"", "..", "///"} {
 		if _, err := c.create(id); err == nil {
 			t.Errorf("create(%q) succeeded, want an error", id)
 		}

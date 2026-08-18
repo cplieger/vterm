@@ -229,7 +229,8 @@ func TestWirePairIncompatibility_agreesWithRuntimeFloor(t *testing.T) {
 // would leak silently.
 func TestLogID(t *testing.T) {
 	cases := map[string]struct {
-		in, want string
+		in   SessionID
+		want string
 	}{
 		"32-hex session id keeps 8 bytes plus the ellipsis": {
 			"0123456789abcdef0123456789abcdef", "01234567\u2026",
@@ -255,13 +256,13 @@ func TestLogID(t *testing.T) {
 // here rather than in a log aggregator.
 func TestLogID_neverEmitsAFullToken(t *testing.T) {
 	const prefix = 8
-	for _, id := range []string{
+	for _, id := range []SessionID{
 		"0123456789abcdef0123456789abcdef",
 		"aaaaaaaaa",
-		strings.Repeat("f", 128),
+		SessionID(strings.Repeat("f", 128)),
 	} {
 		got := LogID(id)
-		if strings.Contains(got, id) {
+		if strings.Contains(got, string(id)) {
 			t.Errorf("LogID(%q) = %q, which still contains the full id", id, got)
 		}
 		if !strings.HasSuffix(got, "\u2026") {
@@ -270,7 +271,7 @@ func TestLogID_neverEmitsAFullToken(t *testing.T) {
 		if trimmed := strings.TrimSuffix(got, "\u2026"); len(trimmed) != prefix {
 			t.Errorf("LogID(%q) kept %d bytes, want %d", id, len(trimmed), prefix)
 		}
-		if !strings.HasPrefix(id, strings.TrimSuffix(got, "\u2026")) {
+		if !strings.HasPrefix(string(id), strings.TrimSuffix(got, "\u2026")) {
 			t.Errorf("LogID(%q) = %q, which is not a prefix of the input", id, got)
 		}
 	}

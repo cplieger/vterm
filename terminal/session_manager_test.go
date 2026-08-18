@@ -497,7 +497,7 @@ func TestSessionSurfaceRefusesCaching(t *testing.T) {
 			t.Fatal("POST returned no id, so this test would assert nothing")
 		}
 		if cc := resp.Header.Get("Cache-Control"); !hasDirective(cc, "no-store") {
-			t.Errorf("POST /api/sessions Cache-Control = %q, want no-store: the response body carries the session id %s", cc, LogID(string(created.ID)))
+			t.Errorf("POST /api/sessions Cache-Control = %q, want no-store: the response body carries the session id %s", cc, LogID(created.ID))
 		}
 		t.Cleanup(func() { m.Close(created.ID) })
 

@@ -312,8 +312,8 @@ func (c *Containment) sweep() {
 // recreated rather than adopted: an adopted cgroup carries the previous
 // occupant's memory.peak and pids.peak, which would make the cost report
 // silently wrong.
-func (c *Containment) create(id string) (*sessionCgroup, error) {
-	leaf := sanitizeCgroupName(id)
+func (c *Containment) create(id SessionID) (*sessionCgroup, error) {
+	leaf := sanitizeCgroupName(string(id))
 	if leaf == "" {
 		return nil, errors.New("empty session id after sanitization")
 	}
@@ -347,7 +347,7 @@ func (c *Containment) create(id string) (*sessionCgroup, error) {
 type sessionCgroup struct {
 	log *slog.Logger
 	dir string
-	id  string
+	id  SessionID
 	fd  int
 	// memPeak/pidsPeak are latched by teardown so the caller's exit log line can
 	// report the session's high-water marks. Written inside once.Do and read only

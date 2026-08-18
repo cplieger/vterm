@@ -319,7 +319,7 @@ type handlerConfig struct {
 	// containment (WithContainment, WithContainmentSampleInterval). A nil
 	// containment disables it, which is the default.
 	containment        *Containment
-	containmentID      string
+	containmentID      SessionID
 	workDir            string
 	commandLogValue    string
 	env                []string
@@ -1902,9 +1902,9 @@ type controlMsg struct {
 	// eviction) and wants the full retained history. The server clamps
 	// the replay start into the retained range and reports any eviction
 	// gap via the resumeAck bounds.
-	HaveThrough *int64 `json:"haveThrough"`
-	Type        string `json:"type"`
-	SessionID   string `json:"sessionId,omitempty"`
+	HaveThrough *int64    `json:"haveThrough"`
+	Type        string    `json:"type"`
+	SessionID   SessionID `json:"sessionId,omitempty"`
 	// ReplayMax bounds the resume replay to the newest N missing lines, so an
 	// attach costs at most the client's own residency however deep the ring is.
 	// Decoded as RawMessage and parsed FIELD-LOCALLY (parseReplayMax) because
@@ -2450,7 +2450,7 @@ func replayStart(committed uint64, haveThrough int64, replayMax *int64) uint64 {
 // already clamped it to the same ceiling, so the number the client sent and the
 // number honored here are identical — the identity the client's replay-jump
 // prediction depends on (docs/paged-scrollback.md §4.5).
-func (h *Handler) handleResume(ws *websocket.Conn, state *clientState, sessionID string, haveThrough int64, sentBytes uint64, replayMax *int64) {
+func (h *Handler) handleResume(ws *websocket.Conn, state *clientState, sessionID SessionID, haveThrough int64, sentBytes uint64, replayMax *int64) {
 	ack, created := h.registry.ResolveSession(state, sessionID)
 	// Capability declaration for the resumeAck's historyPaging bit. It no longer
 	// gates the replay clamp: that bound is unconditional, so a shallow-ring

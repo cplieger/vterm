@@ -381,7 +381,7 @@ func (m *SessionManager) create() (SessionInfo, error) {
 	m.created++
 	m.mu.Unlock()
 
-	m.logger.Info("session: created", "session", LogID(string(id)), "sessions", n)
+	m.logger.Info("session: created", "session", LogID(id), "sessions", n)
 	// A freshly eager-started session is idle until it produces output; the
 	// status stream corrects that within a tick if the process died instantly.
 	return SessionInfo{ID: id, Status: StatusIdle, CreatedAt: now, Order: order}, nil
@@ -402,11 +402,11 @@ func (m *SessionManager) create() (SessionInfo, error) {
 // re-implemented copies drift, and the drift is silent (a wrong length leaks
 // more entropy; a missing call leaks the whole token) unless a test asserts
 // the logged value, which is why consumers should pin it.
-func LogID(id string) string {
+func LogID(id SessionID) string {
 	if len(id) > 8 {
-		return id[:8] + "\u2026"
+		return string(id[:8]) + "\u2026"
 	}
-	return id
+	return string(id)
 }
 
 // sessionOrder is one session's sort key for an enumeration: its position in the
@@ -617,7 +617,7 @@ func (m *SessionManager) Close(id SessionID) bool {
 		return false
 	}
 	s.handler.Close()
-	m.logger.Info("session: closed", "session", LogID(string(id)))
+	m.logger.Info("session: closed", "session", LogID(id))
 	return true
 }
 
@@ -1039,7 +1039,7 @@ func (m *SessionManager) maybeReap() {
 	m.mu.Unlock()
 	for _, s := range victims {
 		s.handler.Close()
-		m.logger.Info("session: reaped (no client for idle window)", "session", LogID(string(s.id)))
+		m.logger.Info("session: reaped (no client for idle window)", "session", LogID(s.id))
 	}
 }
 

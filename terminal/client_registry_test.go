@@ -142,7 +142,7 @@ func TestRegistry_ConcurrentResolveIncrementSnapshot(t *testing.T) {
 			defer wg.Done()
 			for i := range iters {
 				state := &clientState{}
-				sessionID := "session-" + string(rune('A'+id)) + "-" + string(rune('0'+i%10))
+				sessionID := SessionID("session-" + string(rune('A'+id)) + "-" + string(rune('0'+i%10)))
 				_, _ = r.ResolveSession(state, sessionID)
 				r.IncrementReceived(state, 42)
 				_, _, _ = r.Snapshot()
@@ -167,7 +167,7 @@ func TestRegistry_ConcurrentResolveSharedSession(t *testing.T) {
 			defer wg.Done()
 			for i := range iters {
 				state := &clientState{}
-				sid := "shared-session"
+				sid := SessionID("shared-session")
 				if i%3 == 0 {
 					sid = "alt-session"
 				}
@@ -198,7 +198,7 @@ func TestResolveSession_evictsOldestWhenOverCap(t *testing.T) {
 	// Fill the rest to exactly maxResumeSessions with recent entries. Distinct 2-byte
 	// keys avoid an fmt/strconv import (none collide with the longer ASCII ids).
 	for i := 1; i < maxResumeSessions; i++ {
-		r.sessions[string([]byte{byte(i), byte(i >> 8)})] = &sessionState{lastSeen: now.Add(-time.Minute)}
+		r.sessions[SessionID([]byte{byte(i), byte(i >> 8)})] = &sessionState{lastSeen: now.Add(-time.Minute)}
 	}
 	if len(r.sessions) != maxResumeSessions {
 		t.Fatalf("setup: %d sessions, want exactly maxResumeSessions=%d", len(r.sessions), maxResumeSessions)
@@ -407,7 +407,7 @@ func TestEvictOldestSession_prefersUnattached(t *testing.T) {
 
 	// Fill to the cap so the next create must evict.
 	for i := 0; len(r.sessions) < maxResumeSessions; i++ {
-		r.sessions[fmt.Sprintf("filler-%d", i)] = &sessionState{lastSeen: time.Now()}
+		r.sessions[SessionID(fmt.Sprintf("filler-%d", i))] = &sessionState{lastSeen: time.Now()}
 	}
 
 	r.ResolveSession(&clientState{}, "overflow") // cap+1 → eviction

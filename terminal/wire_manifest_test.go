@@ -56,8 +56,8 @@ func TestWireManifestMatchesGoConstants(t *testing.T) {
 	// compatible, which also exercises the within-side coherence invariant on
 	// real published numbers rather than on synthetic ones.
 	if got := WirePairIncompatibility(
-		WireProtocolVersion, MinSupportedClientWireVersion,
-		m.ProtocolVersion, m.MinimumServerProtocolVersion,
+		WireEnd{Rev: WireProtocolVersion, MinPeer: MinSupportedClientWireVersion},
+		WireEnd{Rev: m.ProtocolVersion, MinPeer: m.MinimumServerProtocolVersion},
 	); got != "" {
 		t.Errorf("this server paired with the published manifest is incompatible: %s", got)
 	}

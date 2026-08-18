@@ -3,19 +3,22 @@ package terminal
 import (
 	"bytes"
 	"encoding/binary"
+	"fmt"
 	"testing"
 	"unicode/utf8"
 
-	"github.com/cplieger/web-terminal-engine/v4/vt"
+	"github.com/cplieger/web-terminal-engine/v5/vt"
 )
 
-// assertWireBytes compares a produced wire frame against a hand-laid expected
-// byte slice with a clear failure message.
-func assertWireBytes(t *testing.T, label string, got, want []byte) {
-	t.Helper()
-	if !bytes.Equal(got, want) {
-		t.Errorf("%s = % x, want % x", label, got, want)
+// wireBytesDiff compares a produced wire frame against a hand-laid expected
+// byte slice, returning "" on a match and a printable got/want diff otherwise.
+// It returns the message instead of failing the test itself so each call site
+// owns its t.Errorf, keeping the failure line at the assertion.
+func wireBytesDiff(got, want []byte) string {
+	if bytes.Equal(got, want) {
+		return ""
 	}
+	return fmt.Sprintf("got % x, want % x", got, want)
 }
 
 // TestEncodeScreenMsg_zeroRowIndexEncodesRunPayload verifies a changed row at
@@ -54,7 +57,9 @@ func TestEncodeScreenMsg_outOfRangeIdxWritesZeroRuns(t *testing.T) {
 		0x01, 0x00, // changed[0] idx = 1
 		0x00, 0x00, // num_runs = 0 (else branch: idx out of range)
 	}
-	assertWireBytes(t, "encodeScreenMsg(idx==len(rows))", got, want)
+	if d := wireBytesDiff(got, want); d != "" {
+		t.Errorf("encodeScreenMsg(idx==len(rows)): %s", d)
+	}
 }
 
 // TestWithClientAck_patchesAtExactMinLength verifies withClientAck patches the
@@ -68,7 +73,9 @@ func TestWithClientAck_patchesAtExactMinLength(t *testing.T) {
 	got := withClientAck(template, ack)
 
 	want := []byte{0xAA, 0x08, 0x07, 0x06, 0x05, 0x04, 0x03, 0x02, 0x01} // ack, little-endian
-	assertWireBytes(t, "withClientAck(len-9 template)", got, want)
+	if d := wireBytesDiff(got, want); d != "" {
+		t.Errorf("withClientAck(len-9 template): %s", d)
+	}
 }
 
 // TestWithClientAck_shortTemplateLeftUnpatched verifies a template shorter than
@@ -81,7 +88,9 @@ func TestWithClientAck_shortTemplateLeftUnpatched(t *testing.T) {
 	got := withClientAck(template, ack)
 
 	want := []byte{0xAA, 1, 2, 3, 4, 5, 6, 7} // identical copy: no patch
-	assertWireBytes(t, "withClientAck(len-8 template)", got, want)
+	if d := wireBytesDiff(got, want); d != "" {
+		t.Errorf("withClientAck(len-8 template): %s", d)
+	}
 }
 
 // TestEncodeTitleMsg_longTitleBuildsFrame verifies a title longer than the
@@ -99,7 +108,9 @@ func TestEncodeTitleMsg_longTitleBuildsFrame(t *testing.T) {
 		'a', 'b', 'c', 'd', 'e', 'f', 'g', 'h',
 		'i', 'j', 'k', 'l', 'm', 'n', 'o', 'p',
 	}
-	assertWireBytes(t, "encodeTitleMsg(16-byte title)", got, want)
+	if d := wireBytesDiff(got, want); d != "" {
+		t.Errorf("encodeTitleMsg(16-byte title): %s", d)
+	}
 }
 
 // TestClampU16_boundaryValues pins clampU16's clamp behavior at and around the

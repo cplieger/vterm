@@ -53,6 +53,15 @@ import (
 // without containment rather than failing to start.
 var errContainmentUnsupported = errors.New("terminal: per-session containment unsupported on this host")
 
+// CgroupRoot is the writable cgroup v2 mount NewContainment reshapes (vacating
+// processes, enabling controllers). A distinct type rather than a second string
+// because it sits beside the prefix in NewContainment's signature and a swapped
+// pair is a CONFINEMENT change, not a typo: pointing the reshape at the wrong
+// directory relocates unrelated workloads. With the root typed, swapped
+// variables fail to compile, and a swapped literal announces itself at the call
+// site (CgroupRoot("wt-") reads as wrong) before the runtime checks refuse it.
+type CgroupRoot string
+
 const (
 	// containGrace bounds each of the two settle windows in teardown. Measured
 	// exit latency for the runtime that motivated this feature is ~100ms after

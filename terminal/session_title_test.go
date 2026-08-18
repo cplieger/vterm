@@ -14,8 +14,8 @@ import (
 	"time"
 )
 
-// TestEffectiveTitlePrecedence walks EVERY combination of the five title sources
-// (2^5 = 32) rather than a hand-picked table, so the order is pinned by
+// TestEffectiveTitlePrecedence walks EVERY combination of the four title sources
+// (2^4 = 16) rather than a hand-picked table, so the order is pinned by
 // construction and a new rung cannot be added without extending the check. The
 // rungs slice IS the precedence: the highest-priority source present must win.
 func TestEffectiveTitlePrecedence(t *testing.T) {
@@ -25,7 +25,6 @@ func TestEffectiveTitlePrecedence(t *testing.T) {
 		set   func(*titleSources)
 	}{
 		{"pinned", "PIN", func(s *titleSources) { s.pinned = "PIN" }},
-		{"derived", "DER", func(s *titleSources) { s.derived = "DER" }},
 		{"osc", "OSC", func(s *titleSources) { s.osc = "OSC" }},
 		{"client", "CLI", func(s *titleSources) { s.client = "CLI" }},
 		{"auto", "AUTO", func(s *titleSources) { s.auto = "AUTO" }},
@@ -80,18 +79,18 @@ func TestPinnedTitleOutranksAutomaticSources(t *testing.T) {
 		return ""
 	}
 
-	if !m.SetSessionTitle(id, "derived label") {
+	if !m.SetSessionTitle(id, "client label") {
 		t.Fatal("SetSessionTitle = false, want true")
 	}
-	if got := titleOf(t); got != "derived label" {
-		t.Fatalf("Title with only a derived label = %q, want %q", got, "derived label")
+	if got := titleOf(t); got != "client label" {
+		t.Fatalf("Title with only a client label = %q, want %q", got, "client label")
 	}
 
 	if !m.SetSessionPinnedTitle(id, "my name") {
 		t.Fatal("SetSessionPinnedTitle = false, want true")
 	}
 	if got := titleOf(t); got != "my name" {
-		t.Fatalf("Title with a pin = %q, want %q (the pin must outrank the derived label)", got, "my name")
+		t.Fatalf("Title with a pin = %q, want %q (the pin must outrank the client label)", got, "my name")
 	}
 	// The raw pin is exposed so a UI can offer to remove it.
 	for _, info := range m.List() {
@@ -103,8 +102,8 @@ func TestPinnedTitleOutranksAutomaticSources(t *testing.T) {
 	if !m.ClearSessionPinnedTitle(id) {
 		t.Fatal("ClearSessionPinnedTitle = false, want true")
 	}
-	if got := titleOf(t); got != "derived label" {
-		t.Fatalf("Title after clearing the pin = %q, want the masked source %q", got, "derived label")
+	if got := titleOf(t); got != "client label" {
+		t.Fatalf("Title after clearing the pin = %q, want the masked source %q", got, "client label")
 	}
 
 	// Unknown ids are reported, not silently accepted.
@@ -264,6 +263,15 @@ func TestConfirmAutoTitleWindow(t *testing.T) {
 // (204) and is bounded and sanitized, an empty title is a 400 rather than a
 // silent clear (clearing has its own verb), DELETE clears and is idempotent, and
 // both 404 on an unknown id.
+//
+// The subtests are ordered stages over ONE session's pin (set, sanitize,
+// truncate, refuse, clear) and must run IN SEQUENCE: a rejected write is
+// asserted against the pin the previous stage left in place, which is what
+// proves the rejection changed nothing. Consequence, stated so nobody is
+// surprised by it: the refuse-stage subtests do NOT pass when run alone with
+// -run, because the pin they expect to survive was never set. Only the
+// clear stage is self-sufficient (it sets its own pin first). A stage that
+// fails also invalidates the stages after it — read the FIRST failure.
 func TestSessionManagerPinnedTitleREST(t *testing.T) {
 	m := NewSessionManager(catFactory)
 	t.Cleanup(func() { shutdownManager(t, m) })
@@ -274,10 +282,10 @@ func TestSessionManagerPinnedTitleREST(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
-	do := func(t *testing.T, method, sessionID, body string) int {
+	do := func(t *testing.T, method string, sessionID SessionID, body string) int {
 		t.Helper()
 		req, _ := http.NewRequestWithContext(t.Context(), method,
-			srv.URL+"/api/sessions/"+sessionID+"/pinned-title", strings.NewReader(body))
+			srv.URL+"/api/sessions/"+string(sessionID)+"/pinned-title", strings.NewReader(body))
 		resp, err := http.DefaultClient.Do(req)
 		if err != nil {
 			t.Fatalf("%s: %v", method, err)
@@ -296,65 +304,92 @@ func TestSessionManagerPinnedTitleREST(t *testing.T) {
 		return ""
 	}
 
-	if code := do(t, http.MethodPut, id, `{"title":"my tab"}`); code != http.StatusNoContent {
-		t.Fatalf("PUT known id status = %d, want 204", code)
-	}
-	if got := pinOf(t); got != "my tab" {
-		t.Fatalf("PinnedTitle after PUT = %q, want %q", got, "my tab")
-	}
-
-	// Control characters are stripped and the tighter pinned cap applies.
-	if code := do(t, http.MethodPut, id, `{"title":"a\nb"}`); code != http.StatusNoContent {
-		t.Fatalf("PUT with control chars status = %d, want 204", code)
-	}
-	if got := pinOf(t); got != "ab" {
-		t.Fatalf("PinnedTitle = %q, want control characters stripped (%q)", got, "ab")
-	}
-	long := strings.Repeat("x", 200)
-	if code := do(t, http.MethodPut, id, `{"title":"`+long+`"}`); code != http.StatusNoContent {
-		t.Fatalf("PUT long title status = %d, want 204", code)
-	}
-	if got := pinOf(t); len([]rune(got)) != maxPinnedTitleRunes {
-		t.Fatalf("PinnedTitle length = %d, want the pinned cap %d", len([]rune(got)), maxPinnedTitleRunes)
-	}
-
-	// An empty (or whitespace-only, or all-control) title is a client error: the
-	// destructive operation has its own verb and must not be reachable by an
-	// accidentally-empty body.
-	for _, body := range []string{`{"title":""}`, `{"title":"   "}`, `{"title":"\n\n"}`, `{}`} {
-		if code := do(t, http.MethodPut, id, body); code != http.StatusBadRequest {
-			t.Fatalf("PUT %s status = %d, want 400", body, code)
+	t.Run("PUT sets the pin", func(t *testing.T) {
+		if code := do(t, http.MethodPut, id, `{"title":"my tab"}`); code != http.StatusNoContent {
+			t.Fatalf("PUT known id status = %d, want 204", code)
 		}
-	}
-	if got := pinOf(t); len([]rune(got)) != maxPinnedTitleRunes {
-		t.Fatalf("a rejected PUT changed the pin to %q", got)
-	}
+		if got := pinOf(t); got != "my tab" {
+			t.Errorf("PinnedTitle after PUT = %q, want %q", got, "my tab")
+		}
+	})
 
-	if code := do(t, http.MethodPut, id, `{bad json`); code != http.StatusBadRequest {
-		t.Fatalf("PUT malformed body status = %d, want 400", code)
-	}
-	if code := do(t, http.MethodPut, "nonexistent", `{"title":"x"}`); code != http.StatusNotFound {
-		t.Fatalf("PUT unknown id status = %d, want 404", code)
-	}
+	t.Run("control characters are stripped", func(t *testing.T) {
+		if code := do(t, http.MethodPut, id, `{"title":"a\nb"}`); code != http.StatusNoContent {
+			t.Fatalf("PUT with control chars status = %d, want 204", code)
+		}
+		if got := pinOf(t); got != "ab" {
+			t.Errorf("PinnedTitle = %q, want control characters stripped (%q)", got, "ab")
+		}
+	})
 
-	if code := do(t, http.MethodDelete, id, ""); code != http.StatusNoContent {
-		t.Fatalf("DELETE status = %d, want 204", code)
-	}
-	if got := pinOf(t); got != "" {
-		t.Fatalf("PinnedTitle after DELETE = %q, want empty", got)
-	}
-	// Idempotent: clearing an unpinned session still succeeds.
-	if code := do(t, http.MethodDelete, id, ""); code != http.StatusNoContent {
-		t.Fatalf("second DELETE status = %d, want 204 (idempotent)", code)
-	}
-	if code := do(t, http.MethodDelete, "nonexistent", ""); code != http.StatusNotFound {
-		t.Fatalf("DELETE unknown id status = %d, want 404", code)
-	}
+	t.Run("a long title truncates at the pinned cap", func(t *testing.T) {
+		long := strings.Repeat("x", 200)
+		if code := do(t, http.MethodPut, id, `{"title":"`+long+`"}`); code != http.StatusNoContent {
+			t.Fatalf("PUT long title status = %d, want 204", code)
+		}
+		if got := pinOf(t); len([]rune(got)) != maxPinnedTitleRunes {
+			t.Errorf("PinnedTitle length = %d, want the pinned cap %d", len([]rune(got)), maxPinnedTitleRunes)
+		}
+	})
 
-	// A body over the 4 KiB cap is rejected rather than read in full.
-	if code := do(t, http.MethodPut, id, `{"title":"`+strings.Repeat("y", 5000)+`"}`); code != http.StatusBadRequest {
-		t.Fatalf("PUT oversized body status = %d, want 400", code)
-	}
+	t.Run("an effectively empty title is a 400, not a silent clear", func(t *testing.T) {
+		// The destructive operation has its own verb and must not be reachable
+		// by an accidentally-empty (or whitespace-only, or all-control) body.
+		for _, body := range []string{`{"title":""}`, `{"title":"   "}`, `{"title":"\n\n"}`, `{}`} {
+			if code := do(t, http.MethodPut, id, body); code != http.StatusBadRequest {
+				t.Errorf("PUT %s status = %d, want 400", body, code)
+			}
+		}
+		if got := pinOf(t); len([]rune(got)) != maxPinnedTitleRunes {
+			t.Errorf("a rejected PUT changed the pin to %q", got)
+		}
+	})
+
+	t.Run("a malformed body is a 400", func(t *testing.T) {
+		if code := do(t, http.MethodPut, id, `{bad json`); code != http.StatusBadRequest {
+			t.Errorf("PUT malformed body status = %d, want 400", code)
+		}
+	})
+
+	t.Run("PUT on an unknown id is a 404", func(t *testing.T) {
+		if code := do(t, http.MethodPut, "nonexistent", `{"title":"x"}`); code != http.StatusNotFound {
+			t.Errorf("PUT unknown id status = %d, want 404", code)
+		}
+	})
+
+	t.Run("DELETE clears and is idempotent", func(t *testing.T) {
+		// Set the pin here rather than inheriting it: run alone (go test -run
+		// '.../DELETE_clears…') the earlier stages have not executed, and a
+		// clear asserted against a never-set pin passes vacuously.
+		if code := do(t, http.MethodPut, id, `{"title":"pinned before clear"}`); code != http.StatusNoContent {
+			t.Fatalf("PUT before DELETE status = %d, want 204", code)
+		}
+		if got := pinOf(t); got != "pinned before clear" {
+			t.Fatalf("PinnedTitle before DELETE = %q, want %q", got, "pinned before clear")
+		}
+		if code := do(t, http.MethodDelete, id, ""); code != http.StatusNoContent {
+			t.Fatalf("DELETE status = %d, want 204", code)
+		}
+		if got := pinOf(t); got != "" {
+			t.Errorf("PinnedTitle after DELETE = %q, want empty", got)
+		}
+		// Idempotent: clearing an unpinned session still succeeds.
+		if code := do(t, http.MethodDelete, id, ""); code != http.StatusNoContent {
+			t.Errorf("second DELETE status = %d, want 204 (idempotent)", code)
+		}
+	})
+
+	t.Run("DELETE on an unknown id is a 404", func(t *testing.T) {
+		if code := do(t, http.MethodDelete, "nonexistent", ""); code != http.StatusNotFound {
+			t.Errorf("DELETE unknown id status = %d, want 404", code)
+		}
+	})
+
+	t.Run("a body over the 4 KiB cap is rejected", func(t *testing.T) {
+		if code := do(t, http.MethodPut, id, `{"title":"`+strings.Repeat("y", 5000)+`"}`); code != http.StatusBadRequest {
+			t.Errorf("PUT oversized body status = %d, want 400", code)
+		}
+	})
 }
 
 // TestDiffStatusesEmitsPinnedTitleChange is the lastPinnedTitle push guard:

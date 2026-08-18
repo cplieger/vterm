@@ -55,7 +55,7 @@ func TestSanitizeCgroupNameBounded(t *testing.T) {
 // continue past, never a panic and never a partial setup.
 func TestNewContainmentRejectsNonCgroupRoot(t *testing.T) {
 	t.Parallel()
-	c, err := NewContainment(t.TempDir(), "wt-", slog.New(slog.DiscardHandler))
+	c, err := NewContainment(CgroupRoot(t.TempDir()), "wt-", slog.New(slog.DiscardHandler))
 	if err == nil {
 		t.Fatal("expected an error for a non-cgroup2 root")
 	}
@@ -71,9 +71,12 @@ func TestNewContainmentRejectsNonCgroupRoot(t *testing.T) {
 // wise produce directories at a path nobody intended.
 func TestNewContainmentRejectsEmptyArgs(t *testing.T) {
 	t.Parallel()
-	for _, tc := range []struct{ root, prefix string }{
+	for _, tc := range []struct {
+		root   CgroupRoot
+		prefix string
+	}{
 		{"", "wt-"},
-		{t.TempDir(), ""},
+		{CgroupRoot(t.TempDir()), ""},
 	} {
 		if _, err := NewContainment(tc.root, tc.prefix, nil); err == nil {
 			t.Fatalf("NewContainment(%q, %q) succeeded, want an error", tc.root, tc.prefix)

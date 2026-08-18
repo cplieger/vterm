@@ -428,19 +428,23 @@ func TestReapNilDomainIsNoop(t *testing.T) {
 	s.teardown() // must not panic
 }
 
-func TestReapingIsOnByDefaultAndOptOutWorks(t *testing.T) {
+// TestReapingIsUnconditional pins that a zero-configured handler mints a reap
+// domain: reaping has no configuration surface at all. Through v4 an opt-out
+// existed (WithoutSessionReap set handlerConfig.noReap, and newSessionReap
+// answered nil for it); both were removed at v5 because leaving a closed
+// session's tree alive is the defect, not a feature. The zero config below is
+// therefore not "the default of a knob" but the only shape a handler can be
+// in — the compile-time absence of any opt-out option is the other half of
+// the guarantee, and this test documents it: the sole nil answer left in
+// newSessionReap is a failed marker mint, never a configuration.
+func TestReapingIsUnconditional(t *testing.T) {
 	t.Parallel()
-	var def handlerConfig
-	if def.noReap {
-		t.Fatal("reaping must be ON by default: an unreaped tree holds its memory for the container's lifetime")
+	s := (&Handler{cfg: handlerConfig{}}).newSessionReap()
+	if s == nil {
+		t.Fatal("newSessionReap returned no domain for a zero config: reaping must be unconditional (an unreaped tree holds its memory for the container's lifetime)")
 	}
-	var off handlerConfig
-	WithoutSessionReap()(&off)
-	if !off.noReap {
-		t.Fatal("WithoutSessionReap did not set the opt-out")
-	}
-	if got := (&Handler{cfg: off}).newSessionReap(); got != nil {
-		t.Fatal("newSessionReap returned a domain despite the opt-out")
+	if s.marker == "" {
+		t.Fatal("reap domain has an empty marker")
 	}
 }
 

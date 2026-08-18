@@ -5,7 +5,7 @@
 # web-terminal-engine is a LIBRARY that ships a `main` package
 # (internal/e2etestserver), so cplieger/ci's app-mode detection ("a main package
 # exists") gates it on punused -- but its exported surface is a PUBLISHED Go
-# proxy API (github.com/cplieger/web-terminal-engine/v4), consumed by vibekit,
+# proxy API (github.com/cplieger/web-terminal-engine/v5), consumed by vibekit,
 # web-terminal-kiro and web-terminal-server. punused's own README states it "does
 # not detect references from outside of your project", and run.go asks gopls for
 # `textDocument/references` scoped to this module only, so EVERY symbol a

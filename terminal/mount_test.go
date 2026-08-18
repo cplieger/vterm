@@ -21,7 +21,7 @@ func mountStubs(t *testing.T, opts ...MountOption) (*http.ServeMux, map[string]i
 		})
 	}
 	mux := http.NewServeMux()
-	MountSessionRoutes(mux, stub("ws"), stub("rest"), stub("events"), opts...)
+	MountSessionRoutes(mux, SessionHandlers{WS: stub("ws"), REST: stub("rest"), Events: stub("events")}, opts...)
 	return mux, hits
 }
 

@@ -20,8 +20,29 @@ func TestFocusOutOnEnable(t *testing.T) {
 		}
 	})
 
+	t.Run("explicit false reproduces the no-option default", func(t *testing.T) {
+		h := NewHandler([]string{"true"}, WithKeepUnfocused(false))
+		h.screen.FocusReporting = true
+		if got := h.focusOutOnEnable(); got != nil {
+			t.Errorf("focusOutOnEnable() with WithKeepUnfocused(false) = %q, want nil", got)
+		}
+	})
+
+	t.Run("the last WithKeepUnfocused wins", func(t *testing.T) {
+		h := NewHandler([]string{"true"}, WithKeepUnfocused(true), WithKeepUnfocused(false))
+		h.screen.FocusReporting = true
+		if got := h.focusOutOnEnable(); got != nil {
+			t.Errorf("focusOutOnEnable() after true-then-false = %q, want nil (last option wins)", got)
+		}
+		h2 := NewHandler([]string{"true"}, WithKeepUnfocused(false), WithKeepUnfocused(true))
+		h2.screen.FocusReporting = true
+		if got := h2.focusOutOnEnable(); !bytes.Equal(got, focusOutSeq) {
+			t.Errorf("focusOutOnEnable() after false-then-true = %q, want ESC[O (last option wins)", got)
+		}
+	})
+
 	t.Run("injects on the enable edge, not on the steady level", func(t *testing.T) {
-		h := NewHandler([]string{"true"}, WithKeepUnfocused())
+		h := NewHandler([]string{"true"}, WithKeepUnfocused(true))
 
 		// Reporting still off: nothing to inject.
 		if got := h.focusOutOnEnable(); got != nil {

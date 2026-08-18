@@ -36,7 +36,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/coder/websocket"
-	"github.com/cplieger/web-terminal-engine/v4/vt"
+	"github.com/cplieger/web-terminal-engine/v5/vt"
 	"github.com/creack/pty"
 )
 
@@ -331,28 +331,6 @@ type handlerConfig struct {
 	// the struct's leading pointer run.
 	minContrast   float64
 	keepUnfocused bool
-	inputTitle    bool
-	// noReap opts out of reaping this session's process tree at teardown
-	// (WithoutSessionReap). Reaping is ON by default, unlike containment: it
-	// needs no host support, so there is nothing to degrade to.
-	noReap bool
-}
-
-// WithInputTitle enables the input-derived session title: the engine watches the
-// input stream and latches the first eligible submitted line as the session's
-// name (see inputtitle.go). Off by default.
-//
-// Turn it on for a session-per-conversation shell whose program sets no useful
-// OSC window title, where "what the user asked for" is the best available name —
-// the derived title then outranks the OSC title in the reported Title. Leave it
-// off for a general-purpose terminal, where the foreground-process ladder is a
-// better automatic label and the shell's own OSC title is usually meaningful.
-//
-// It observes only what a client actually sends to the PTY, so it is naming the
-// session, not any one client: the label is identical for every attached client
-// and survives a reload with no client round trip.
-func WithInputTitle() Option {
-	return func(c *handlerConfig) { c.inputTitle = true }
 }
 
 // WithWorkDir sets the working directory for the spawned process.
@@ -440,17 +418,20 @@ func WithOnProcessExit(fn func(error)) Option {
 }
 
 // WithKeepUnfocused makes the server hold the child process in the "unfocused"
-// state for DEC 1004 focus reporting: whenever the process enables focus
-// reporting (CSI ?1004h), the server writes a focus-out (ESC [ O) to its PTY,
-// and it never writes a focus-in. A process that gates behavior on focus (for
-// example kiro-cli, which only emits its OSC 9 turn/permission notifications
-// while it believes it is unfocused) then keeps emitting, so the session
-// manager's status classifier can observe those notifications. Off by default:
-// a generic terminal wants real focus reporting (vim, etc.), so only a consumer
-// that relies on the unfocused-notifier behavior enables it. The browser client
-// is expected to emit no focus bytes of its own under this model.
-func WithKeepUnfocused() Option {
-	return func(c *handlerConfig) { c.keepUnfocused = true }
+// state for DEC 1004 focus reporting when keep is true: whenever the process
+// enables focus reporting (CSI ?1004h), the server writes a focus-out (ESC [ O)
+// to its PTY, and it never writes a focus-in. A process that gates behavior on
+// focus (for example kiro-cli, which only emits its OSC 9 turn/permission
+// notifications while it believes it is unfocused) then keeps emitting, so the
+// session manager's status classifier can observe those notifications.
+//
+// keep=false reproduces the no-option default — real focus reporting, which is
+// what a generic terminal wants (vim, etc.) — so a consumer can thread its own
+// flag instead of conditionally appending the option. Later options win: the
+// last WithKeepUnfocused in the option list decides. The browser client is
+// expected to emit no focus bytes of its own when the hold is enabled.
+func WithKeepUnfocused(keep bool) Option {
+	return func(c *handlerConfig) { c.keepUnfocused = keep }
 }
 
 // WithTheme sets the default foreground, background, and cursor colors the
@@ -631,10 +612,6 @@ func (st *clientState) takeHistoryToken() bool {
 // performs ws.Write outside the lock so a slow client can't block
 // readLoop / handleControl / new handleWS connections.
 type Handler struct {
-	// inputTitle derives a session name from the input stream when the consumer
-	// asked for it (WithInputTitle); nil otherwise, and title() reads nil as "".
-	// Guarded by h.mu, like the screen state it sits beside.
-	inputTitle *inputTitleDeriver
 	cmd        *exec.Cmd
 	screen     *vt.Screen
 	registry   *clientRegistry
@@ -748,12 +725,7 @@ func NewHandler(command []string, opts ...Option) *Handler {
 	if cfg.minContrast > vt.MinimumContrastOff {
 		vtOpts = append(vtOpts, vt.WithMinimumContrast(cfg.minContrast))
 	}
-	var derived *inputTitleDeriver
-	if cfg.inputTitle {
-		derived = &inputTitleDeriver{}
-	}
 	return &Handler{
-		inputTitle: derived,
 		command:    command,
 		cfg:        cfg,
 		screen:     vt.New(defaultRows, defaultCols, vtOpts...),
@@ -1066,11 +1038,10 @@ func (h *Handler) ScrollbackBounds() (committed, oldest uint64) {
 // as a struct rather than a result list so the sweep can grow another status
 // input without either growing a longer tuple or taking the lock twice.
 type screenStatus struct {
-	notifMsg     string // the last OSC 9 notification message
-	title        string // the OSC 0/2 window title
-	derivedTitle string // the title derived from what the user typed
-	notifSeq     uint64 // increments per captured notification (a repeat is still new)
-	progress     int    // OSC 9;4 state: -1 none, 0 clear, 1 value, 2 error, 3 indeterminate, 4 warning
+	notifMsg string // the last OSC 9 notification message
+	title    string // the OSC 0/2 window title
+	notifSeq uint64 // increments per captured notification (a repeat is still new)
+	progress int    // OSC 9;4 state: -1 none, 0 clear, 1 value, 2 error, 3 indeterminate, 4 warning
 	// progressValue is the OSC 9;4 percentage: -1 absent/unknown, else 0-100.
 	progressValue int
 }
@@ -1093,31 +1064,10 @@ func (h *Handler) statusSnapshot() screenStatus {
 	return screenStatus{
 		notifMsg:      h.screen.Notification,
 		title:         h.screen.Title,
-		derivedTitle:  h.inputTitle.title(),
 		notifSeq:      h.screen.NotificationSeq,
 		progress:      h.screen.Progress,
 		progressValue: h.screen.ProgressValue,
 	}
-}
-
-// observeInputTitle feeds one input chunk to the derived-title state machine, and
-// is a no-op unless WithInputTitle was set. Cheap enough to call per frame: it is
-// a byte loop that stops entirely once a title has latched.
-func (h *Handler) observeInputTitle(chunk []byte) {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	if h.inputTitle != nil {
-		h.inputTitle.observe(chunk)
-	}
-}
-
-// titles returns the two handler-owned title sources under ONE lock acquisition:
-// the program's OSC window title and the input-derived title. One getter rather
-// than two so a caller cannot pair a fresh OSC title with a stale derived one.
-func (h *Handler) titles() (osc, derived string) {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	return h.screen.Title, h.inputTitle.title()
 }
 
 // StartEager starts the child process now at a default size, rather than lazily
@@ -1505,13 +1455,6 @@ type flushFrame struct {
 	scrollbackCleared bool
 }
 
-// buildFrame computes the next outbound frame under h.mu. Returns a nil frame
-// if there is nothing to send (no resize yet, flush held, no attached
-// clients, or no changed rows and no scroll lines). holdUntil is non-zero
-// when a flush hold is active — a DEC 2026 synchronized-output hold or the
-// post-resize redraw-settle hold — and the scheduler arms a retry at that
-// deadline so a final held redraw with no subsequent PTY byte still flushes
-// (a trigger-only scheduler would strand it).
 // retainSuspendedScrollback drains lines produced with no attached clients into
 // the retained main-screen history. The caller holds h.mu. One-shot signals
 // deliberately remain pending for the next attach.
@@ -1526,6 +1469,13 @@ func (h *Handler) retainSuspendedScrollback() {
 	h.scrollback.Append(drained)
 }
 
+// buildFrame computes the next outbound frame under h.mu. Returns a nil frame
+// if there is nothing to send (no resize yet, flush held, no attached
+// clients, or no changed rows and no scroll lines). holdUntil is non-zero
+// when a flush hold is active — a DEC 2026 synchronized-output hold or the
+// post-resize redraw-settle hold — and the scheduler arms a retry at that
+// deadline so a final held redraw with no subsequent PTY byte still flushes
+// (a trigger-only scheduler would strand it).
 func (h *Handler) buildFrame() (frame *flushFrame, holdUntil time.Time) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -2101,11 +2051,6 @@ func (h *Handler) handleBinaryFrame(ws *websocket.Conn, state *clientState, msg 
 		h.cfg.logger.Debug("terminal: pty write", "error", err)
 		return armed, false
 	}
-	// Derive the session title from the same bytes the program received (after
-	// the write, so input that never reached it never names the session). One
-	// binary frame is one atomic input event, which is the chunk boundary the
-	// deriver's escape parser relies on.
-	h.observeInputTitle(msg)
 	// Increment session bytesReceived for the resume protocol.
 	// state.session is set when the client sends its first resume
 	// control message; without it we silently skip — the client is
@@ -2175,12 +2120,6 @@ type controlDisposition struct {
 	closed bool // compatibility enforcement closed the connection
 }
 
-// handleControl dispatches one client control message (binary sentinel payload
-// or whole text message — the transport is the caller's concern). onResumeServed
-// is invoked after a resume exchange has been fully written to the socket
-// (resumeAck + modes/title + window frame + history replay); handleWS uses it to
-// release the deferred process-exited close for a client that attached to an
-// already-exited session (see closeOnProcExit).
 // resumeControl is handleControl's resume case: the wire-version gate, the
 // v4 framing latch, the per-socket spam throttle, and the handleResume
 // dispatch. Extracted verbatim (gocognit) — behavior is handleControl's.
@@ -2346,6 +2285,12 @@ func (h *Handler) historyControl(ws *websocket.Conn, state *clientState, c *cont
 	ws.Write(ctx, websocket.MessageBinary, encodeScrollMsg(ack, firstIndex, lines)) //nolint:errcheck // best-effort
 }
 
+// handleControl dispatches one client control message (binary sentinel payload
+// or whole text message — the transport is the caller's concern). onResumeServed
+// is invoked after a resume exchange has been fully written to the socket
+// (resumeAck + modes/title + window frame + history replay); handleWS uses it to
+// release the deferred process-exited close for a client that attached to an
+// already-exited session (see closeOnProcExit).
 func (h *Handler) handleControl(ws *websocket.Conn, state *clientState, payload []byte, onResumeServed func()) controlDisposition {
 	var c controlMsg
 	if err := json.Unmarshal(payload, &c); err != nil {

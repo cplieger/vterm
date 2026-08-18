@@ -9,7 +9,7 @@ import (
 	"time"
 
 	"github.com/coder/websocket"
-	"github.com/cplieger/web-terminal-engine/v4/vt"
+	"github.com/cplieger/web-terminal-engine/v5/vt"
 )
 
 // P4 (event-driven flush + zero-client render suspension) completion-criteria
@@ -19,12 +19,12 @@ import (
 // the DEC 2026 hold-release deadline so a held final redraw still lands.
 
 // dialSession dials a manager-routed WS for the session and returns the conn.
-func dialSession(t *testing.T, srv *httptest.Server, id string) *websocket.Conn {
+func dialSession(t *testing.T, srv *httptest.Server, id SessionID) *websocket.Conn {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 	defer cancel()
 	//nolint:bodyclose // coder/websocket Dial nils resp.Body on success
-	ws, _, err := websocket.Dial(ctx, "ws"+strings.TrimPrefix(srv.URL, "http")+"/ws?session="+id, nil)
+	ws, _, err := websocket.Dial(ctx, "ws"+strings.TrimPrefix(srv.URL, "http")+"/ws?session="+string(id), nil)
 	if err != nil {
 		t.Fatalf("ws dial: %v", err)
 	}

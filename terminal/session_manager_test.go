@@ -163,7 +163,7 @@ func TestSessionManagerREST(t *testing.T) {
 	}
 
 	// DELETE removes it (204), a second DELETE is 404.
-	req, _ := http.NewRequestWithContext(t.Context(), http.MethodDelete, srv.URL+"/api/sessions/"+created.ID, nil)
+	req, _ := http.NewRequestWithContext(t.Context(), http.MethodDelete, srv.URL+"/api/sessions/"+string(created.ID), nil)
 	respD, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatalf("DELETE: %v", err)
@@ -172,7 +172,7 @@ func TestSessionManagerREST(t *testing.T) {
 	if respD.StatusCode != http.StatusNoContent {
 		t.Fatalf("DELETE status = %d, want 204", respD.StatusCode)
 	}
-	req2, _ := http.NewRequestWithContext(t.Context(), http.MethodDelete, srv.URL+"/api/sessions/"+created.ID, nil)
+	req2, _ := http.NewRequestWithContext(t.Context(), http.MethodDelete, srv.URL+"/api/sessions/"+string(created.ID), nil)
 	respD2, err := http.DefaultClient.Do(req2)
 	if err != nil {
 		t.Fatalf("DELETE 2: %v", err)
@@ -217,7 +217,7 @@ func TestSessionManagerWSAttach(t *testing.T) {
 	srv := httptest.NewServer(m.WebSocketHandler())
 	t.Cleanup(srv.Close)
 
-	wsURL := "ws" + strings.TrimPrefix(srv.URL, "http") + "/ws?session=" + id
+	wsURL := "ws" + strings.TrimPrefix(srv.URL, "http") + "/ws?session=" + string(id)
 	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 	defer cancel()
 	//nolint:bodyclose // coder/websocket Dial nils resp.Body on success
@@ -359,10 +359,10 @@ func TestSessionManagerSetTitleREST(t *testing.T) {
 		t.Fatalf("Create: %v", err)
 	}
 
-	put := func(t *testing.T, sessionID, body string) int {
+	put := func(t *testing.T, sessionID SessionID, body string) int {
 		t.Helper()
 		req, _ := http.NewRequestWithContext(t.Context(), http.MethodPut,
-			srv.URL+"/api/sessions/"+sessionID+"/title", strings.NewReader(body))
+			srv.URL+"/api/sessions/"+string(sessionID)+"/title", strings.NewReader(body))
 		resp, err := http.DefaultClient.Do(req)
 		if err != nil {
 			t.Fatalf("PUT: %v", err)
@@ -371,33 +371,38 @@ func TestSessionManagerSetTitleREST(t *testing.T) {
 		return resp.StatusCode
 	}
 
-	// 204: valid body against a known id.
-	if code := put(t, id, `{"title":"hello"}`); code != http.StatusNoContent {
-		t.Fatalf("PUT known id status = %d, want 204", code)
-	}
-	// List reflects the pushed title (OSC title is empty for a fresh session).
-	found := false
-	for _, info := range m.List() {
-		if info.ID == id {
-			found = true
-			if info.Title != "hello" {
-				t.Fatalf("List Title after PUT = %q, want %q", info.Title, "hello")
+	t.Run("204 sets the title and List reflects it", func(t *testing.T) {
+		if code := put(t, id, `{"title":"hello"}`); code != http.StatusNoContent {
+			t.Fatalf("PUT known id status = %d, want 204", code)
+		}
+		// OSC title is empty for a fresh session, so the pushed title resolves.
+		found := false
+		for _, info := range m.List() {
+			if info.ID == id {
+				found = true
+				if info.Title != "hello" {
+					t.Errorf("List Title after PUT = %q, want %q", info.Title, "hello")
+				}
 			}
 		}
-	}
-	if !found {
-		t.Fatalf("session %s not in List()", id)
-	}
+		if !found {
+			t.Errorf("session %s not in List()", id)
+		}
+	})
 
-	// 404: valid body against an unknown id (decode succeeds, lookup fails).
-	if code := put(t, "nonexistent", `{"title":"hello"}`); code != http.StatusNotFound {
-		t.Fatalf("PUT unknown id status = %d, want 404", code)
-	}
+	t.Run("404 on an unknown id", func(t *testing.T) {
+		// A valid body: decode succeeds, the lookup fails.
+		if code := put(t, "nonexistent", `{"title":"hello"}`); code != http.StatusNotFound {
+			t.Errorf("PUT unknown id status = %d, want 404", code)
+		}
+	})
 
-	// 400: malformed body against a known id (decode fails before lookup).
-	if code := put(t, id, `{bad json`); code != http.StatusBadRequest {
-		t.Fatalf("PUT malformed body status = %d, want 400", code)
-	}
+	t.Run("400 on a malformed body", func(t *testing.T) {
+		// Against a known id: decode fails before the lookup.
+		if code := put(t, id, `{bad json`); code != http.StatusBadRequest {
+			t.Errorf("PUT malformed body status = %d, want 400", code)
+		}
+	})
 }
 
 // TestSanitizeTitle verifies the tab-label sanitizer at both of its bounds: a
@@ -492,7 +497,7 @@ func TestSessionSurfaceRefusesCaching(t *testing.T) {
 			t.Fatal("POST returned no id, so this test would assert nothing")
 		}
 		if cc := resp.Header.Get("Cache-Control"); !hasDirective(cc, "no-store") {
-			t.Errorf("POST /api/sessions Cache-Control = %q, want no-store: the response body carries the session id %s", cc, LogID(created.ID))
+			t.Errorf("POST /api/sessions Cache-Control = %q, want no-store: the response body carries the session id %s", cc, LogID(string(created.ID)))
 		}
 		t.Cleanup(func() { m.Close(created.ID) })
 
@@ -564,7 +569,8 @@ func TestSessionRESTNoStoreCoversEveryResponse(t *testing.T) {
 	h := m.RESTHandler()
 
 	// liveID creates a session for ONE case to act on, so a case that closes or
-	// renames its target cannot disturb another's.
+	// renames its target cannot disturb another's. Returned as a plain string
+	// because every caller splices it into a URL path.
 	liveID := func(t *testing.T) string {
 		t.Helper()
 		id, err := m.Create()
@@ -572,7 +578,7 @@ func TestSessionRESTNoStoreCoversEveryResponse(t *testing.T) {
 			t.Fatalf("Create: %v", err)
 		}
 		t.Cleanup(func() { m.Close(id) })
-		return id
+		return string(id)
 	}
 
 	// The two path shapes the table needs: a fixed collection path, and a
@@ -671,9 +677,9 @@ func TestSessionRESTNoStorePrecedence(t *testing.T) {
 		t.Cleanup(func() { m.Close(id) })
 
 		rec := httptest.NewRecorder()
-		h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, SessionsSubtreePath+id, nil))
+		h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, SessionsSubtreePath+string(id), nil))
 		if rec.Code != http.StatusMethodNotAllowed {
-			t.Fatalf("GET %s = %d, want 405 (the wrapper-only response this case needs)", SessionsSubtreePath+id, rec.Code)
+			t.Fatalf("GET %s = %d, want 405 (the wrapper-only response this case needs)", SessionsSubtreePath+string(id), rec.Code)
 		}
 		if got := snapHeader(rec).Get("Cache-Control"); got != outer {
 			t.Errorf("Cache-Control = %q, want the outer %q preserved: an already-set value is the deliberate override", got, outer)
@@ -748,7 +754,7 @@ func TestSessionRESTNoStoreSetBeforeBody(t *testing.T) {
 					t.Fatalf("Create: %v", err)
 				}
 				t.Cleanup(func() { m.Close(id) })
-				path = SessionsSubtreePath + id
+				path = SessionsSubtreePath + string(id)
 			}
 			fw := &firstWriteHeader{ResponseWriter: httptest.NewRecorder()}
 			h.ServeHTTP(fw, httptest.NewRequest(tc.method, path, nil))

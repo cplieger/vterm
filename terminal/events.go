@@ -75,7 +75,7 @@ type statusEvent struct {
 	// past the scalar tail to find it (govet fieldalignment).
 	Order     *int      `json:"order,omitempty"`
 	CreatedAt time.Time `json:"createdAt"`
-	ID        string    `json:"id"`
+	ID        SessionID `json:"id"` // marshals as a plain string; the wire shape is unchanged
 	Status    string    `json:"status"`
 	Title     string    `json:"title"` // resolved display title (effectiveTitle)
 	// ClientTitle is the raw stored client-derived title, carried alongside Title
@@ -219,13 +219,12 @@ func (m *SessionManager) sweepLoop(ctx context.Context) {
 // statusRaw carries one session's handler-derived status inputs, read in
 // diffStatuses's lock-free phase (each getter takes only that handler's h.mu).
 type statusRaw struct {
-	createdAt    time.Time
-	handler      *Handler
-	tr           *statusTracker
-	id           string
-	notifMsg     string
-	oscTitle     string
-	derivedTitle string
+	createdAt time.Time
+	handler   *Handler
+	tr        *statusTracker
+	id        SessionID
+	notifMsg  string
+	oscTitle  string
 	// autoProbe is the foreground-process probe result for this sweep: the
 	// candidate pgid plus the name/cwd it resolves to. Read in phase 2 (procfs +
 	// one ioctl, no locks held) and folded into the confirmation window in
@@ -268,7 +267,6 @@ func (it *statusRaw) read() {
 	it.notifMsg = sc.notifMsg
 	it.notifSeq = sc.notifSeq
 	it.oscTitle = sc.title
-	it.derivedTitle = sc.derivedTitle
 	// Skip the probe entirely when the program named itself: the automatic title
 	// is the LAST rung, so an OSC-titled session must never pay for procfs reads.
 	if it.oscTitle == "" && !it.exited {
@@ -380,7 +378,7 @@ func (m *SessionManager) sweepSession(s *session, it *statusRaw) (statusEvent, b
 	// procfs and disagreeing with this stream.
 	m.confirmAutoTitle(s, it, tr)
 	title := effectiveTitle(&titleSources{
-		pinned: pinnedTitle, derived: it.derivedTitle, osc: it.oscTitle,
+		pinned: pinnedTitle, osc: it.oscTitle,
 		client: clientTitle, auto: s.autoTitle,
 	})
 	// reportsActivity is sticky: progress stays >= 0 once any OSC 9;4 has been
@@ -652,7 +650,7 @@ func (m *SessionManager) snapshot() []statusEvent {
 		it.ev.Status = refinedStatus(it.lastStatus, it.handler)
 		sc := it.handler.statusSnapshot()
 		it.ev.Title = effectiveTitle(&titleSources{
-			pinned: it.ev.PinnedTitle, derived: sc.derivedTitle, osc: sc.title,
+			pinned: it.ev.PinnedTitle, osc: sc.title,
 			client: it.ev.ClientTitle, auto: it.autoTitle,
 		})
 		it.ev.ProgressValue = sc.progressValue

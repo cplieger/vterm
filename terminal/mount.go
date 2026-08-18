@@ -113,15 +113,38 @@ func WithCreateGate(mw func(http.Handler) http.Handler) MountOption {
 	}
 }
 
+// SessionHandlers is the trio MountSessionRoutes wires: the terminal WebSocket,
+// the session REST API, and the status stream (SSE). A struct rather than three
+// positional http.Handler parameters because the three are adjacent and
+// same-typed, and a transposed pair produced a mux that still compiled and
+// still answered requests — just each on the wrong route. Field names label
+// each handler at the call site; normally the three are one SessionManager's
+// WebSocketHandler / RESTHandler / EventsHandler, which MountAPI wires for you.
+//
+// Every field is required. The zero SessionHandlers is not usable: a nil
+// handler reaches net/http's registration, which panics on "nil handler", so a
+// partially-filled literal fails at mount time rather than serving a route
+// that answers nothing.
+type SessionHandlers struct {
+	// WS serves the terminal WebSocket (mounted at WSPath).
+	WS http.Handler
+	// REST serves the session REST API (mounted at SessionsPath and
+	// SessionsSubtreePath; create-gated when WithCreateGate is passed).
+	REST http.Handler
+	// Events serves the session status stream, SSE (mounted at
+	// SessionEventsPath).
+	Events http.Handler
+}
+
 // MountSessionRoutes wires the session-manager HTTP surface on mux — the
 // engine-owned mount contract, in code:
 //
-//	WSPath              -> ws     (terminal WebSocket, ?session=<id>)
-//	SessionsPath        -> rest   (POST create, GET list; create-gated)
-//	SessionsSubtreePath -> rest   (DELETE /{id}, PUT /{id}/title,
-//	                               PUT + DELETE /{id}/pinned-title,
-//	                               PUT /order; create-gated)
-//	SessionEventsPath   -> events (status SSE)
+//	WSPath              -> h.WS     (terminal WebSocket, ?session=<id>)
+//	SessionsPath        -> h.REST   (POST create, GET list; create-gated)
+//	SessionsSubtreePath -> h.REST   (DELETE /{id}, PUT /{id}/title,
+//	                                 PUT + DELETE /{id}/pinned-title,
+//	                                 PUT /order; create-gated)
+//	SessionEventsPath   -> h.Events (status SSE)
 //
 // Exactly these four mounts and no others: the engine's debug or future
 // routes never appear implicitly, and any addition to the set is a
@@ -138,15 +161,16 @@ func WithCreateGate(mw func(http.Handler) http.Handler) MountOption {
 //
 // The REST mounts are wrapped in the surface's cache policy (withNoStore),
 // outside any create gate, so every response on a token-bearing path states
-// Cache-Control — including the ones no handler writes. ws and events are not
+// Cache-Control — including the ones no handler writes. WS and Events are not
 // wrapped: one is a handshake, the other sets its own stricter value.
-func MountSessionRoutes(mux *http.ServeMux, ws, rest, events http.Handler, opts ...MountOption) {
+func MountSessionRoutes(mux *http.ServeMux, h SessionHandlers, opts ...MountOption) {
 	var c mountConfig
 	for _, o := range opts {
 		if o != nil {
 			o(&c)
 		}
 	}
+	rest := h.REST
 	if c.createGate != nil {
 		rest = c.createGate(rest)
 	}
@@ -158,13 +182,13 @@ func MountSessionRoutes(mux *http.ServeMux, ws, rest, events http.Handler, opts 
 	// unconditionally, so a consumer inherits the policy by bumping the engine
 	// rather than by remembering an option; RESTHandler has already set the
 	// header by the time the inner copy runs, which that copy then leaves alone.
-	// Only rest is wrapped: ws is a WebSocket handshake, and events sets its own
+	// Only rest is wrapped: WS is a WebSocket handshake, and Events sets its own
 	// stricter "no-cache, no-store" (see writeSSEHeaders).
 	rest = withNoStore(rest)
-	mux.Handle(WSPath, ws)
+	mux.Handle(WSPath, h.WS)
 	mux.Handle(SessionsPath, rest)
 	mux.Handle(SessionsSubtreePath, rest)
-	mux.Handle(SessionEventsPath, events)
+	mux.Handle(SessionEventsPath, h.Events)
 }
 
 // MountAPI mounts this manager's WebSocket, REST, and status-stream handlers
@@ -172,5 +196,9 @@ func MountSessionRoutes(mux *http.ServeMux, ws, rest, events http.Handler, opts 
 // common case of one manager serving one mux; use MountSessionRoutes directly
 // to inject stub handlers in tests.
 func (m *SessionManager) MountAPI(mux *http.ServeMux, opts ...MountOption) {
-	MountSessionRoutes(mux, m.WebSocketHandler(), m.RESTHandler(), m.EventsHandler(), opts...)
+	MountSessionRoutes(mux, SessionHandlers{
+		WS:     m.WebSocketHandler(),
+		REST:   m.RESTHandler(),
+		Events: m.EventsHandler(),
+	}, opts...)
 }

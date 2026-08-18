@@ -107,8 +107,8 @@ func TestDecodedManifestFeedsWirePairIncompatibility(t *testing.T) {
 		t.Fatalf("ReadWireManifest: %v", err)
 	}
 	if got := WirePairIncompatibility(
-		WireProtocolVersion, MinSupportedClientWireVersion,
-		m.ProtocolVersion, m.MinimumServerProtocolVersion,
+		WireEnd{Rev: WireProtocolVersion, MinPeer: MinSupportedClientWireVersion},
+		WireEnd{Rev: m.ProtocolVersion, MinPeer: m.MinimumServerProtocolVersion},
 	); got != "" {
 		t.Errorf("the published manifest paired with this server is incompatible: %s", got)
 	}

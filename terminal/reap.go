@@ -39,9 +39,11 @@ import (
 //     the first pass's pid set, which bounds it to a fork racing the final
 //     SIGKILL round.
 //
-// Reaping is ON by default, because leaving a closed session's tree alive is the
-// defect rather than a feature; WithoutSessionReap opts out for a consumer that
-// wants a tab's background work to outlive the tab.
+// Reaping is unconditional: leaving a closed session's tree alive is the defect
+// rather than a feature. (An opt-out shipped through v4 as WithoutSessionReap;
+// it had no caller anywhere in the fleet and was removed at v5 — work meant to
+// outlive a tab belongs outside the session's process tree, e.g. a detached
+// service, not behind an engine knob.)
 
 const (
 	// reapMarkerEnv names the variable every session's process tree inherits.
@@ -61,18 +63,6 @@ const (
 	reapPoll = 20 * time.Millisecond
 )
 
-// WithoutSessionReap disables reaping this session's process tree when the
-// session ends, leaving descendants that outlived the PTY child running.
-//
-// The default is to reap, so this is the opt-out for the one case where the
-// leak is the point: a consumer whose users deliberately start work meant to
-// survive the tab (nohup, a detached build). Everything else wants the default
-// — an unreaped tree holds its memory for the container's lifetime, and the
-// runtime that motivated this feature installs no exit path of its own.
-func WithoutSessionReap() Option {
-	return func(cfg *handlerConfig) { cfg.noReap = true }
-}
-
 // sessionReap is one session's reap domain: the marker its tree carries, plus
 // the once-guard that makes teardown idempotent across the crash-then-close
 // sequence.
@@ -84,7 +74,7 @@ type sessionReap struct {
 }
 
 // newSessionReap mints a reap domain for one session, or returns nil when the
-// consumer opted out or the marker could not be generated.
+// marker could not be generated.
 //
 // A failed marker is a nil domain rather than a fabricated one: a predictable
 // or empty marker would either match nothing or, worse, match another session's
@@ -97,9 +87,6 @@ type sessionReap struct {
 // host without a writable cgroup root already does). An unlabelled session logs
 // an empty one rather than inventing a name.
 func (h *Handler) newSessionReap() *sessionReap {
-	if h.cfg.noReap {
-		return nil
-	}
 	buf := make([]byte, reapMarkerBytes)
 	if _, err := rand.Read(buf); err != nil {
 		containLogger(h.cfg.logger).Warn("terminal: session reaping unavailable for session",

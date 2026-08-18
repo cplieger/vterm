@@ -122,7 +122,9 @@ func TestWirePairIncompatibility(t *testing.T) {
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
-			got := WirePairIncompatibility(tc.serverRev, tc.serverMinClient, tc.clientRev, tc.clientMinServer)
+			got := WirePairIncompatibility(
+				WireEnd{Rev: tc.serverRev, MinPeer: tc.serverMinClient},
+				WireEnd{Rev: tc.clientRev, MinPeer: tc.clientMinServer})
 			if tc.wantCompatible {
 				if got != "" {
 					t.Errorf("WirePairIncompatibility(%d,%d,%d,%d) = %q, want compatible (empty)",
@@ -165,7 +167,9 @@ func TestWirePairIncompatibility_selfInconsistencyPrecedesSkew(t *testing.T) {
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
-			got := WirePairIncompatibility(tc.serverRev, tc.serverMinClient, tc.clientRev, tc.clientMinServer)
+			got := WirePairIncompatibility(
+				WireEnd{Rev: tc.serverRev, MinPeer: tc.serverMinClient},
+				WireEnd{Rev: tc.clientRev, MinPeer: tc.clientMinServer})
 			if !strings.Contains(got, tc.wantSubstr) {
 				t.Errorf("reason = %q, want it to contain %q", got, tc.wantSubstr)
 			}
@@ -190,8 +194,8 @@ func TestWirePairIncompatibility_realConstantsAreSelfConsistent(t *testing.T) {
 			MinSupportedClientWireVersion, WireProtocolVersion)
 	}
 	if got := WirePairIncompatibility(
-		WireProtocolVersion, MinSupportedClientWireVersion,
-		WireProtocolVersion, MinSupportedClientWireVersion,
+		WireEnd{Rev: WireProtocolVersion, MinPeer: MinSupportedClientWireVersion},
+		WireEnd{Rev: WireProtocolVersion, MinPeer: MinSupportedClientWireVersion},
 	); got != "" {
 		t.Errorf("the engine paired with a client at its own revisions must be compatible, got %q", got)
 	}
@@ -206,8 +210,8 @@ func TestWirePairIncompatibility_agreesWithRuntimeFloor(t *testing.T) {
 	for clientRev := 1; clientRev <= WireProtocolVersion+2; clientRev++ {
 		runtimeRefuses := clientRev < minSupportedClientWireVersion
 		gateRefuses := WirePairIncompatibility(
-			WireProtocolVersion, MinSupportedClientWireVersion,
-			clientRev, MinSupportedClientWireVersion,
+			WireEnd{Rev: WireProtocolVersion, MinPeer: MinSupportedClientWireVersion},
+			WireEnd{Rev: clientRev, MinPeer: MinSupportedClientWireVersion},
 		) != ""
 		if runtimeRefuses != gateRefuses {
 			t.Errorf("client rev %d: runtime refuses=%v but build gate refuses=%v; the gate's rule drifted from the handshake",

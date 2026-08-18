@@ -123,9 +123,10 @@ func TestWirePairIncompatibility(t *testing.T) {
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
-			got := WirePairIncompatibility(
-				WireEnd{Rev: tc.serverRev, MinPeer: tc.serverMinClient},
-				WireEnd{Rev: tc.clientRev, MinPeer: tc.clientMinServer})
+			got := WirePairIncompatibility(WirePair{
+				Server: WireEnd{Rev: tc.serverRev, MinPeer: tc.serverMinClient},
+				Client: WireEnd{Rev: tc.clientRev, MinPeer: tc.clientMinServer},
+			})
 			if tc.wantCompatible {
 				if got != "" {
 					t.Errorf("WirePairIncompatibility(%d,%d,%d,%d) = %q, want compatible (empty)",
@@ -168,9 +169,10 @@ func TestWirePairIncompatibility_selfInconsistencyPrecedesSkew(t *testing.T) {
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
-			got := WirePairIncompatibility(
-				WireEnd{Rev: tc.serverRev, MinPeer: tc.serverMinClient},
-				WireEnd{Rev: tc.clientRev, MinPeer: tc.clientMinServer})
+			got := WirePairIncompatibility(WirePair{
+				Server: WireEnd{Rev: tc.serverRev, MinPeer: tc.serverMinClient},
+				Client: WireEnd{Rev: tc.clientRev, MinPeer: tc.clientMinServer},
+			})
 			if !strings.Contains(got, tc.wantSubstr) {
 				t.Errorf("reason = %q, want it to contain %q", got, tc.wantSubstr)
 			}
@@ -194,10 +196,10 @@ func TestWirePairIncompatibility_realConstantsAreSelfConsistent(t *testing.T) {
 		t.Errorf("server half is self-inconsistent: min client %d > own rev %d",
 			MinSupportedClientWireVersion, WireProtocolVersion)
 	}
-	if got := WirePairIncompatibility(
-		WireEnd{Rev: WireProtocolVersion, MinPeer: MinSupportedClientWireVersion},
-		WireEnd{Rev: WireProtocolVersion, MinPeer: MinSupportedClientWireVersion},
-	); got != "" {
+	if got := WirePairIncompatibility(WirePair{
+		Server: WireEnd{Rev: WireProtocolVersion, MinPeer: MinSupportedClientWireVersion},
+		Client: WireEnd{Rev: WireProtocolVersion, MinPeer: MinSupportedClientWireVersion},
+	}); got != "" {
 		t.Errorf("the engine paired with a client at its own revisions must be compatible, got %q", got)
 	}
 }
@@ -210,10 +212,10 @@ func TestWirePairIncompatibility_realConstantsAreSelfConsistent(t *testing.T) {
 func TestWirePairIncompatibility_agreesWithRuntimeFloor(t *testing.T) {
 	for clientRev := 1; clientRev <= WireProtocolVersion+2; clientRev++ {
 		runtimeRefuses := clientRev < minSupportedClientWireVersion
-		gateRefuses := WirePairIncompatibility(
-			WireEnd{Rev: WireProtocolVersion, MinPeer: MinSupportedClientWireVersion},
-			WireEnd{Rev: clientRev, MinPeer: MinSupportedClientWireVersion},
-		) != ""
+		gateRefuses := WirePairIncompatibility(WirePair{
+			Server: WireEnd{Rev: WireProtocolVersion, MinPeer: MinSupportedClientWireVersion},
+			Client: WireEnd{Rev: clientRev, MinPeer: MinSupportedClientWireVersion},
+		}) != ""
 		if runtimeRefuses != gateRefuses {
 			t.Errorf("client rev %d: runtime refuses=%v but build gate refuses=%v; the gate's rule drifted from the handshake",
 				clientRev, runtimeRefuses, gateRefuses)
@@ -307,5 +309,39 @@ func TestLogID_neverEmitsInvalidUTF8(t *testing.T) {
 		if strings.Contains(got, string(id)) {
 			t.Errorf("LogID(%q) = %q, which still contains the full id", id, got)
 		}
+	}
+}
+
+// TestWirePairNamesTheBehindHalf pins what the keyed pair buys. Every check in
+// the comparator is symmetric in shape, so the compatible-or-not VERDICT
+// survives a transposition; the REASON does not. With the two halves passed
+// positionally, a swapped call reported the Go half behind when the TS half
+// was, sending a release gate to bump the wrong pin — the same misdiagnosis the
+// comparator already refuses to commit for garbage input. Named fields make the
+// roles unswappable at the call site, and this asserts the diagnosis follows
+// them.
+func TestWirePairNamesTheBehindHalf(t *testing.T) {
+	behindGo := WirePair{
+		Server: WireEnd{Rev: 3, MinPeer: 1},
+		Client: WireEnd{Rev: 5, MinPeer: 4}, // demands a server >= 4, gets 3
+	}
+	behindTS := WirePair{
+		Server: WireEnd{Rev: 5, MinPeer: 4}, // demands a client >= 4, gets 3
+		Client: WireEnd{Rev: 3, MinPeer: 1},
+	}
+
+	got := WirePairIncompatibility(behindGo)
+	if !strings.Contains(got, "the Go half is behind") {
+		t.Errorf("a below-floor server reported %q, want it to name the Go half", got)
+	}
+	got = WirePairIncompatibility(behindTS)
+	if !strings.Contains(got, "the TS half is behind") {
+		t.Errorf("a below-floor client reported %q, want it to name the TS half", got)
+	}
+
+	// Both are incompatible, which is why the verdict alone cannot catch a
+	// transposition and the field names have to.
+	if WirePairIncompatibility(behindGo) == "" || WirePairIncompatibility(behindTS) == "" {
+		t.Error("both pairs must be incompatible; the verdict is swap-invariant by construction")
 	}
 }

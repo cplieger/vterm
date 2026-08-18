@@ -294,3 +294,84 @@ func TestScrollbackRing_ClearReleasesAndRegrows(t *testing.T) {
 		t.Errorf("LinesFrom(3) = (%d, %v), want (3, [new1])", first, lineTexts(from))
 	}
 }
+
+// TestScrollbackRing_AccessorsCopyLines pins the mutation isolation of every
+// read door: LinesFrom, LinesRange and Lines each return lines a caller may
+// transform in place without rewriting ring history, so a LATER replay of the
+// same absolute index still sees the original text. The accessors used to hand
+// back the inner []vt.WireRun the ring itself holds, and the paging and replay
+// callers that serialize or rewrite runs would then have edited every future
+// reader's copy (go-rulebook C21).
+//
+// Each subtest mutates through one door and re-reads through ALL of them,
+// because one uncopied door is enough to leak the ring.
+func TestScrollbackRing_AccessorsCopyLines(t *testing.T) {
+	const original, mutated = "keep", "CLOBBERED"
+
+	// readBack asserts that every door still reports the original text for
+	// absolute index 0, naming the door the caller mutated through.
+	readBack := func(t *testing.T, r *scrollbackRing, via string) {
+		t.Helper()
+		_, from := r.LinesFrom(0)
+		_, rng := r.LinesRange(0, 1)
+		all := r.Lines()
+		for _, door := range []struct {
+			name  string
+			lines [][]vt.WireRun
+		}{{"LinesFrom", from}, {"LinesRange", rng}, {"Lines", all}} {
+			if len(door.lines) == 0 || len(door.lines[0]) == 0 {
+				t.Fatalf("%s returned no runs for index 0 after mutating via %s", door.name, via)
+			}
+			if got := door.lines[0][0].T; got != original {
+				t.Errorf("after mutating the slice returned by %s, %s reports %q for index 0, want %q: the ring handed out its own storage",
+					via, door.name, got, original)
+			}
+		}
+	}
+
+	newRing := func() *scrollbackRing {
+		r := newScrollbackRing(5)
+		r.Append([][]vt.WireRun{makeLine(original), makeLine("b"), makeLine("c")})
+		return r
+	}
+
+	t.Run("LinesFrom", func(t *testing.T) {
+		r := newRing()
+		_, lines := r.LinesFrom(0)
+		lines[0][0].T = mutated
+		readBack(t, r, "LinesFrom")
+	})
+	t.Run("LinesRange", func(t *testing.T) {
+		r := newRing()
+		_, lines := r.LinesRange(0, 2)
+		lines[0][0].T = mutated
+		readBack(t, r, "LinesRange")
+	})
+	t.Run("Lines", func(t *testing.T) {
+		r := newRing()
+		lines := r.Lines()
+		lines[0][0].T = mutated
+		readBack(t, r, "Lines")
+	})
+	t.Run("two calls do not alias each other", func(t *testing.T) {
+		// A caller holding results from two calls must not see one edit twice:
+		// the copy is per call, not one shared copy per line.
+		r := newRing()
+		first := r.Lines()
+		second := r.Lines()
+		first[0][0].T = mutated
+		if got := second[0][0].T; got != original {
+			t.Errorf("second Lines() call reports %q after the first was mutated, want %q", got, original)
+		}
+	})
+	t.Run("a nil line survives the copy as nil", func(t *testing.T) {
+		// The ring stores whatever the VT layer commits, and an empty row can
+		// arrive as a nil slice; copying must not turn that into a non-nil
+		// empty slice, which encodes as [] rather than null on the wire.
+		r := newScrollbackRing(2)
+		r.Append([][]vt.WireRun{nil})
+		if lines := r.Lines(); len(lines) != 1 || lines[0] != nil {
+			t.Errorf("Lines() = %#v, want exactly one nil line", lines)
+		}
+	})
+}

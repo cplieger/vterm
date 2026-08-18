@@ -81,19 +81,34 @@ func TestScrollbackRing_WrapAround(t *testing.T) {
 // that the resume protocol depends on: Committed advances monotonically,
 // OldestIndex tracks eviction, and indices never repeat.
 //
-// The subtests are ordered stages over ONE ring — each appends to the state
-// the previous left — so they must run in sequence and do not pass alone
-// under -run. That is the point: the accounting being tested IS the
-// accumulation across appends.
+// Each case builds its own ring and appends the whole history it asserts on,
+// so any one of them runs alone under -run. An earlier shape shared one ring
+// across the cases, which read as three named cases while being three stages
+// of one — the later two could not be run or diagnosed by themselves.
 func TestScrollbackRing_AbsoluteIndices(t *testing.T) {
-	r := newScrollbackRing(5)
+	// ringOf returns a capacity-5 ring holding n committed lines, appended in
+	// the two batches the eviction boundary needs (3, then 4).
+	ringOf := func(n int) *scrollbackRing {
+		r := newScrollbackRing(5)
+		names := []string{"a", "b", "c", "d", "e", "f", "g"}
+		for i := 0; i < n; i += 3 {
+			batch := make([][]vt.WireRun, 0, 3)
+			for _, name := range names[i:min(i+3, n)] {
+				batch = append(batch, makeLine(name))
+			}
+			r.Append(batch)
+		}
+		return r
+	}
+
 	t.Run("fresh ring starts at zero", func(t *testing.T) {
+		r := ringOf(0)
 		if r.Committed() != 0 || r.OldestIndex() != 0 {
 			t.Errorf("fresh ring: committed=%d oldest=%d, want 0/0", r.Committed(), r.OldestIndex())
 		}
 	})
 	t.Run("appends advance committed, not oldest", func(t *testing.T) {
-		r.Append([][]vt.WireRun{makeLine("a"), makeLine("b"), makeLine("c")})
+		r := ringOf(3)
 		if r.Committed() != 3 {
 			t.Errorf("after 3 appends: committed=%d, want 3", r.Committed())
 		}
@@ -102,7 +117,7 @@ func TestScrollbackRing_AbsoluteIndices(t *testing.T) {
 		}
 	})
 	t.Run("overflow keeps committed growing and advances oldest", func(t *testing.T) {
-		r.Append([][]vt.WireRun{makeLine("d"), makeLine("e"), makeLine("f"), makeLine("g")})
+		r := ringOf(7)
 		if r.Committed() != 7 {
 			t.Errorf("after 7 appends: committed=%d, want 7", r.Committed())
 		}

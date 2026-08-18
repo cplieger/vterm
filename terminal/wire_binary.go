@@ -77,7 +77,7 @@ import (
 	"fmt"
 	"unicode/utf8"
 
-	"github.com/cplieger/web-terminal-engine/v4/vt"
+	"github.com/cplieger/web-terminal-engine/v5/vt"
 )
 
 const (
@@ -175,6 +175,24 @@ const (
 	resumeAckFlagHistoryPaging byte = 1 << 1
 )
 
+// WireEnd is one half of a Go-server / TS-client pairing as WirePairIncompatibility
+// judges it: the revision that half speaks, and the minimum peer revision it
+// accepts. For the Go half the two values are normally this package's
+// WireProtocolVersion and MinSupportedClientWireVersion; for the TS half they
+// come from WIRE_PROTOCOL_VERSION and MIN_SUPPORTED_SERVER_WIRE_VERSION.
+//
+// A struct rather than four positional ints because that signature was the
+// worst swap hazard in the fleet: every permutation of four same-typed
+// arguments type-checks, and several permutations still return plausible
+// verdicts. Construct it with field names (WireEnd{Rev: ..., MinPeer: ...}) so
+// each number is labeled at the call site.
+type WireEnd struct {
+	// Rev is the wire-protocol revision this half speaks.
+	Rev int
+	// MinPeer is the oldest peer revision this half accepts.
+	MinPeer int
+}
+
 // WirePairIncompatibility reports whether a Go-server / TS-client PAIR is
 // declared-incompatible before either half runs, and why. It is the
 // peer-less, build-time form of the compatibility decision this package
@@ -183,11 +201,11 @@ const (
 // below-floor server — so a consumer's release gate can reach the same
 // verdict from two pairs of published integers instead of restating the rule.
 //
-// serverRev / serverMinClient are normally this package's WireProtocolVersion
-// and MinSupportedClientWireVersion; they are parameters so a gate can also
-// judge a pairing that does not involve the engine version it links against
-// (a cross-version matrix, a proposed bump). clientRev / clientMinServer come
-// from the TS half's WIRE_PROTOCOL_VERSION / MIN_SUPPORTED_SERVER_WIRE_VERSION.
+// server is normally {WireProtocolVersion, MinSupportedClientWireVersion};
+// it is a parameter so a gate can also judge a pairing that does not involve
+// the engine version it links against (a cross-version matrix, a proposed
+// bump). client comes from the TS half's WIRE_PROTOCOL_VERSION /
+// MIN_SUPPORTED_SERVER_WIRE_VERSION.
 //
 // Returns "" when both declared floors admit the pairing; otherwise a
 // human-readable reason naming the violated floor or the self-inconsistent
@@ -199,7 +217,7 @@ const (
 // floor equal to its own revision (it just refuses every older peer).
 //
 // Deliberately stricter than runtime on version-silent input: a
-// non-positive argument is a caller error (it cannot be distinguished from
+// non-positive value is a caller error (it cannot be distinguished from
 // "not extracted"), so it is reported rather than tolerated. At runtime a
 // version-silent peer declares 0 and stays supported; at build time a 0 means
 // the gate failed to read the constant and must fail loudly.
@@ -211,14 +229,14 @@ const (
 // peer floor may not exceed its own revision, because such a build could not
 // talk to a peer of its own revision. This is a BEHAVIOUR CHANGE relative to
 // earlier releases (the check was added after v3.2.1): a pair whose halves are
-// individually incoherent (e.g. clientRev 4 with clientMinServer 5) was
+// individually incoherent (e.g. a client end with Rev 4 and MinPeer 5) was
 // previously judged on the cross-side floors alone and could be reported
 // compatible; it is now reported incompatible. No correctly extracted pair of
 // real released artifacts changes verdict — the engine's own constants have
 // always satisfied the invariant (rev 4, floor 3 on both halves) — so a gate
 // that starts failing here is reading garbage, which is exactly the outcome
 // intended.
-func WirePairIncompatibility(serverRev, serverMinClient, clientRev, clientMinServer int) string {
+func WirePairIncompatibility(server, client WireEnd) string {
 	// Case order is load-bearing. Positivity first (a missing constant is the
 	// coarsest garbage), then each half's SELF-consistency, and only then the
 	// cross-side floors. Self-inconsistency must precede the cross-side
@@ -227,30 +245,30 @@ func WirePairIncompatibility(serverRev, serverMinClient, clientRev, clientMinSer
 	// describes no real pairing at all — sending the caller to change a version
 	// pin when the actual defect is in how it read the numbers.
 	switch {
-	case serverRev <= 0 || serverMinClient <= 0:
+	case server.Rev <= 0 || server.MinPeer <= 0:
 		return fmt.Sprintf(
 			"server wire revisions must be positive (got rev %d, min client %d)",
-			serverRev, serverMinClient)
-	case clientRev <= 0 || clientMinServer <= 0:
+			server.Rev, server.MinPeer)
+	case client.Rev <= 0 || client.MinPeer <= 0:
 		return fmt.Sprintf(
 			"client wire revisions must be positive (got rev %d, min server %d)",
-			clientRev, clientMinServer)
-	case serverMinClient > serverRev:
+			client.Rev, client.MinPeer)
+	case server.MinPeer > server.Rev:
 		return fmt.Sprintf(
 			"the Go server half is self-inconsistent: it demands client revision >= %d while itself speaking revision %d, so it could not talk to a client of its own build; these two numbers cannot both come from one released artifact, so treat this as corrupt or mis-extracted input (re-check how the constants were read) rather than a version skew to fix by bumping a pin",
-			serverMinClient, serverRev)
-	case clientMinServer > clientRev:
+			server.MinPeer, server.Rev)
+	case client.MinPeer > client.Rev:
 		return fmt.Sprintf(
 			"the TS client half is self-inconsistent: it demands server revision >= %d while itself speaking revision %d, so it could not talk to a server of its own build; these two numbers cannot both come from one released artifact, so treat this as corrupt or mis-extracted input (re-check how the constants were read) rather than a version skew to fix by bumping a pin",
-			clientMinServer, clientRev)
-	case serverRev < clientMinServer:
+			client.MinPeer, client.Rev)
+	case server.Rev < client.MinPeer:
 		return fmt.Sprintf(
 			"Go server wire revision %d is below the TS client's minimum supported server revision %d (the Go half is behind)",
-			serverRev, clientMinServer)
-	case clientRev < serverMinClient:
+			server.Rev, client.MinPeer)
+	case client.Rev < server.MinPeer:
 		return fmt.Sprintf(
 			"TS client wire revision %d is below the Go server's minimum supported client revision %d (the TS half is behind)",
-			clientRev, serverMinClient)
+			client.Rev, server.MinPeer)
 	default:
 		return ""
 	}

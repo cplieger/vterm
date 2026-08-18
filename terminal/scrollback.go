@@ -1,6 +1,6 @@
 package terminal
 
-import "github.com/cplieger/web-terminal-engine/v4/vt"
+import "github.com/cplieger/web-terminal-engine/v5/vt"
 
 // scrollbackRing is a capacity-bounded ring buffer of scrollback lines,
 // addressed by absolute line index.
@@ -83,6 +83,20 @@ func (r *scrollbackRing) OldestIndex() uint64 {
 	return r.committed - uint64(r.count) // #nosec G115 -- count is non-negative and bounded by len(buf)
 }
 
+// copyLine returns a fresh copy of one retained line. The rings hand lines to
+// replay and paging paths whose callers serialize or transform them; without
+// the copy the returned inner []vt.WireRun still aliases ring history, so one
+// mutating caller would rewrite what every LATER replay sees. The outer slices
+// were always fresh; this closes the inner layer (go-rulebook C21).
+func copyLine(line []vt.WireRun) []vt.WireRun {
+	if line == nil {
+		return nil
+	}
+	out := make([]vt.WireRun, len(line))
+	copy(out, line)
+	return out
+}
+
 // LinesFrom returns the retained lines with absolute index >= abs, in
 // order, along with the absolute index of the first returned line.
 // When abs is older than what the ring retains, it clamps up to
@@ -99,7 +113,7 @@ func (r *scrollbackRing) LinesFrom(abs uint64) (firstAbs uint64, lines [][]vt.Wi
 	out := make([][]vt.WireRun, 0, r.count-skip)
 	n := len(r.buf)
 	for i := skip; i < r.count; i++ {
-		out = append(out, r.buf[(r.start+i)%n])
+		out = append(out, copyLine(r.buf[(r.start+i)%n]))
 	}
 	return start, out
 }
@@ -125,7 +139,7 @@ func (r *scrollbackRing) LinesRange(abs uint64, maxLines int) (firstAbs uint64, 
 	out := make([][]vt.WireRun, 0, take)
 	n := len(r.buf)
 	for i := skip; i < skip+take; i++ {
-		out = append(out, r.buf[(r.start+i)%n])
+		out = append(out, copyLine(r.buf[(r.start+i)%n]))
 	}
 	return start, out
 }
@@ -139,7 +153,7 @@ func (r *scrollbackRing) Lines() [][]vt.WireRun {
 	out := make([][]vt.WireRun, r.count)
 	n := len(r.buf)
 	for i := range r.count {
-		out[i] = r.buf[(r.start+i)%n]
+		out[i] = copyLine(r.buf[(r.start+i)%n])
 	}
 	return out
 }

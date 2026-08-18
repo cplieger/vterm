@@ -149,15 +149,21 @@ func TestWideCharWireRuns(t *testing.T) {
 func TestPutWideEmoji(t *testing.T) {
 	s := New(3, 10)
 	s.Write([]byte("🟢")) // U+1F7E2, emoji presentation → 2 cells
-	if s.curX != 2 {
-		t.Fatalf("curX after wide emoji = %d, want 2", s.curX)
-	}
-	if s.Cells[0][0].Ch != 0x1F7E2 {
-		t.Fatalf("cell[0][0] = %U, want U+1F7E2", s.Cells[0][0].Ch)
-	}
-	if s.Cells[0][1].Ch != 0 {
-		t.Fatalf("cell[0][1] = %U, want 0 (spacer)", s.Cells[0][1].Ch)
-	}
+	t.Run("cursor advances two cells", func(t *testing.T) {
+		if s.curX != 2 {
+			t.Errorf("curX after wide emoji = %d, want 2", s.curX)
+		}
+	})
+	t.Run("glyph occupies the first cell", func(t *testing.T) {
+		if s.Cells[0][0].Ch != 0x1F7E2 {
+			t.Errorf("cell[0][0] = %U, want U+1F7E2", s.Cells[0][0].Ch)
+		}
+	})
+	t.Run("second cell is the spacer", func(t *testing.T) {
+		if s.Cells[0][1].Ch != 0 {
+			t.Errorf("cell[0][1] = %U, want 0 (spacer)", s.Cells[0][1].Ch)
+		}
+	})
 }
 
 // TestEmojiRangesSortedNonOverlapping guards inTable's binary-search invariant:

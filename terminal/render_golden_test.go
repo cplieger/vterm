@@ -8,7 +8,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/cplieger/web-terminal-engine/v4/vt"
+	"github.com/cplieger/web-terminal-engine/v5/vt"
 )
 
 // render_golden_test.go generates the cross-language DISPLAY-conformance

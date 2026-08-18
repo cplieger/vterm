@@ -15,7 +15,7 @@ import (
 	"time"
 
 	"github.com/coder/websocket"
-	"github.com/cplieger/web-terminal-engine/v4/vt"
+	"github.com/cplieger/web-terminal-engine/v5/vt"
 )
 
 // These tests pin the resume/live-flush write-ordering contract (the
@@ -286,124 +286,141 @@ func TestDispatchFrame_StaleFrameDropsStateKeepsDurable(t *testing.T) {
 	state.resumeGen.Add(1)
 	h.dispatchFrame(stale)
 
-	first := nextFrame(frames, 2*time.Second)
-	if first == nil {
-		t.Fatal("stale frame's durable payloads never arrived (dropped whole: permanent scrollback hole)")
-	}
-	if first[0] != wireMsgClipboard {
-		t.Fatalf("first delivered frame is type %d, want clipboard (%d): state payloads leaked past the generation check or order broke", first[0], wireMsgClipboard)
-	}
-	second := nextFrame(frames, 2*time.Second)
-	if second == nil || second[0] != wireMsgScroll {
-		t.Fatalf("second delivered frame %v, want the scroll chunk", second)
-	}
-	if !bytes.Contains(second, []byte("STALE-SCROLL")) {
-		t.Fatal("scroll frame does not carry the stale frame's lines")
-	}
-	if bytes.Contains(second, []byte("STALE-SCREEN")) {
-		t.Fatal("screen rows rode the durable subset")
-	}
+	// The subtests are ordered phases over ONE socket, and the dependency is a
+	// DRAIN dependency: each phase consumes the frames the previous phase left
+	// on the wire, so a phase that fails leaves the queue mis-positioned and
+	// MISATTRIBUTES every later phase. They must run in sequence, they do not
+	// pass alone under -run, and the FIRST failure is the only one to read.
+	t.Run("stale frame delivers durables in order, drops state", func(t *testing.T) {
+		first := nextFrame(frames, 2*time.Second)
+		if first == nil {
+			t.Fatal("stale frame's durable payloads never arrived (dropped whole: permanent scrollback hole)")
+		}
+		if first[0] != wireMsgClipboard {
+			t.Fatalf("first delivered frame is type %d, want clipboard (%d): state payloads leaked past the generation check or order broke", first[0], wireMsgClipboard)
+		}
+		second := nextFrame(frames, 2*time.Second)
+		if second == nil || second[0] != wireMsgScroll {
+			t.Fatalf("second delivered frame %v, want the scroll chunk", second)
+		}
+		if !bytes.Contains(second, []byte("STALE-SCROLL")) {
+			t.Error("scroll frame does not carry the stale frame's lines")
+		}
+		if bytes.Contains(second, []byte("STALE-SCREEN")) {
+			t.Error("screen rows rode the durable subset")
+		}
+	})
 
-	// A frame built AFTER the snapshot (current generation) delivers its
-	// modes — and it is the FIRST modes frame on the wire, proving the stale
-	// frame's modes payload was dropped, not delayed. The trailing check
-	// then also fails if the stale screen or title payload was delivered.
-	fresh := mkFrame()
-	h.dispatchFrame(fresh)
-	got := nextFrame(frames, 2*time.Second)
-	if got == nil || got[0] != wireMsgModes {
-		t.Fatalf("post-resume dispatch: got %v, want the fresh modes frame", got)
-	}
-	if extra := nextFrame(frames, 300*time.Millisecond); extra != nil {
-		t.Fatalf("an extra frame (type %d) arrived: the stale frame's state was delivered too", extra[0])
-	}
+	t.Run("post-resume frame delivers its modes first", func(t *testing.T) {
+		// A frame built AFTER the snapshot (current generation) delivers its
+		// modes — and it is the FIRST modes frame on the wire, proving the stale
+		// frame's modes payload was dropped, not delayed. The trailing check
+		// then also fails if the stale screen or title payload was delivered.
+		fresh := mkFrame()
+		h.dispatchFrame(fresh)
+		got := nextFrame(frames, 2*time.Second)
+		if got == nil || got[0] != wireMsgModes {
+			t.Fatalf("post-resume dispatch: got %v, want the fresh modes frame", got)
+		}
+		if extra := nextFrame(frames, 300*time.Millisecond); extra != nil {
+			t.Fatalf("an extra frame (type %d) arrived: the stale frame's state was delivered too", extra[0])
+		}
+	})
 
-	// A stale frame with NO durable payloads writes nothing — and is NOT
-	// recorded as delivered: lastAckSent must keep its value, or the next
-	// ack sweep would skip a client that was never actually told (the
-	// "never records an ack as sent that no frame carried" contract).
-	state.lastAckSent.Store(3)
-	stateOnly := mkFrame()
-	stateOnly.clients = map[*websocket.Conn]uint64{sws: 7}
-	stateOnly.gens = map[*websocket.Conn]uint64{sws: state.resumeGen.Load() - 1}
-	h.dispatchFrame(stateOnly)
-	if msg := nextFrame(frames, 300*time.Millisecond); msg != nil {
-		t.Fatalf("state-only stale frame delivered a payload (type %d)", msg[0])
-	}
-	if got := state.lastAckSent.Load(); got != 3 {
-		t.Fatalf("lastAckSent = %d after an empty-durable strip, want 3 (nothing was written, nothing may be recorded)", got)
-	}
+	t.Run("state-only stale frame writes nothing and records no ack", func(t *testing.T) {
+		// A stale frame with NO durable payloads writes nothing — and is NOT
+		// recorded as delivered: lastAckSent must keep its value, or the next
+		// ack sweep would skip a client that was never actually told (the
+		// "never records an ack as sent that no frame carried" contract).
+		state.lastAckSent.Store(3)
+		stateOnly := mkFrame()
+		stateOnly.clients = map[*websocket.Conn]uint64{sws: 7}
+		stateOnly.gens = map[*websocket.Conn]uint64{sws: state.resumeGen.Load() - 1}
+		h.dispatchFrame(stateOnly)
+		if msg := nextFrame(frames, 300*time.Millisecond); msg != nil {
+			t.Fatalf("state-only stale frame delivered a payload (type %d)", msg[0])
+		}
+		if got := state.lastAckSent.Load(); got != 3 {
+			t.Errorf("lastAckSent = %d after an empty-durable strip, want 3 (nothing was written, nothing may be recorded)", got)
+		}
+	})
 
-	// A strip RESTAMPS its durable payloads with the socket's freshest ack
-	// (the batch's resumeAck), NOT the pre-resume ack captured at snapshot
-	// time: after a ledger-loss resume the captured value can exceed the
-	// client's reset outbox accounting, and applyAck's min(received,
-	// bytesSent) would then trim input the server never acked
-	// (connection.ts applyAck). The wire ack lives at bytes 1..9 of every
-	// payload (withClientAck). And the delivered bookkeeping must record
-	// exactly the stamped value — monotonic, so lastAckSent never regresses
-	// below the batch's store and never latches a value no frame carried.
-	state.lastAckSent.Store(11) // the resumeAck the batch wrote
-	restamp := mkFrame()
-	restamp.clients = map[*websocket.Conn]uint64{sws: 9999} // stale captured ack
-	restamp.gens = map[*websocket.Conn]uint64{sws: state.resumeGen.Load() - 1}
-	restamp.clipboardPayload = encodeClipboardMsg([]byte("RESTAMP"))
-	h.dispatchFrame(restamp)
-	got = nextFrame(frames, 2*time.Second)
-	if got == nil || got[0] != wireMsgClipboard {
-		t.Fatalf("restamp probe: got %v, want the clipboard payload", got)
-	}
-	if ack := binary.LittleEndian.Uint64(got[1:9]); ack != 11 {
-		t.Fatalf("durable payload carries ack %d, want 11 (the socket's freshest); the strip stamped the captured pre-resume ack", ack)
-	}
-	if got := state.lastAckSent.Load(); got != 11 {
-		t.Fatalf("lastAckSent = %d after a durable-only write, want 11 (the stamped value; neither the captured 9999 nor a regression)", got)
-	}
+	t.Run("a durable strip restamps the socket's freshest ack", func(t *testing.T) {
+		// A strip RESTAMPS its durable payloads with the socket's freshest ack
+		// (the batch's resumeAck), NOT the pre-resume ack captured at snapshot
+		// time: after a ledger-loss resume the captured value can exceed the
+		// client's reset outbox accounting, and applyAck's min(received,
+		// bytesSent) would then trim input the server never acked
+		// (connection.ts applyAck). The wire ack lives at bytes 1..9 of every
+		// payload (withClientAck). And the delivered bookkeeping must record
+		// exactly the stamped value — monotonic, so lastAckSent never regresses
+		// below the batch's store and never latches a value no frame carried.
+		state.lastAckSent.Store(11) // the resumeAck the batch wrote
+		restamp := mkFrame()
+		restamp.clients = map[*websocket.Conn]uint64{sws: 9999} // stale captured ack
+		restamp.gens = map[*websocket.Conn]uint64{sws: state.resumeGen.Load() - 1}
+		restamp.clipboardPayload = encodeClipboardMsg([]byte("RESTAMP"))
+		h.dispatchFrame(restamp)
+		got := nextFrame(frames, 2*time.Second)
+		if got == nil || got[0] != wireMsgClipboard {
+			t.Fatalf("restamp probe: got %v, want the clipboard payload", got)
+		}
+		if ack := binary.LittleEndian.Uint64(got[1:9]); ack != 11 {
+			t.Errorf("durable payload carries ack %d, want 11 (the socket's freshest); the strip stamped the captured pre-resume ack", ack)
+		}
+		if got := state.lastAckSent.Load(); got != 11 {
+			t.Errorf("lastAckSent = %d after a durable-only write, want 11 (the stamped value; neither the captured 9999 nor a regression)", got)
+		}
+	})
 
-	// A strip whose only durable payload is SCROLL — no clipboard, which is
-	// the ordinary shape: chunks ride every sustained-output flush while the
-	// clipboard is a rare consumed one-shot — must still deliver the chunk.
-	// durableSubset returns scrollPayloads as-is on that branch; dropping it
-	// is the permanent scrollback hole the gate exists to prevent.
-	scrollOnly := mkFrame()
-	scrollOnly.clients = map[*websocket.Conn]uint64{sws: 9999}
-	scrollOnly.gens = map[*websocket.Conn]uint64{sws: state.resumeGen.Load() - 1}
-	scrollOnly.changed = []int{0}
-	scrollOnly.rows = [][]vt.WireRun{{{T: "DROP-ME", F: -1, B: -1, Uc: -1}}}
-	scrollOnly.screenHeight = 1
-	scrollOnly.scrollLines = [][]vt.WireRun{{{T: "SCROLL-ONLY", F: -1, B: -1, Uc: -1}}}
-	scrollOnly.scrollFirstIdx = 77
-	h.dispatchFrame(scrollOnly)
-	got = nextFrame(frames, 2*time.Second)
-	if got == nil || got[0] != wireMsgScroll || !bytes.Contains(got, []byte("SCROLL-ONLY")) {
-		t.Fatalf("clipboard-less strip: got %v, want the scroll chunk (durableSubset dropped the durable history)", got)
-	}
-	if ack := binary.LittleEndian.Uint64(got[1:9]); ack != 11 {
-		t.Fatalf("clipboard-less strip stamped ack %d, want 11 (the restamp must apply on this branch too)", ack)
-	}
-	if extra := nextFrame(frames, 300*time.Millisecond); extra != nil {
-		t.Fatalf("clipboard-less strip delivered an extra frame (type %d): state leaked past the gate", extra[0])
-	}
+	t.Run("a clipboard-less strip still delivers and restamps its scroll chunk", func(t *testing.T) {
+		// A strip whose only durable payload is SCROLL — no clipboard, which is
+		// the ordinary shape: chunks ride every sustained-output flush while the
+		// clipboard is a rare consumed one-shot — must still deliver the chunk.
+		// durableSubset returns scrollPayloads as-is on that branch; dropping it
+		// is the permanent scrollback hole the gate exists to prevent.
+		scrollOnly := mkFrame()
+		scrollOnly.clients = map[*websocket.Conn]uint64{sws: 9999}
+		scrollOnly.gens = map[*websocket.Conn]uint64{sws: state.resumeGen.Load() - 1}
+		scrollOnly.changed = []int{0}
+		scrollOnly.rows = [][]vt.WireRun{{{T: "DROP-ME", F: -1, B: -1, Uc: -1}}}
+		scrollOnly.screenHeight = 1
+		scrollOnly.scrollLines = [][]vt.WireRun{{{T: "SCROLL-ONLY", F: -1, B: -1, Uc: -1}}}
+		scrollOnly.scrollFirstIdx = 77
+		h.dispatchFrame(scrollOnly)
+		got := nextFrame(frames, 2*time.Second)
+		if got == nil || got[0] != wireMsgScroll || !bytes.Contains(got, []byte("SCROLL-ONLY")) {
+			t.Fatalf("clipboard-less strip: got %v, want the scroll chunk (durableSubset dropped the durable history)", got)
+		}
+		if ack := binary.LittleEndian.Uint64(got[1:9]); ack != 11 {
+			t.Errorf("clipboard-less strip stamped ack %d, want 11 (the restamp must apply on this branch too)", ack)
+		}
+		if extra := nextFrame(frames, 300*time.Millisecond); extra != nil {
+			t.Fatalf("clipboard-less strip delivered an extra frame (type %d): state leaked past the gate", extra[0])
+		}
+	})
 
-	// The complement of the strip: a frame whose generation MATCHES carries
-	// its own captured ack — the socket's fresh bytesReceived at snapshot
-	// time — NOT lastAckSent. Stamping lastAckSent here would freeze the
-	// client's ack for as long as frames keep flowing (NoteAcksSent records
-	// what was stamped, so the value never advances) and its outbox would
-	// stop trimming until the first no-frame pass swept it.
-	current := mkFrame()
-	current.clients = map[*websocket.Conn]uint64{sws: 12} // fresh > lastAckSent (11)
-	h.dispatchFrame(current)
-	got = nextFrame(frames, 2*time.Second)
-	if got == nil || got[0] != wireMsgModes {
-		t.Fatalf("current-generation dispatch: got %v, want the modes frame", got)
-	}
-	if ack := binary.LittleEndian.Uint64(got[1:9]); ack != 12 {
-		t.Fatalf("matching-generation frame carries ack %d, want its captured 12 (the restamp must apply ONLY on a strip)", ack)
-	}
-	if got := state.lastAckSent.Load(); got != 12 {
-		t.Fatalf("lastAckSent = %d after a delivered current-generation frame, want 12", got)
-	}
+	t.Run("a matching-generation frame carries its own captured ack", func(t *testing.T) {
+		// The complement of the strip: a frame whose generation MATCHES carries
+		// its own captured ack — the socket's fresh bytesReceived at snapshot
+		// time — NOT lastAckSent. Stamping lastAckSent here would freeze the
+		// client's ack for as long as frames keep flowing (NoteAcksSent records
+		// what was stamped, so the value never advances) and its outbox would
+		// stop trimming until the first no-frame pass swept it.
+		current := mkFrame()
+		current.clients = map[*websocket.Conn]uint64{sws: 12} // fresh > lastAckSent (11)
+		h.dispatchFrame(current)
+		got := nextFrame(frames, 2*time.Second)
+		if got == nil || got[0] != wireMsgModes {
+			t.Fatalf("current-generation dispatch: got %v, want the modes frame", got)
+		}
+		if ack := binary.LittleEndian.Uint64(got[1:9]); ack != 12 {
+			t.Errorf("matching-generation frame carries ack %d, want its captured 12 (the restamp must apply ONLY on a strip)", ack)
+		}
+		if got := state.lastAckSent.Load(); got != 12 {
+			t.Errorf("lastAckSent = %d after a delivered current-generation frame, want 12", got)
+		}
+	})
 }
 
 // dialOwnHandler is dialHandler with the Handler kept, so a test can reach

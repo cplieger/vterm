@@ -22,7 +22,9 @@ import (
 	"time"
 )
 
-// Screen is a minimal VT100 screen buffer with SGR support.
+// Screen is a minimal VT100 screen buffer with SGR support. Construction
+// through New is mandatory: the zero Screen has no cell grid and its methods
+// index out of range.
 type Screen struct {
 	FlushHoldUntil  time.Time
 	ansiModeState   map[int]bool
@@ -457,6 +459,13 @@ func (s *Screen) resizeWidth(cols int) {
 		copy(s.Cells[i], old)
 	}
 	s.Width = cols
+	// nil-as-lazy, NOT len==0: nil means "default stops, computed on demand"
+	// (nextTabStop answers arithmetically), while an EMPTY non-nil array is an
+	// explicit all-cleared configuration that must still be rebuilt here — both
+	// to extend it with the default pattern like any other explicit config, and
+	// because every non-nil array must keep len == Width for nextTabStop's scan
+	// to index safely. A len()==0 guard read better and returned early, which
+	// left that invariant broken (TestResizeTabStopsGrow pins this boundary).
 	if s.tabStops == nil {
 		return
 	}

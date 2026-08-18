@@ -31,7 +31,7 @@ func (m *SessionManager) computeStatusFromHandler(h *Handler, tr *statusTracker)
 	return m.computeStatus(&in, tr)
 }
 
-func handlerOf(t *testing.T, m *SessionManager, id string) *Handler {
+func handlerOf(t *testing.T, m *SessionManager, id SessionID) *Handler {
 	t.Helper()
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -394,7 +394,7 @@ func TestEventsHandlerInitialSync(t *testing.T) {
 	sc := bufio.NewScanner(resp.Body)
 	for sc.Scan() {
 		line := sc.Text()
-		if strings.HasPrefix(line, "data:") && strings.Contains(line, id) {
+		if strings.HasPrefix(line, "data:") && strings.Contains(line, string(id)) {
 			return // initial sync delivered the session
 		}
 	}
@@ -501,7 +501,7 @@ func TestEventsHandlerFlushesBehindMiddleware(t *testing.T) {
 	}
 	sc := bufio.NewScanner(resp.Body)
 	for sc.Scan() {
-		if line := sc.Text(); strings.HasPrefix(line, "data:") && strings.Contains(line, id) {
+		if line := sc.Text(); strings.HasPrefix(line, "data:") && strings.Contains(line, string(id)) {
 			return // stream flushed the initial sync through the middleware
 		}
 	}

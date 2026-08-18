@@ -29,7 +29,7 @@ import (
 func TestCompareSessionOrderRankThenAgeThenID(t *testing.T) {
 	early := time.Date(2026, time.August, 11, 9, 0, 0, 0, time.UTC)
 	late := early.Add(time.Nanosecond)
-	key := func(rank int, at time.Time, id string) sessionOrder {
+	key := func(rank int, at time.Time, id SessionID) sessionOrder {
 		return sessionOrder{createdAt: at, id: id, rank: rank}
 	}
 
@@ -80,7 +80,7 @@ func sign(n int) int {
 // bare map lookup returns is position 0 — a real session's position. Ranking it
 // past the end instead keeps the strip stable and lets age settle the strays.
 func TestRankOfPutsAStrayLast(t *testing.T) {
-	rank := map[string]int{"a": 0, "b": 1}
+	rank := map[SessionID]int{"a": 0, "b": 1}
 	if got := rankOf(rank, "b", len(rank)); got != 1 {
 		t.Errorf("rankOf(known) = %d, want 1", got)
 	}
@@ -97,7 +97,7 @@ func TestRankOfPutsAStrayLast(t *testing.T) {
 func TestSetSessionOrderRequiresTheExactLiveSet(t *testing.T) {
 	m := NewSessionManager(catFactory)
 	t.Cleanup(func() { shutdownManager(t, m) })
-	ids := make([]string, 0, 3)
+	ids := make([]SessionID, 0, 3)
 	for range 3 {
 		id, err := m.Create()
 		if err != nil {
@@ -107,17 +107,17 @@ func TestSetSessionOrderRequiresTheExactLiveSet(t *testing.T) {
 	}
 
 	cases := map[string]struct {
-		ids  []string
+		ids  []SessionID
 		want bool
 	}{
-		"the live set, reordered":     {[]string{ids[2], ids[0], ids[1]}, true},
-		"the live set, unchanged":     {[]string{ids[0], ids[1], ids[2]}, true},
-		"short a session":             {[]string{ids[0], ids[1]}, false},
-		"an id that is not a session": {[]string{ids[0], ids[1], "deadbeef"}, false},
-		"a duplicate for a real id":   {[]string{ids[0], ids[1], ids[1]}, false},
-		"empty":                       {[]string{}, false},
+		"the live set, reordered":     {[]SessionID{ids[2], ids[0], ids[1]}, true},
+		"the live set, unchanged":     {[]SessionID{ids[0], ids[1], ids[2]}, true},
+		"short a session":             {[]SessionID{ids[0], ids[1]}, false},
+		"an id that is not a session": {[]SessionID{ids[0], ids[1], "deadbeef"}, false},
+		"a duplicate for a real id":   {[]SessionID{ids[0], ids[1], ids[1]}, false},
+		"empty":                       {[]SessionID{}, false},
 		"nil":                         {nil, false},
-		"one extra unknown id":        {[]string{ids[0], ids[1], ids[2], "extra"}, false},
+		"one extra unknown id":        {[]SessionID{ids[0], ids[1], ids[2], "extra"}, false},
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -157,14 +157,14 @@ func TestSetSessionOrderDoesNotAliasTheCallerSlice(t *testing.T) {
 		t.Fatalf("Create: %v", err)
 	}
 
-	caller := []string{second, first}
+	caller := []SessionID{second, first}
 	if !m.SetSessionOrder(caller) {
 		t.Fatal("SetSessionOrder = false, want true")
 	}
 	caller[0], caller[1] = first, second // the caller reuses its slice
-	if got := m.orderSnapshot(); !slices.Equal(got, []string{second, first}) {
+	if got := m.orderSnapshot(); !slices.Equal(got, []SessionID{second, first}) {
 		t.Errorf("order followed the caller's slice: %v, want %v",
-			short(got), short([]string{second, first}))
+			short(got), short([]SessionID{second, first}))
 	}
 }
 
@@ -192,7 +192,7 @@ func TestOrderTracksTheSessionSet(t *testing.T) {
 		}
 	}
 
-	ids := make([]string, 0, 4)
+	ids := make([]SessionID, 0, 4)
 	for i := range 4 {
 		id, err := m.Create()
 		if err != nil {
@@ -213,20 +213,20 @@ func TestOrderTracksTheSessionSet(t *testing.T) {
 		t.Fatal("Close = false, want true")
 	}
 	assertConsistent(t, "after close")
-	if got := m.orderSnapshot(); !slices.Equal(got, []string{ids[0], ids[2], ids[3]}) {
+	if got := m.orderSnapshot(); !slices.Equal(got, []SessionID{ids[0], ids[2], ids[3]}) {
 		t.Errorf("order after close = %v, want the survivors in order", short(got))
 	}
 
 	// A reorder, then a close of a session that was moved: the survivors keep
 	// their relative arrangement rather than snapping back to creation order.
-	if !m.SetSessionOrder([]string{ids[3], ids[0], ids[2]}) {
+	if !m.SetSessionOrder([]SessionID{ids[3], ids[0], ids[2]}) {
 		t.Fatal("SetSessionOrder = false, want true")
 	}
 	if !m.Close(ids[0]) {
 		t.Fatal("Close = false, want true")
 	}
 	assertConsistent(t, "after close of a reordered session")
-	if got := m.orderSnapshot(); !slices.Equal(got, []string{ids[3], ids[2]}) {
+	if got := m.orderSnapshot(); !slices.Equal(got, []SessionID{ids[3], ids[2]}) {
 		t.Errorf("order = %v, want the arrangement minus the closed session", short(got))
 	}
 
@@ -242,7 +242,7 @@ func TestOrderTracksTheSessionSet(t *testing.T) {
 }
 
 // orderSnapshot copies the display order for assertions.
-func (m *SessionManager) orderSnapshot() []string {
+func (m *SessionManager) orderSnapshot() []SessionID {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return slices.Clone(m.order)
@@ -266,7 +266,7 @@ func TestListAndSnapshotAgreeOnOrderEveryCall(t *testing.T) {
 	)
 	m := NewSessionManager(catFactory)
 	t.Cleanup(func() { shutdownManager(t, m) })
-	ids := make([]string, 0, sessions)
+	ids := make([]SessionID, 0, sessions)
 	for range sessions {
 		id, err := m.Create()
 		if err != nil {
@@ -274,33 +274,33 @@ func TestListAndSnapshotAgreeOnOrderEveryCall(t *testing.T) {
 		}
 		ids = append(ids, id)
 	}
-	want := []string{ids[3], ids[0], ids[4], ids[1], ids[2]}
+	want := []SessionID{ids[3], ids[0], ids[4], ids[1], ids[2]}
 	if !m.SetSessionOrder(want) {
 		t.Fatal("SetSessionOrder = false, want true")
 	}
 
 	for i := range repeats {
-		listIDs := make([]string, 0, sessions)
+		listIDs := make([]SessionID, 0, sessions)
 		for pos, info := range m.List() {
 			listIDs = append(listIDs, info.ID)
 			// The field a client sorts by must agree with the sequence it is served
 			// in, or the two halves of the contract disagree.
 			if info.Order != pos {
 				t.Fatalf("call %d: %s is at sequence position %d but reports order %d",
-					i, LogID(info.ID), pos, info.Order)
+					i, LogID(string(info.ID)), pos, info.Order)
 			}
 		}
 		if !slices.Equal(listIDs, want) {
 			t.Fatalf("call %d: List order = %v, want %v", i, short(listIDs), short(want))
 		}
-		snapIDs := make([]string, 0, sessions)
+		snapIDs := make([]SessionID, 0, sessions)
 		for pos, ev := range m.snapshot() {
 			snapIDs = append(snapIDs, ev.ID)
 			if ev.Order == nil {
-				t.Fatalf("call %d: %s carries no order on the initial sync", i, LogID(ev.ID))
+				t.Fatalf("call %d: %s carries no order on the initial sync", i, LogID(string(ev.ID)))
 			} else if *ev.Order != pos {
 				t.Fatalf("call %d: %s is at snapshot position %d but reports order %d",
-					i, LogID(ev.ID), pos, *ev.Order)
+					i, LogID(string(ev.ID)), pos, *ev.Order)
 			}
 		}
 		if !slices.Equal(snapIDs, want) {
@@ -310,9 +310,9 @@ func TestListAndSnapshotAgreeOnOrderEveryCall(t *testing.T) {
 }
 
 // listIDs is the session ids GET /api/sessions serves, in order.
-func listIDs(m *SessionManager) []string {
+func listIDs(m *SessionManager) []SessionID {
 	list := m.List()
-	out := make([]string, 0, len(list))
+	out := make([]SessionID, 0, len(list))
 	for _, info := range list {
 		out = append(out, info.ID)
 	}
@@ -320,10 +320,10 @@ func listIDs(m *SessionManager) []string {
 }
 
 // short trims ids to their log prefix so a failure message is readable.
-func short(ids []string) []string {
+func short(ids []SessionID) []string {
 	out := make([]string, 0, len(ids))
 	for _, id := range ids {
-		out = append(out, LogID(id))
+		out = append(out, LogID(string(id)))
 	}
 	return out
 }
@@ -339,7 +339,7 @@ func TestReorderBroadcastsToOtherClients(t *testing.T) {
 	m := NewSessionManager(catFactory)
 	t.Cleanup(func() { shutdownManager(t, m) })
 	m.stopSweep()
-	ids := make([]string, 0, 3)
+	ids := make([]SessionID, 0, 3)
 	for range 3 {
 		id, err := m.Create()
 		if err != nil {
@@ -357,23 +357,23 @@ func TestReorderBroadcastsToOtherClients(t *testing.T) {
 
 	// Move the last session to the front. Its position changes, and so does that
 	// of everything it passed.
-	if !m.SetSessionOrder([]string{ids[2], ids[0], ids[1]}) {
+	if !m.SetSessionOrder([]SessionID{ids[2], ids[0], ids[1]}) {
 		t.Fatal("SetSessionOrder = false, want true")
 	}
-	got := make(map[string]int, 3)
+	got := make(map[SessionID]int, 3)
 	for _, ev := range m.diffStatuses() {
 		if ev.Order == nil {
-			t.Fatalf("%s carries no order on a live status event", LogID(ev.ID))
+			t.Fatalf("%s carries no order on a live status event", LogID(string(ev.ID)))
 		}
 		got[ev.ID] = *ev.Order
 	}
-	want := map[string]int{ids[2]: 0, ids[0]: 1, ids[1]: 2}
+	want := map[SessionID]int{ids[2]: 0, ids[0]: 1, ids[1]: 2}
 	if len(got) != len(want) {
 		t.Fatalf("reorder emitted %d events, want %d (one per moved session)", len(got), len(want))
 	}
 	for id, pos := range want {
 		if got[id] != pos {
-			t.Errorf("%s reported order %d, want %d", LogID(id), got[id], pos)
+			t.Errorf("%s reported order %d, want %d", LogID(string(id)), got[id], pos)
 		}
 	}
 
@@ -401,7 +401,7 @@ func TestEventsHandlerInitialSyncIsOrdered(t *testing.T) {
 	)
 	m := NewSessionManager(catFactory)
 	t.Cleanup(func() { shutdownManager(t, m) })
-	ids := make([]string, 0, sessions)
+	ids := make([]SessionID, 0, sessions)
 	for range sessions {
 		id, err := m.Create()
 		if err != nil {
@@ -430,7 +430,7 @@ func TestEventsHandlerInitialSyncIsOrdered(t *testing.T) {
 // first want frames, in wire order. Each frame is DECODED rather than
 // substring-matched, so a reordered frame fails the caller's comparison instead
 // of passing on "the id appears somewhere in the body".
-func readInitialSync(t *testing.T, url string, want int) []string {
+func readInitialSync(t *testing.T, url string, want int) []SessionID {
 	t.Helper()
 	req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, url, nil)
 	if err != nil {
@@ -443,7 +443,7 @@ func readInitialSync(t *testing.T, url string, want int) []string {
 	defer resp.Body.Close()
 
 	dec := json.NewDecoder(newSSEDataReader(t, resp.Body, want))
-	ids := make([]string, 0, want)
+	ids := make([]SessionID, 0, want)
 	for range want {
 		var ev statusEvent
 		if err := dec.Decode(&ev); err != nil {
@@ -459,7 +459,7 @@ func readInitialSync(t *testing.T, url string, want int) []string {
 func TestSetOrderRoute(t *testing.T) {
 	m := NewSessionManager(catFactory)
 	t.Cleanup(func() { shutdownManager(t, m) })
-	ids := make([]string, 0, 2)
+	ids := make([]SessionID, 0, 2)
 	for range 2 {
 		id, err := m.Create()
 		if err != nil {
@@ -470,7 +470,7 @@ func TestSetOrderRoute(t *testing.T) {
 	srv := httptest.NewServer(m.RESTHandler())
 	t.Cleanup(srv.Close)
 
-	reversed := []string{ids[1], ids[0]}
+	reversed := []SessionID{ids[1], ids[0]}
 	// The accepted case has to be seen to CHANGE something, or every later row's
 	// "the order still reads reversed" assertion would also pass against an
 	// implementation that never applies an order at all.
@@ -483,8 +483,8 @@ func TestSetOrderRoute(t *testing.T) {
 		body string
 		want int
 	}{
-		{"the live set reordered", `{"order":["` + ids[1] + `","` + ids[0] + `"]}`, http.StatusNoContent},
-		{"a stale view of the set", `{"order":["` + ids[0] + `"]}`, http.StatusConflict},
+		{"the live set reordered", `{"order":["` + string(ids[1]) + `","` + string(ids[0]) + `"]}`, http.StatusNoContent},
+		{"a stale view of the set", `{"order":["` + string(ids[0]) + `"]}`, http.StatusConflict},
 		{"an id that is not a session", `{"order":["nope","alsonope"]}`, http.StatusConflict},
 		// A body with no order array is a malformed request, not an empty reorder:
 		// see TestSetOrderRouteRejectsAMalformedEnvelope for why that distinction
@@ -581,7 +581,7 @@ func TestCreateEchoesTheStoredCreatedAt(t *testing.T) {
 		t.Fatalf("List len = %d, want 1", len(list))
 	}
 	if created.ID != list[0].ID {
-		t.Fatalf("201 id = %s, List id = %s", LogID(created.ID), LogID(list[0].ID))
+		t.Fatalf("201 id = %s, List id = %s", LogID(string(created.ID)), LogID(string(list[0].ID)))
 	}
 	if !created.CreatedAt.Equal(list[0].CreatedAt) {
 		t.Errorf("201 createdAt = %s, List createdAt = %s (must be the same instant)",
@@ -626,7 +626,7 @@ func TestCreateEchoesThePositionItAppendedTo(t *testing.T) {
 		list := m.List()
 		if got := list[len(list)-1]; got.ID != created.ID || got.Order != want {
 			t.Errorf("session %d: List has %s at order %d, want %s at %d",
-				want, LogID(got.ID), got.Order, LogID(created.ID), want)
+				want, LogID(string(got.ID)), got.Order, LogID(string(created.ID)), want)
 		}
 	}
 }
@@ -675,7 +675,7 @@ func TestShutdownClearsTheOrder(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
-	if !m.SetSessionOrder([]string{second, first}) {
+	if !m.SetSessionOrder([]SessionID{second, first}) {
 		t.Fatal("SetSessionOrder = false, want true")
 	}
 
@@ -700,7 +700,7 @@ func TestSweepReadsTheOrderAfterPhaseTwo(t *testing.T) {
 	m := NewSessionManager(catFactory)
 	t.Cleanup(func() { shutdownManager(t, m) })
 	m.stopSweep()
-	ids := make([]string, 0, 3)
+	ids := make([]SessionID, 0, 3)
 	for range 3 {
 		id, err := m.Create()
 		if err != nil {
@@ -717,7 +717,7 @@ func TestSweepReadsTheOrderAfterPhaseTwo(t *testing.T) {
 
 	// Reorder from INSIDE the sweep, between phase 2 and phase 3, and fire once so
 	// the hold cannot re-enter through the diffStatuses it triggers.
-	want := []string{ids[2], ids[0], ids[1]}
+	want := []SessionID{ids[2], ids[0], ids[1]}
 	// Atomic, and a CAS rather than a plain bool: the seam is a package global, so
 	// any other manager's 250ms sweep in this process can enter it. That cannot
 	// happen today (every test manager gets a Shutdown, and this test is serial),
@@ -735,10 +735,10 @@ func TestSweepReadsTheOrderAfterPhaseTwo(t *testing.T) {
 	testDiffPhaseHold.Store(&hold)
 	t.Cleanup(func() { testDiffPhaseHold.Store(nil) })
 
-	got := make(map[string]int, len(want))
+	got := make(map[SessionID]int, len(want))
 	for _, ev := range m.diffStatuses() {
 		if ev.Order == nil {
-			t.Fatalf("%s carries no order on a live status event", LogID(ev.ID))
+			t.Fatalf("%s carries no order on a live status event", LogID(string(ev.ID)))
 		}
 		got[ev.ID] = *ev.Order
 	}
@@ -748,7 +748,7 @@ func TestSweepReadsTheOrderAfterPhaseTwo(t *testing.T) {
 	for pos, id := range want {
 		if got[id] != pos {
 			t.Errorf("%s reported order %d, want %d (the order in force at phase 3)",
-				LogID(id), got[id], pos)
+				LogID(string(id)), got[id], pos)
 		}
 	}
 	// And the arrangement is now settled: a stale emission would have recorded the
@@ -846,7 +846,7 @@ func TestSetOrderRouteRejectsAMalformedEnvelope(t *testing.T) {
 func TestListPublishesDensePositions(t *testing.T) {
 	m := NewSessionManager(catFactory)
 	t.Cleanup(func() { shutdownManager(t, m) })
-	ids := make([]string, 0, 3)
+	ids := make([]SessionID, 0, 3)
 	for range 3 {
 		id, err := m.Create()
 		if err != nil {
@@ -858,7 +858,7 @@ func TestListPublishesDensePositions(t *testing.T) {
 	// oldest. That is what makes the fixture able to tell a stray ranked past the
 	// end from a stray ranked at 0: with the survivor also being the oldest, both
 	// rules produce the same sequence and the difference is invisible.
-	if !m.SetSessionOrder([]string{ids[2], ids[0], ids[1]}) {
+	if !m.SetSessionOrder([]SessionID{ids[2], ids[0], ids[1]}) {
 		t.Fatal("SetSessionOrder = false, want true")
 	}
 	// Strip two sessions out of the order, leaving them live. Only a bug could do
@@ -869,22 +869,22 @@ func TestListPublishesDensePositions(t *testing.T) {
 	m.mu.Unlock()
 	if ordered != ids[2] {
 		t.Fatalf("fixture kept %s in the order, want the youngest session %s",
-			LogID(ordered), LogID(ids[2]))
+			LogID(string(ordered)), LogID(string(ids[2])))
 	}
 
 	// BOTH enumerations, because they renumber independently and each one is the
 	// sole source for some client. Dropping snapshot's renumbering alone left the
 	// whole suite green until this loop covered it.
-	listIDs := make([]string, 0, 3)
-	listPos := make(map[int]string, 3)
+	listIDs := make([]SessionID, 0, 3)
+	listPos := make(map[int]SessionID, 3)
 	for i, info := range m.List() {
 		if info.Order != i {
 			t.Errorf("List: %s is at sequence position %d but reports order %d",
-				LogID(info.ID), i, info.Order)
+				LogID(string(info.ID)), i, info.Order)
 		}
 		if other, dup := listPos[info.Order]; dup {
 			t.Errorf("List: %s and %s both report order %d",
-				LogID(other), LogID(info.ID), info.Order)
+				LogID(string(other)), LogID(string(info.ID)), info.Order)
 		}
 		listPos[info.Order] = info.ID
 		listIDs = append(listIDs, info.ID)
@@ -893,19 +893,19 @@ func TestListPublishesDensePositions(t *testing.T) {
 		t.Errorf("List reported %d distinct positions, want 3", len(listPos))
 	}
 
-	snapIDs := make([]string, 0, 3)
-	snapPos := make(map[int]string, 3)
+	snapIDs := make([]SessionID, 0, 3)
+	snapPos := make(map[int]SessionID, 3)
 	for i, ev := range m.snapshot() {
 		if ev.Order == nil {
-			t.Fatalf("snapshot: %s carries no order", LogID(ev.ID))
+			t.Fatalf("snapshot: %s carries no order", LogID(string(ev.ID)))
 		}
 		if *ev.Order != i {
 			t.Errorf("snapshot: %s is at sequence position %d but reports order %d",
-				LogID(ev.ID), i, *ev.Order)
+				LogID(string(ev.ID)), i, *ev.Order)
 		}
 		if other, dup := snapPos[*ev.Order]; dup {
 			t.Errorf("snapshot: %s and %s both report order %d",
-				LogID(other), LogID(ev.ID), *ev.Order)
+				LogID(string(other)), LogID(string(ev.ID)), *ev.Order)
 		}
 		snapPos[*ev.Order] = ev.ID
 		snapIDs = append(snapIDs, ev.ID)
@@ -920,11 +920,11 @@ func TestListPublishesDensePositions(t *testing.T) {
 	// then hide the collision behind a clean-looking dense sequence.
 	if len(listIDs) != 0 && listIDs[0] != ordered {
 		t.Errorf("List leads with %s, want the still-ordered session %s",
-			LogID(listIDs[0]), LogID(ordered))
+			LogID(string(listIDs[0])), LogID(string(ordered)))
 	}
 	if len(snapIDs) != 0 && snapIDs[0] != ordered {
 		t.Errorf("snapshot leads with %s, want the still-ordered session %s",
-			LogID(snapIDs[0]), LogID(ordered))
+			LogID(string(snapIDs[0])), LogID(string(ordered)))
 	}
 	if !slices.Equal(listIDs, snapIDs) {
 		t.Errorf("the two enumerations disagree under a desync: %v vs %v",

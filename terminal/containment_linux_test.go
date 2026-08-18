@@ -86,7 +86,7 @@ func newTestContainment(t *testing.T) (*Containment, *recordingHandler) {
 	})
 
 	rec := &recordingHandler{}
-	c, err := NewContainment(root, "wt-", slog.New(rec))
+	c, err := NewContainment(CgroupRoot(root), "wt-", slog.New(rec))
 	if err != nil {
 		if errors.Is(err, errContainmentUnsupported) {
 			t.Skipf("containment unsupported here: %v", err)

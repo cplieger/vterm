@@ -31,6 +31,29 @@ import (
 	"time"
 )
 
+// SessionID identifies one session for the life of this manager: the value
+// Create mints (128-bit crypto-random hex), the key /ws?session=<id> routes by,
+// and the resume id. A distinct type rather than a bare string because a
+// session id shares a parameter list with other strings on this surface
+// (SetSessionTitle's title sits right next to it), and a swapped pair
+// type-checks as plain strings while storing the id as a tab label. The type
+// makes the ID position sticky on the manager's own methods, so a misplaced
+// argument there fails to compile.
+//
+// Three exported surfaces deliberately keep a plain string id, and a consumer
+// converts at each: NewSessionManager's factory callback (it feeds
+// handler-internal plumbing that is string-typed throughout), LogID (it also
+// truncates handler and containment ids, not only session ids), and
+// WithContainment. Retyping those would push SessionID into the handler and
+// containment layers for no swap it prevents — neither takes a second string
+// beside the id.
+//
+// On the wire (SessionInfo.ID, the status stream, URL path segments) an id
+// stays a plain JSON string: SessionID declares no MarshalJSON, so encoding/json
+// emits a defined string type exactly as its underlying string. Convert at the
+// boundary.
+type SessionID string
+
 // SessionInfo is the public description of one session, returned by List and
 // carried on the status stream.
 //
@@ -43,7 +66,7 @@ import (
 //     first submitted line). Client-supplied, but not user-authored.
 type SessionInfo struct {
 	CreatedAt time.Time `json:"createdAt"`
-	ID        string    `json:"id"`
+	ID        SessionID `json:"id"`    // marshals as a plain string; the wire shape is unchanged
 	Title     string    `json:"title"` // resolved display title (effectiveTitle)
 	// ClientTitle is the raw stored client-derived title, exposed alongside
 	// Title so a consumer can read the pushed label directly (bypassing the
@@ -163,7 +186,7 @@ func WithStatusClassifier(fn func(notification string) (status string, ok bool))
 type session struct {
 	createdAt   time.Time
 	handler     *Handler
-	id          string
+	id          SessionID
 	clientTitle string // client-derived automatic title, below the OSC title
 	pinnedTitle string // the user's explicit name; outranks every automatic source
 	// autoTitle is the server-derived fallback (foreground process, then cwd,
@@ -181,20 +204,14 @@ type session struct {
 // precedence while every unit test of effectiveTitle itself still passed.
 type titleSources struct {
 	pinned string // the user's explicit name
-	// derived is the input-derived name (WithInputTitle): the first eligible line
-	// the user submitted. Empty unless the consumer asked for it. It outranks the
-	// OSC title because the only reason to ask for it is that the program's own
-	// title is not worth showing.
-	derived string
-	osc     string // the program's OSC 0/2 window title
-	client  string // a client-derived automatic title we were asked to remember
-	auto    string // the server's own inference (foreground process / cwd / command)
+	osc    string // the program's OSC 0/2 window title
+	client string // a client-derived automatic title we were asked to remember
+	auto   string // the server's own inference (foreground process / cwd / command)
 }
 
 // effectiveTitle combines a session's title sources in precedence order:
-// explicit beats inferred. The user's pinned name wins outright; then the
-// input-derived name, when the consumer asked the engine to derive one; then the
-// live OSC window title, when the program set one; then a client-derived title a
+// explicit beats inferred. The user's pinned name wins outright; then the live
+// OSC window title, when the program set one; then a client-derived title a
 // client asked us to remember; then the server's own inference (foreground
 // process / cwd / command).
 //
@@ -209,9 +226,6 @@ type titleSources struct {
 func effectiveTitle(src *titleSources) string {
 	if src.pinned != "" {
 		return src.pinned
-	}
-	if src.derived != "" {
-		return src.derived
 	}
 	if src.osc != "" {
 		return src.osc
@@ -229,8 +243,8 @@ type SessionManager struct {
 	factory      func(id string) *Handler
 	logger       *slog.Logger
 	originPolicy *OriginPolicy
-	sessions     map[string]*session
-	trackers     map[string]*statusTracker
+	sessions     map[SessionID]*session
+	trackers     map[SessionID]*statusTracker
 	subs         map[chan statusEvent]struct{}
 	classifier   func(string) (string, bool)
 	reaperCancel context.CancelFunc
@@ -254,7 +268,7 @@ type SessionManager struct {
 	// Placed last among the pointer-bearing fields on purpose: its trailing len
 	// and cap words are scalars, so ending the struct's pointer-scan range at its
 	// data pointer keeps 16 bytes out of the GC's scan (govet fieldalignment).
-	order         []string
+	order         []SessionID
 	wg            sync.WaitGroup
 	mu            sync.Mutex
 	subsMu        sync.Mutex
@@ -267,7 +281,9 @@ type SessionManager struct {
 
 // NewSessionManager returns a manager that builds each session's handler with
 // factory (called with the new session id, so the factory can scope the
-// handler's logger and working directory). Options configure the idle reaper,
+// handler's logger and working directory). Construction through
+// NewSessionManager is mandatory: the zero SessionManager has nil maps and
+// panics on first use. Options configure the idle reaper,
 // the status classifier, and the logger; concurrent SSE subscribers are bounded
 // internally to a fixed cap (maxSubscribers).
 func NewSessionManager(factory func(id string) *Handler, opts ...ManagerOption) *SessionManager {
@@ -284,8 +300,8 @@ func NewSessionManager(factory func(id string) *Handler, opts ...ManagerOption) 
 		factory:      factory,
 		logger:       cfg.logger,
 		originPolicy: cfg.originPolicy,
-		sessions:     make(map[string]*session),
-		trackers:     make(map[string]*statusTracker),
+		sessions:     make(map[SessionID]*session),
+		trackers:     make(map[SessionID]*statusTracker),
 		subs:         make(map[chan statusEvent]struct{}),
 		classifier:   cfg.classifier,
 		idleSince:    time.Now(),
@@ -314,7 +330,7 @@ func NewSessionManager(factory func(id string) *Handler, opts ...ManagerOption) 
 
 // Create starts a new session (eagerly spawning its process at a default size)
 // and returns its id.
-func (m *SessionManager) Create() (string, error) {
+func (m *SessionManager) Create() (SessionID, error) {
 	info, err := m.create()
 	return info.ID, err
 }
@@ -336,7 +352,7 @@ func (m *SessionManager) create() (SessionInfo, error) {
 		m.mu.Unlock()
 		return SessionInfo{}, err
 	}
-	h := m.factory(id)
+	h := m.factory(string(id))
 	m.mu.Unlock()
 
 	// Eager start outside the lock: spawning a process should not block other
@@ -365,7 +381,7 @@ func (m *SessionManager) create() (SessionInfo, error) {
 	m.created++
 	m.mu.Unlock()
 
-	m.logger.Info("session: created", "session", LogID(id), "sessions", n)
+	m.logger.Info("session: created", "session", LogID(string(id)), "sessions", n)
 	// A freshly eager-started session is idle until it produces output; the
 	// status stream corrects that within a tick if the process died instantly.
 	return SessionInfo{ID: id, Status: StatusIdle, CreatedAt: now, Order: order}, nil
@@ -398,7 +414,7 @@ func LogID(id string) string {
 // compareSessionOrder).
 type sessionOrder struct {
 	createdAt time.Time
-	id        string
+	id        SessionID
 	rank      int
 }
 
@@ -425,13 +441,13 @@ func compareSessionOrder(a, b sessionOrder) int {
 	if c := a.createdAt.Compare(b.createdAt); c != 0 {
 		return c
 	}
-	return strings.Compare(a.id, b.id)
+	return cmp.Compare(a.id, b.id)
 }
 
 // rankLocked maps each ordered session id to its display position. Caller holds
 // m.mu.
-func (m *SessionManager) rankLocked() map[string]int {
-	rank := make(map[string]int, len(m.order))
+func (m *SessionManager) rankLocked() map[SessionID]int {
+	rank := make(map[SessionID]int, len(m.order))
 	for i, id := range m.order {
 		rank[id] = i
 	}
@@ -441,7 +457,7 @@ func (m *SessionManager) rankLocked() map[string]int {
 // rankOf reads a session's display position out of a rankLocked map, giving one
 // the order does not name a position past the end rather than the zero value,
 // which is position 0 and belongs to a real session.
-func rankOf(rank map[string]int, id string, ordered int) int {
+func rankOf(rank map[SessionID]int, id SessionID, ordered int) int {
 	if i, ok := rank[id]; ok {
 		return i
 	}
@@ -450,7 +466,7 @@ func rankOf(rank map[string]int, id string, ordered int) int {
 
 // dropFromOrderLocked removes id from the display order, closing the gap so
 // positions stay dense. Caller holds m.mu; a no-op for an id not present.
-func (m *SessionManager) dropFromOrderLocked(id string) {
+func (m *SessionManager) dropFromOrderLocked(id SessionID) {
 	if i := slices.Index(m.order, id); i >= 0 {
 		m.order = slices.Delete(m.order, i, i+1)
 	}
@@ -491,13 +507,13 @@ func (m *SessionManager) dropFromOrderLocked(id string) {
 // 409. The ids are not otherwise validated because they do not need to be: an id
 // that is not a live session fails the membership check, so no untrusted value
 // reaches the order.
-func (m *SessionManager) SetSessionOrder(ids []string) bool {
+func (m *SessionManager) SetSessionOrder(ids []SessionID) bool {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if len(ids) != len(m.sessions) {
 		return false
 	}
-	seen := make(map[string]struct{}, len(ids))
+	seen := make(map[SessionID]struct{}, len(ids))
 	for _, id := range ids {
 		if _, live := m.sessions[id]; !live {
 			return false
@@ -559,9 +575,8 @@ func (m *SessionManager) List() []SessionInfo {
 	for i := range items {
 		it := &items[i]
 		it.info.Status = refinedStatus(it.lastStatus, it.handler)
-		osc, derived := it.handler.titles()
 		it.info.Title = effectiveTitle(&titleSources{
-			pinned: it.info.PinnedTitle, derived: derived, osc: osc,
+			pinned: it.info.PinnedTitle, osc: it.handler.Title(),
 			client: it.info.ClientTitle, auto: it.autoTitle,
 		})
 		// reportsActivity mirrors the status stream: sticky once any OSC 9;4
@@ -589,7 +604,7 @@ func (m *SessionManager) List() []SessionInfo {
 }
 
 // Close terminates a session and removes it. Returns false if the id is unknown.
-func (m *SessionManager) Close(id string) bool {
+func (m *SessionManager) Close(id SessionID) bool {
 	m.mu.Lock()
 	s, ok := m.sessions[id]
 	if ok {
@@ -602,7 +617,7 @@ func (m *SessionManager) Close(id string) bool {
 		return false
 	}
 	s.handler.Close()
-	m.logger.Info("session: closed", "session", LogID(id))
+	m.logger.Info("session: closed", "session", LogID(string(id)))
 	return true
 }
 
@@ -611,7 +626,7 @@ func (m *SessionManager) Close(id string) bool {
 // and the user has pinned no name. Returns false if the id is unknown. No
 // explicit broadcast is needed: the 250ms status sweep (diffStatuses) detects
 // the changed effective title and pushes it to subscribers within a tick.
-func (m *SessionManager) SetSessionTitle(id, title string) bool {
+func (m *SessionManager) SetSessionTitle(id SessionID, title string) bool {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	s, ok := m.sessions[id]
@@ -626,7 +641,7 @@ func (m *SessionManager) SetSessionTitle(id, title string) bool {
 // outranks every automatic title source. Returns false if the id is unknown.
 // Pass an empty title to clear the pin (ClearSessionPinnedTitle is the named
 // spelling the DELETE route uses). Pushed to subscribers by the next sweep.
-func (m *SessionManager) SetSessionPinnedTitle(id, title string) bool {
+func (m *SessionManager) SetSessionPinnedTitle(id SessionID, title string) bool {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	s, ok := m.sessions[id]
@@ -641,7 +656,7 @@ func (m *SessionManager) SetSessionPinnedTitle(id, title string) bool {
 // back to the automatic sources again. Returns false if the id is unknown;
 // clearing an unpinned session is a successful no-op (the operation is
 // idempotent).
-func (m *SessionManager) ClearSessionPinnedTitle(id string) bool {
+func (m *SessionManager) ClearSessionPinnedTitle(id SessionID) bool {
 	return m.SetSessionPinnedTitle(id, "")
 }
 
@@ -672,7 +687,7 @@ func (m *SessionManager) Shutdown(ctx context.Context) error {
 	for _, s := range m.sessions {
 		victims = append(victims, s)
 	}
-	m.sessions = make(map[string]*session)
+	m.sessions = make(map[SessionID]*session)
 	m.order = nil
 	loopsDone := m.loopsDone
 	m.mu.Unlock()
@@ -710,7 +725,7 @@ func (m *SessionManager) WebSocketHandler() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		id := r.URL.Query().Get("session")
 		m.mu.Lock()
-		s, ok := m.sessions[id]
+		s, ok := m.sessions[SessionID(id)] // URL boundary: convert the raw query value once
 		if ok {
 			m.activeClients++ // mark present atomically with the lookup
 		}
@@ -800,9 +815,13 @@ func (m *SessionManager) handleList(w http.ResponseWriter, _ *http.Request) {
 // client answers it by re-listing and sending again, which is also what it does
 // when it learns of a session it had not seen.
 func (m *SessionManager) handleSetOrder(w http.ResponseWriter, r *http.Request) {
-	ids, ok := decodeOrderBody(w, r)
+	raw, ok := decodeOrderBody(w, r)
 	if !ok {
 		return
+	}
+	ids := make([]SessionID, len(raw))
+	for i, id := range raw {
+		ids[i] = SessionID(id)
 	}
 	if m.SetSessionOrder(ids) {
 		w.WriteHeader(http.StatusNoContent)
@@ -812,7 +831,7 @@ func (m *SessionManager) handleSetOrder(w http.ResponseWriter, r *http.Request) 
 }
 
 func (m *SessionManager) handleDelete(w http.ResponseWriter, r *http.Request) {
-	if m.Close(r.PathValue("id")) {
+	if m.Close(SessionID(r.PathValue("id"))) {
 		w.WriteHeader(http.StatusNoContent)
 		return
 	}
@@ -829,7 +848,7 @@ func (m *SessionManager) handleSetTitle(w http.ResponseWriter, r *http.Request) 
 	if !ok {
 		return
 	}
-	if m.SetSessionTitle(r.PathValue("id"), title) {
+	if m.SetSessionTitle(SessionID(r.PathValue("id")), title) {
 		w.WriteHeader(http.StatusNoContent)
 		return
 	}
@@ -852,7 +871,7 @@ func (m *SessionManager) handleSetPinnedTitle(w http.ResponseWriter, r *http.Req
 		http.Error(w, "empty title (use DELETE to clear)", http.StatusBadRequest)
 		return
 	}
-	if m.SetSessionPinnedTitle(r.PathValue("id"), clean) {
+	if m.SetSessionPinnedTitle(SessionID(r.PathValue("id")), clean) {
 		w.WriteHeader(http.StatusNoContent)
 		return
 	}
@@ -863,7 +882,7 @@ func (m *SessionManager) handleSetPinnedTitle(w http.ResponseWriter, r *http.Req
 // back to the automatic sources. 204 on success (idempotent — clearing an
 // unpinned session succeeds), 404 on an unknown id.
 func (m *SessionManager) handleClearPinnedTitle(w http.ResponseWriter, r *http.Request) {
-	if m.ClearSessionPinnedTitle(r.PathValue("id")) {
+	if m.ClearSessionPinnedTitle(SessionID(r.PathValue("id"))) {
 		w.WriteHeader(http.StatusNoContent)
 		return
 	}
@@ -1014,13 +1033,13 @@ func (m *SessionManager) maybeReap() {
 	for _, s := range m.sessions {
 		victims = append(victims, s)
 	}
-	m.sessions = make(map[string]*session)
+	m.sessions = make(map[SessionID]*session)
 	m.order = nil
 	m.reaped += uint64(len(victims))
 	m.mu.Unlock()
 	for _, s := range victims {
 		s.handler.Close()
-		m.logger.Info("session: reaped (no client for idle window)", "session", LogID(s.id))
+		m.logger.Info("session: reaped (no client for idle window)", "session", LogID(string(s.id)))
 	}
 }
 
@@ -1050,12 +1069,12 @@ func refinedStatus(lastStatus string, h *Handler) string {
 
 // newSessionID returns a 128-bit crypto-random hex id, used as both the routing
 // id (/ws?session=<id>) and the resume id.
-func newSessionID() (string, error) {
+func newSessionID() (SessionID, error) {
 	var b [16]byte
 	if _, err := rand.Read(b[:]); err != nil {
 		return "", err
 	}
-	return hex.EncodeToString(b[:]), nil
+	return SessionID(hex.EncodeToString(b[:])), nil
 }
 
 // writeJSON writes a session-surface JSON response. Its only two callers are the

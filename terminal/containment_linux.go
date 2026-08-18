@@ -37,6 +37,8 @@ type Containment struct {
 // workaround is a one-time `mount -o remount,rw /sys/fs/cgroup` with
 // CAP_SYS_ADMIN in the entrypoint, after which the capability can be dropped:
 // every operation below is governed by file permissions, not capabilities).
+// It is typed (CgroupRoot) where prefix stays a plain string, so the two
+// same-shaped arguments cannot silently trade places.
 //
 // prefix namespaces every directory this package creates (e.g. "wt-"), which is
 // what lets the startup sweep recognize its own leftovers and never remove a
@@ -74,9 +76,10 @@ type Containment struct {
 // leaving it. So a failure after step 5 leaves processes relocated within this
 // container's own tree; it does not leave controllers enabled, and it does not
 // touch anything outside root.
-func NewContainment(root, prefix string, log *slog.Logger) (*Containment, error) {
+func NewContainment(root CgroupRoot, prefix string, log *slog.Logger) (*Containment, error) {
 	log = containLogger(log)
-	if root == "" || prefix == "" {
+	rootDir := string(root)
+	if rootDir == "" || prefix == "" {
 		return nil, fmt.Errorf("%w: root and prefix are required", errContainmentUnsupported)
 	}
 	// The prefix is joined into a path, so it gets the same whitelist a session id
@@ -85,14 +88,14 @@ func NewContainment(root, prefix string, log *slog.Logger) (*Containment, error)
 		return nil, fmt.Errorf("%w: prefix %q must be [A-Za-z0-9_-] and at most %d chars", errContainmentUnsupported, prefix, containMaxIDLen)
 	}
 	var st unix.Statfs_t
-	if err := unix.Statfs(root, &st); err != nil {
-		return nil, fmt.Errorf("%w: statfs %s: %w", errContainmentUnsupported, root, err)
+	if err := unix.Statfs(rootDir, &st); err != nil {
+		return nil, fmt.Errorf("%w: statfs %s: %w", errContainmentUnsupported, rootDir, err)
 	}
 	if st.Type != unix.CGROUP2_SUPER_MAGIC {
-		return nil, fmt.Errorf("%w: %s is not a cgroup2 mount", errContainmentUnsupported, root)
+		return nil, fmt.Errorf("%w: %s is not a cgroup2 mount", errContainmentUnsupported, rootDir)
 	}
 
-	c := &Containment{root: root, prefix: prefix, log: log}
+	c := &Containment{root: rootDir, prefix: prefix, log: log}
 
 	if err := c.verifyOwnRoot(); err != nil {
 		return nil, fmt.Errorf("%w: %w", errContainmentUnsupported, err)
@@ -113,8 +116,8 @@ func NewContainment(root, prefix string, log *slog.Logger) (*Containment, error)
 	}
 
 	log.Info("terminal: containment enabled",
-		"root", root, "prefix", prefix,
-		"controllers", readTrim(filepath.Join(root, "cgroup.subtree_control")))
+		"root", rootDir, "prefix", prefix,
+		"controllers", readTrim(filepath.Join(rootDir, "cgroup.subtree_control")))
 	return c, nil
 }
 

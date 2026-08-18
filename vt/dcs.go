@@ -79,7 +79,7 @@ func splitSemis(s string) []string {
 	if s == "" {
 		return nil
 	}
-	out := []string{}
+	var out []string
 	start := 0
 	for i := range len(s) {
 		if s[i] == ';' {

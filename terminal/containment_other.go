@@ -17,7 +17,7 @@ type Containment struct{}
 // NewContainment always fails on this platform. Consumers should log the error
 // once and continue without containment, which is the same degradation path a
 // Linux host without a writable cgroup v2 root takes.
-func NewContainment(_, _ string, log *slog.Logger) (*Containment, error) {
+func NewContainment(_ CgroupRoot, _ string, log *slog.Logger) (*Containment, error) {
 	containLogger(log).Debug("terminal: containment unavailable (not Linux)")
 	return nil, fmt.Errorf("%w: cgroup v2 is Linux-only", errContainmentUnsupported)
 }

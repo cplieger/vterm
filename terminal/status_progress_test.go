@@ -23,7 +23,7 @@ import (
 // eventFor returns the status event for id from one sweep's output. A sweep can
 // legitimately emit events for other sessions (and none at all when nothing
 // changed), so a test states which it needs.
-func eventFor(t *testing.T, events []statusEvent, id string) statusEvent {
+func eventFor(t *testing.T, events []statusEvent, id SessionID) statusEvent {
 	t.Helper()
 	for _, ev := range events {
 		if ev.ID == id {

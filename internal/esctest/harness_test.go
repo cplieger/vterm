@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/cplieger/web-terminal-engine/v4/vt"
+	"github.com/cplieger/web-terminal-engine/v5/vt"
 )
 
 // TestConformance runs the esctest2 suite against the engine's VT and asserts

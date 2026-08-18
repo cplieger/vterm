@@ -15,7 +15,7 @@ import (
 	"time"
 
 	"github.com/coder/websocket"
-	"github.com/cplieger/web-terminal-engine/v4/vt"
+	"github.com/cplieger/web-terminal-engine/v5/vt"
 )
 
 // dialHandler stands up the handler on an httptest server and opens

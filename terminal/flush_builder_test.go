@@ -6,7 +6,7 @@ import (
 	"testing"
 
 	"github.com/coder/websocket"
-	"github.com/cplieger/web-terminal-engine/v4/vt"
+	"github.com/cplieger/web-terminal-engine/v5/vt"
 )
 
 // noClients is an empty client snapshot for tests that only care

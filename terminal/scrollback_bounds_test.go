@@ -4,7 +4,7 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/cplieger/web-terminal-engine/v4/vt"
+	"github.com/cplieger/web-terminal-engine/v5/vt"
 )
 
 // appendLines commits n lines to the handler's history the way the production

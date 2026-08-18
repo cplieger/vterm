@@ -127,7 +127,7 @@ func TestManagerShutdownWaitsForEverySession(t *testing.T) {
 	entered := make(chan struct{})
 	release := make(chan struct{})
 	var opened bool
-	m := NewSessionManager(func(string) *Handler {
+	m := NewSessionManager(func(SessionID) *Handler {
 		// Only the first session parks; the rest tear down normally, so the test
 		// also covers Shutdown waiting on a MIX rather than on one uniform case.
 		if opened {
@@ -170,7 +170,7 @@ func TestManagerShutdownNamesTheOutstandingCount(t *testing.T) {
 	release := make(chan struct{})
 	t.Cleanup(func() { close(release) })
 	entered := make(chan struct{}, 2)
-	m := NewSessionManager(func(string) *Handler {
+	m := NewSessionManager(func(SessionID) *Handler {
 		return NewHandler([]string{"/bin/sh", "-c", "exit 0"}, WithWorkDir("/"), WithLogger(nil),
 			WithOnProcessExit(func(error) {
 				entered <- struct{}{}

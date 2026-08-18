@@ -14,7 +14,7 @@ import (
 
 // catFactory builds sessions running /bin/cat, which stays alive in a PTY
 // (waiting for input) so sessions do not exit mid-test. Logger is discarded.
-func catFactory(string) *Handler {
+func catFactory(SessionID) *Handler {
 	return NewHandler([]string{"/bin/cat"}, WithLogger(nil))
 }
 

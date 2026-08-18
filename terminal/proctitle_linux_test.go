@@ -205,7 +205,7 @@ func TestAutoTitleLadderThroughManager(t *testing.T) {
 	if !jobControlWorks(t) {
 		t.Skip("/bin/sh does not honour set -m here; the foreground-adoption rung needs job control")
 	}
-	m := NewSessionManager(func(string) *Handler {
+	m := NewSessionManager(func(SessionID) *Handler {
 		return NewHandler([]string{"/bin/sh"}, WithLogger(nil))
 	})
 	t.Cleanup(func() { shutdownManager(t, m) })

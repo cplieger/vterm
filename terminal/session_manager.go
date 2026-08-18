@@ -240,7 +240,7 @@ func effectiveTitle(src *titleSources) string {
 // terminal WebSocket, the REST session API, and (see events.go) the status
 // stream. Safe for concurrent use.
 type SessionManager struct {
-	factory      func(id string) *Handler
+	factory      func(id SessionID) *Handler
 	logger       *slog.Logger
 	originPolicy *OriginPolicy
 	sessions     map[SessionID]*session
@@ -286,7 +286,7 @@ type SessionManager struct {
 // panics on first use. Options configure the idle reaper,
 // the status classifier, and the logger; concurrent SSE subscribers are bounded
 // internally to a fixed cap (maxSubscribers).
-func NewSessionManager(factory func(id string) *Handler, opts ...ManagerOption) *SessionManager {
+func NewSessionManager(factory func(id SessionID) *Handler, opts ...ManagerOption) *SessionManager {
 	cfg := managerConfig{logger: slog.Default()}
 	for _, o := range opts {
 		if o != nil {
@@ -352,7 +352,7 @@ func (m *SessionManager) create() (SessionInfo, error) {
 		m.mu.Unlock()
 		return SessionInfo{}, err
 	}
-	h := m.factory(string(id))
+	h := m.factory(id)
 	m.mu.Unlock()
 
 	// Eager start outside the lock: spawning a process should not block other

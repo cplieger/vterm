@@ -287,7 +287,7 @@ func TestListAndSnapshotAgreeOnOrderEveryCall(t *testing.T) {
 			// in, or the two halves of the contract disagree.
 			if info.Order != pos {
 				t.Fatalf("call %d: %s is at sequence position %d but reports order %d",
-					i, LogID(string(info.ID)), pos, info.Order)
+					i, LogID(info.ID), pos, info.Order)
 			}
 		}
 		if !slices.Equal(listIDs, want) {
@@ -297,10 +297,10 @@ func TestListAndSnapshotAgreeOnOrderEveryCall(t *testing.T) {
 		for pos, ev := range m.snapshot() {
 			snapIDs = append(snapIDs, ev.ID)
 			if ev.Order == nil {
-				t.Fatalf("call %d: %s carries no order on the initial sync", i, LogID(string(ev.ID)))
+				t.Fatalf("call %d: %s carries no order on the initial sync", i, LogID(ev.ID))
 			} else if *ev.Order != pos {
 				t.Fatalf("call %d: %s is at snapshot position %d but reports order %d",
-					i, LogID(string(ev.ID)), pos, *ev.Order)
+					i, LogID(ev.ID), pos, *ev.Order)
 			}
 		}
 		if !slices.Equal(snapIDs, want) {
@@ -323,7 +323,7 @@ func listIDs(m *SessionManager) []SessionID {
 func short(ids []SessionID) []string {
 	out := make([]string, 0, len(ids))
 	for _, id := range ids {
-		out = append(out, LogID(string(id)))
+		out = append(out, LogID(id))
 	}
 	return out
 }
@@ -363,7 +363,7 @@ func TestReorderBroadcastsToOtherClients(t *testing.T) {
 	got := make(map[SessionID]int, 3)
 	for _, ev := range m.diffStatuses() {
 		if ev.Order == nil {
-			t.Fatalf("%s carries no order on a live status event", LogID(string(ev.ID)))
+			t.Fatalf("%s carries no order on a live status event", LogID(ev.ID))
 		}
 		got[ev.ID] = *ev.Order
 	}
@@ -373,7 +373,7 @@ func TestReorderBroadcastsToOtherClients(t *testing.T) {
 	}
 	for id, pos := range want {
 		if got[id] != pos {
-			t.Errorf("%s reported order %d, want %d", LogID(string(id)), got[id], pos)
+			t.Errorf("%s reported order %d, want %d", LogID(id), got[id], pos)
 		}
 	}
 
@@ -581,7 +581,7 @@ func TestCreateEchoesTheStoredCreatedAt(t *testing.T) {
 		t.Fatalf("List len = %d, want 1", len(list))
 	}
 	if created.ID != list[0].ID {
-		t.Fatalf("201 id = %s, List id = %s", LogID(string(created.ID)), LogID(string(list[0].ID)))
+		t.Fatalf("201 id = %s, List id = %s", LogID(created.ID), LogID(list[0].ID))
 	}
 	if !created.CreatedAt.Equal(list[0].CreatedAt) {
 		t.Errorf("201 createdAt = %s, List createdAt = %s (must be the same instant)",
@@ -626,7 +626,7 @@ func TestCreateEchoesThePositionItAppendedTo(t *testing.T) {
 		list := m.List()
 		if got := list[len(list)-1]; got.ID != created.ID || got.Order != want {
 			t.Errorf("session %d: List has %s at order %d, want %s at %d",
-				want, LogID(string(got.ID)), got.Order, LogID(string(created.ID)), want)
+				want, LogID(got.ID), got.Order, LogID(created.ID), want)
 		}
 	}
 }
@@ -738,7 +738,7 @@ func TestSweepReadsTheOrderAfterPhaseTwo(t *testing.T) {
 	got := make(map[SessionID]int, len(want))
 	for _, ev := range m.diffStatuses() {
 		if ev.Order == nil {
-			t.Fatalf("%s carries no order on a live status event", LogID(string(ev.ID)))
+			t.Fatalf("%s carries no order on a live status event", LogID(ev.ID))
 		}
 		got[ev.ID] = *ev.Order
 	}
@@ -748,7 +748,7 @@ func TestSweepReadsTheOrderAfterPhaseTwo(t *testing.T) {
 	for pos, id := range want {
 		if got[id] != pos {
 			t.Errorf("%s reported order %d, want %d (the order in force at phase 3)",
-				LogID(string(id)), got[id], pos)
+				LogID(id), got[id], pos)
 		}
 	}
 	// And the arrangement is now settled: a stale emission would have recorded the
@@ -869,7 +869,7 @@ func TestListPublishesDensePositions(t *testing.T) {
 	m.mu.Unlock()
 	if ordered != ids[2] {
 		t.Fatalf("fixture kept %s in the order, want the youngest session %s",
-			LogID(string(ordered)), LogID(string(ids[2])))
+			LogID(ordered), LogID(ids[2]))
 	}
 
 	// BOTH enumerations, because they renumber independently and each one is the
@@ -880,11 +880,11 @@ func TestListPublishesDensePositions(t *testing.T) {
 	for i, info := range m.List() {
 		if info.Order != i {
 			t.Errorf("List: %s is at sequence position %d but reports order %d",
-				LogID(string(info.ID)), i, info.Order)
+				LogID(info.ID), i, info.Order)
 		}
 		if other, dup := listPos[info.Order]; dup {
 			t.Errorf("List: %s and %s both report order %d",
-				LogID(string(other)), LogID(string(info.ID)), info.Order)
+				LogID(other), LogID(info.ID), info.Order)
 		}
 		listPos[info.Order] = info.ID
 		listIDs = append(listIDs, info.ID)
@@ -897,15 +897,15 @@ func TestListPublishesDensePositions(t *testing.T) {
 	snapPos := make(map[int]SessionID, 3)
 	for i, ev := range m.snapshot() {
 		if ev.Order == nil {
-			t.Fatalf("snapshot: %s carries no order", LogID(string(ev.ID)))
+			t.Fatalf("snapshot: %s carries no order", LogID(ev.ID))
 		}
 		if *ev.Order != i {
 			t.Errorf("snapshot: %s is at sequence position %d but reports order %d",
-				LogID(string(ev.ID)), i, *ev.Order)
+				LogID(ev.ID), i, *ev.Order)
 		}
 		if other, dup := snapPos[*ev.Order]; dup {
 			t.Errorf("snapshot: %s and %s both report order %d",
-				LogID(string(other)), LogID(string(ev.ID)), *ev.Order)
+				LogID(other), LogID(ev.ID), *ev.Order)
 		}
 		snapPos[*ev.Order] = ev.ID
 		snapIDs = append(snapIDs, ev.ID)
@@ -920,11 +920,11 @@ func TestListPublishesDensePositions(t *testing.T) {
 	// then hide the collision behind a clean-looking dense sequence.
 	if len(listIDs) != 0 && listIDs[0] != ordered {
 		t.Errorf("List leads with %s, want the still-ordered session %s",
-			LogID(string(listIDs[0])), LogID(string(ordered)))
+			LogID(listIDs[0]), LogID(ordered))
 	}
 	if len(snapIDs) != 0 && snapIDs[0] != ordered {
 		t.Errorf("snapshot leads with %s, want the still-ordered session %s",
-			LogID(string(snapIDs[0])), LogID(string(ordered)))
+			LogID(snapIDs[0]), LogID(ordered))
 	}
 	if !slices.Equal(listIDs, snapIDs) {
 		t.Errorf("the two enumerations disagree under a desync: %v vs %v",

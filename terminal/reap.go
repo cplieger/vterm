@@ -68,7 +68,7 @@ const (
 // sequence.
 type sessionReap struct {
 	log    *slog.Logger
-	id     string
+	id     SessionID
 	marker string
 	once   sync.Once
 }

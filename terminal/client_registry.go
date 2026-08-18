@@ -21,7 +21,7 @@ const maxResumeSessions = 1024
 // lookup don't contend with the screen/PTY lock in Handler.
 type clientRegistry struct {
 	clients  map[*websocket.Conn]*clientState
-	sessions map[string]*sessionState
+	sessions map[SessionID]*sessionState
 	logger   *slog.Logger
 	mu       sync.Mutex
 }
@@ -32,7 +32,7 @@ type clientRegistry struct {
 func newClientRegistry(logger *slog.Logger) *clientRegistry {
 	return &clientRegistry{
 		clients:  make(map[*websocket.Conn]*clientState),
-		sessions: make(map[string]*sessionState),
+		sessions: make(map[SessionID]*sessionState),
 		logger:   logger,
 	}
 }
@@ -160,7 +160,7 @@ func (r *clientRegistry) Snapshot() (
 // client's resumeAck handler trims nothing → retransmitOutbox replays
 // every queued chunk → the child re-receives the same input as fresh
 // keystrokes and queues duplicate messages.
-func (r *clientRegistry) ResolveSession(state *clientState, sessionID string) (ack uint64, created bool) {
+func (r *clientRegistry) ResolveSession(state *clientState, sessionID SessionID) (ack uint64, created bool) {
 	r.mu.Lock()
 	sess, ok := r.sessions[sessionID]
 	if !ok {
@@ -231,9 +231,9 @@ func (r *clientRegistry) evictOldestSession() {
 		return
 	}
 	attached := r.attachedSessions()
-	var oldestID string
+	var oldestID SessionID
 	var oldest time.Time
-	var oldestAnyID string
+	var oldestAnyID SessionID
 	var oldestAny time.Time
 	for id, sx := range r.sessions {
 		if oldestAnyID == "" || sx.lastSeen.Before(oldestAny) {

@@ -97,7 +97,7 @@ const (
 // cmd.Wait returns. Close deliberately does not run it: Close holds the
 // handler lock, and cancelling the context kills the head process, so the
 // monitor's Wait returns and teardown happens there for both paths.
-func WithContainment(c *Containment, id string) Option {
+func WithContainment(c *Containment, id SessionID) Option {
 	return func(cfg *handlerConfig) {
 		cfg.containment = c
 		cfg.containmentID = id
@@ -125,9 +125,9 @@ func WithContainmentSampleInterval(d time.Duration) Option {
 // the server owns, so a traversal or an absolute path must be impossible rather
 // than merely unlikely. Everything outside [A-Za-z0-9_-] is dropped, which
 // removes "/", "..", NUL and every unicode surprise in one rule.
-func sanitizeCgroupName(id string) string {
+func sanitizeCgroupName(name string) string {
 	var b strings.Builder
-	for _, r := range id {
+	for _, r := range name {
 		switch {
 		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9', r == '_', r == '-':
 			b.WriteRune(r)

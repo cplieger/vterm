@@ -118,8 +118,13 @@ func WithContainmentSampleInterval(d time.Duration) Option {
 	return func(cfg *handlerConfig) { cfg.containSample = d }
 }
 
-// sanitizeCgroupName reduces id to a single safe path segment for use as a
+// sanitizeCgroupName reduces name to a single safe path segment for use as a
 // cgroup directory name, or returns "" if nothing usable remains.
+//
+// It takes a string rather than a SessionID because it serves two callers: the
+// session leaf (Containment.create, which converts) and the cgroup path PREFIX
+// validated in NewContainment, which is not a session id and only shares the
+// whitelist. The function sanitizes a name; it does not identify a session.
 //
 // This is a whitelist, not an escape: a cgroup name reaches mkdir under a root
 // the server owns, so a traversal or an absolute path must be impossible rather

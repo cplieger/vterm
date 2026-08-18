@@ -24,7 +24,7 @@ func NewContainment(_ CgroupRoot, _ string, log *slog.Logger) (*Containment, err
 
 // create never succeeds, so a handler on this platform never holds a
 // sessionCgroup and every method below is unreachable in practice.
-func (c *Containment) create(string) (*sessionCgroup, error) {
+func (c *Containment) create(SessionID) (*sessionCgroup, error) {
 	return nil, errContainmentUnsupported
 }
 

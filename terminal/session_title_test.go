@@ -335,13 +335,23 @@ func TestSessionManagerPinnedTitleREST(t *testing.T) {
 	t.Run("an effectively empty title is a 400, not a silent clear", func(t *testing.T) {
 		// The destructive operation has its own verb and must not be reachable
 		// by an accidentally-empty (or whitespace-only, or all-control) body.
+		//
+		// Set the pin here rather than inheriting the previous case's, for the
+		// reason the DELETE case gives: run alone the earlier cases have not
+		// executed, and "the pin did not change" asserted against a pin nobody
+		// set passes vacuously. Naming the expected value also beats asserting
+		// its LENGTH, which the truncation case happened to make unique.
+		const keep = "pinned before the rejections"
+		if code := do(t, http.MethodPut, id, `{"title":"`+keep+`"}`); code != http.StatusNoContent {
+			t.Fatalf("PUT before the rejections status = %d, want 204", code)
+		}
 		for _, body := range []string{`{"title":""}`, `{"title":"   "}`, `{"title":"\n\n"}`, `{}`} {
 			if code := do(t, http.MethodPut, id, body); code != http.StatusBadRequest {
 				t.Errorf("PUT %s status = %d, want 400", body, code)
 			}
 		}
-		if got := pinOf(t); len([]rune(got)) != maxPinnedTitleRunes {
-			t.Errorf("a rejected PUT changed the pin to %q", got)
+		if got := pinOf(t); got != keep {
+			t.Errorf("a rejected PUT changed the pin to %q, want %q untouched", got, keep)
 		}
 	})
 

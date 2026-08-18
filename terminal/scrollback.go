@@ -15,7 +15,7 @@ import "github.com/cplieger/web-terminal-engine/v5/vt"
 // The buffer GROWS to `capacity` rather than being allocated at it, so a
 // deep capacity costs a session nothing until it has actually produced that
 // much history. This matters because capacity is an operator-set number
-// (WT_SCROLLBACK) whose whole point is that it can be set absurdly high:
+// (SCROLLBACK) whose whole point is that it can be set absurdly high:
 // preallocating charged every session 24 bytes per configured line up front
 // — 2.3 MB at the 100k default before a single line was printed, and 240 MB
 // for an operator who asked for 10 million.

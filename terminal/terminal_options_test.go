@@ -78,7 +78,7 @@ func TestNewHandler_appliesDefaults(t *testing.T) {
 //
 // The no-upfront-allocation half replaced an assertion on cap(buf), which
 // pinned a preallocating ring. Capacity is an operator-set number that is meant
-// to be settable absurdly high (WT_SCROLLBACK), so allocating at it charged
+// to be settable absurdly high (SCROLLBACK), so allocating at it charged
 // every session for history it might never produce.
 func TestNewHandler_WithScrollbackCapacity(t *testing.T) {
 	h := NewHandler([]string{"/bin/sh"}, WithScrollbackCapacity(500))

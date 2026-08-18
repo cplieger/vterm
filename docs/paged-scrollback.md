@@ -1634,7 +1634,7 @@ contract, not a cache.
 3. No per-app capacity call: the depth is the engine's default (§3), so
    an app that wants it does nothing. wtk pins that with a test forbidding
    a `WithScrollbackCapacity` call, so the number cannot drift back into an
-   app. An operator overrides per deployment through `WT_SCROLLBACK` — and kiro
+   app. An operator overrides per deployment through `SCROLLBACK` — and kiro
    passes NO explicit client-side `scrollbackLines`, so the
    omitted-option semantics govern (an explicit value would pin BOTH
    capability states to it, §5.3, and kiro wants the flip).

@@ -147,7 +147,7 @@ cannot drift apart:
 
 | Symbol | Purpose |
 | --- | --- |
-| `ScrollbackEnvVar` | `WT_SCROLLBACK` — the variable name to read. The engine does NOT read it itself; the consumer does, and passes the option. |
+| `ScrollbackEnvVar` | `SCROLLBACK` — the variable name to read. The engine does NOT read it itself; the consumer does, and passes the option. |
 | `DefaultScrollbackCapacity` | The default, exported so a consumer can report the effective depth at startup without hardcoding it. |
 | `MinPagingCapacity` | The depth at or above which the handler declares demand-paged scrollback to the client. |
 | `ClampScrollbackCapacity(n)` | Turns an operator's number into the one to configure, plus a reason string when it had to change it. |
@@ -168,19 +168,28 @@ and passes options in. But the apps built on this engine are operated by the sam
 people, so the ones that answer the same question use the same NAME, and that
 convention is documented here rather than in each app's README.
 
-The prefix is `WT_`. `WT_SCROLLBACK` is the engine's own (`ScrollbackEnvVar`
-above), and the rest are the names the first-party consumers settled on:
-web-terminal-server and web-terminal-kiro both read them, so an operator who runs
-one already knows the other, and a new consumer that adopts them inherits that.
+The names carry no component prefix. An operator setting one knows the app they
+run, not the library serving its HTTP, so a `WT_` prefix named an internal
+component at them and bought no disambiguation; bare names also land on the
+convention the rest of the fleet already uses. `SCROLLBACK` is the engine's own
+(`ScrollbackEnvVar` above), and the rest are the names the first-party consumers
+settled on: web-terminal-server and web-terminal-kiro both read them, so an
+operator who runs one already knows the other, and a new consumer that adopts
+them inherits that.
 
 | Variable | What the consumer does with it |
 | --- | --- |
-| `WT_ADDR` | The listen address, `host:port`. |
-| `WT_WORKDIR` | The working directory for the process the PTY runs. |
-| `WT_SCROLLBACK` | Retained history depth — the engine's own variable; see above. |
-| `WT_ALLOWED_HOSTS` | Exact `Host` values to serve, as an anti-DNS-rebinding gate. Unset is permissive. |
-| `WT_TRUSTED_PROXIES` | CIDRs or IPs whose forwarded-for header may name the real client. |
-| `WT_LOG_LEVEL` | Log level at boot. |
+| `ADDR` | The listen address, `host:port`. |
+| `WORKDIR` | The working directory for the process the PTY runs. |
+| `SCROLLBACK` | Retained history depth — the engine's own variable; see above. |
+| `ALLOWED_HOSTS` | Exact `Host` values to serve, as an anti-DNS-rebinding gate. Unset is permissive. |
+| `TRUSTED_PROXIES` | CIDRs or IPs whose forwarded-for header may name the real client. |
+| `LOG_LEVEL` | Log level at boot. |
+
+The keys the engine INJECTS into a session's child environment are the opposite
+case and keep the `WT_` prefix: `WT_SESSION_REAP` (above) is not a knob an
+operator sets, it lands in one flat namespace beside everything else the system
+and the user's shell set, so there the prefix is real disambiguation.
 
 Two rules that make the set worth having. A name is shared only when the BEHAVIOUR
 is the same — a knob one app reads and another ignores is not shared, it is a

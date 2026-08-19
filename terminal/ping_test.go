@@ -6,9 +6,9 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
-	"strings"
 	"sync"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/coder/websocket"
@@ -16,57 +16,70 @@ import (
 
 // TestPingLoop_repeatedFailuresCancel verifies pingLoop closes the connection
 // (calls cancel) after maxConsecutiveFailures pings fail in a row. We dial a
-// real WebSocket then CloseNow the client so every subsequent ws.Ping fails
+// WebSocket then CloseNow the client so every subsequent ws.Ping fails
 // immediately; after the failure threshold pingLoop must invoke cancel.
+//
+// The whole test is a clock assertion, so it runs in a synctest bubble on the
+// synthetic clock: httptest.NewTestServer puts the socket on the in-memory
+// fake network (a real loopback socket would park a bubble goroutine on an
+// external FD and the clock could never advance), and synctest.Sleep advances
+// exactly past the third tick. That turns a 6s wall-clock wait plus a 25s
+// escape bound into an exact deadline — a pingLoop that took four ticks used
+// to pass and now fails.
 func TestPingLoop_repeatedFailuresCancel(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		ws, err := websocket.Accept(w, r, nil)
-		if err != nil {
-			return
-		}
-		defer ws.CloseNow()
-		// Keep the server side reading so the handshake completes cleanly and
-		// the handler returns once the client connection drops.
-		for {
-			if _, _, rerr := ws.Read(r.Context()); rerr != nil {
+	synctest.Test(t, func(t *testing.T) {
+		srv := httptest.NewTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			ws, err := websocket.Accept(w, r, nil)
+			if err != nil {
 				return
 			}
+			defer ws.CloseNow()
+			// Keep the server side reading so the handshake completes cleanly and
+			// the handler returns once the client connection drops.
+			for {
+				if _, _, rerr := ws.Read(r.Context()); rerr != nil {
+					return
+				}
+			}
+		}))
+
+		// The in-memory path leaves Server.URL empty and srv.Client() routes
+		// every request to the handler whatever the host, so the authority here
+		// is a placeholder.
+		//nolint:bodyclose // coder/websocket Dial nils resp.Body on success
+		ws, _, err := websocket.Dial(t.Context(), "ws://fake.invalid/", &websocket.DialOptions{
+			HTTPClient: srv.Client(),
+		})
+		if err != nil {
+			t.Fatalf("ws dial: %v", err)
 		}
-	}))
-	defer srv.Close()
 
-	wsURL := "ws" + strings.TrimPrefix(srv.URL, "http") + "/"
-	dctx, dcancel := context.WithTimeout(t.Context(), 5*time.Second)
-	//nolint:bodyclose // coder/websocket Dial nils resp.Body on success
-	ws, _, err := websocket.Dial(dctx, wsURL, nil)
-	dcancel()
-	if err != nil {
-		t.Fatalf("ws dial: %v", err)
-	}
+		// Kill the client connection so each ws.Ping fails immediately rather
+		// than blocking until the pong timeout.
+		_ = ws.CloseNow()
 
-	// Kill the client connection so each ws.Ping fails immediately rather than
-	// blocking until the pong timeout.
-	_ = ws.CloseNow()
+		ctx, cancel := context.WithCancel(t.Context())
+		defer cancel()
+		canceled := make(chan struct{})
+		var once sync.Once
+		recordCancel := func() {
+			once.Do(func() { close(canceled) })
+			cancel()
+		}
 
-	ctx, cancel := context.WithCancel(t.Context())
-	defer cancel()
-	canceled := make(chan struct{})
-	var once sync.Once
-	recordCancel := func() {
-		once.Do(func() { close(canceled) })
-		cancel()
-	}
+		go pingLoop(ctx, recordCancel, ws, slog.Default())
 
-	go pingLoop(ctx, recordCancel, ws, slog.Default())
-
-	// maxConsecutiveFailures (3) ticks at wsPingInterval (2s) is roughly 6s;
-	// generous bound for slow CI.
-	select {
-	case <-canceled:
-		// pingLoop observed repeated ping failures and closed the connection.
-	case <-time.After(25 * time.Second):
-		t.Fatal("pingLoop did not cancel after repeated failed pings")
-	}
+		// maxConsecutiveFailures ticks at wsPingInterval, plus a hair so the
+		// last tick is inside the window; Sleep also waits for the loop to
+		// settle, so the check below needs no second synchronisation.
+		synctest.Sleep(maxConsecutiveFailures*wsPingInterval + time.Millisecond)
+		select {
+		case <-canceled:
+			// pingLoop observed repeated ping failures and closed the connection.
+		default:
+			t.Fatalf("pingLoop did not cancel within %d failed pings", maxConsecutiveFailures)
+		}
+	})
 }
 
 // TestPinger_continuesBackoffBelowFailureThreshold verifies a single ping

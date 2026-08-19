@@ -102,7 +102,7 @@ golangci-lint run
 golangci-lint fmt
 ```
 
-`go.mod` targets Go 1.26+. Linting uses golangci-lint v2 (`.golangci.yaml`). `golangci-lint run` reports unformatted files, so run `golangci-lint fmt` before pushing. The config enables a strict linter set, including gosec, gocritic, revive, gocyclo and gocognit at complexity 15, sloglint in key/value mode, and gofumpt/gci formatting.
+`go.mod` targets Go 1.27+. Linting uses golangci-lint v2 (`.golangci.yaml`). `golangci-lint run` reports unformatted files, so run `golangci-lint fmt` before pushing. The config enables a strict linter set, including gosec, gocritic, revive, gocyclo and gocognit at complexity 15, sloglint in key/value mode, and gofumpt/gci formatting.
 
 ### TypeScript (`web/`)
 

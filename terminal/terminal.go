@@ -307,7 +307,8 @@ func ClampScrollbackCapacity(n int) (capacity int, reason string) {
 		return MinPagingCapacity, fmt.Sprintf(
 			"%s=%d is below the %d lines needed to offer demand-paged history, which would make the browser "+
 				"hold its whole legacy buffer instead of paging: using %d",
-			ScrollbackEnvVar, n, MinPagingCapacity, MinPagingCapacity)
+			ScrollbackEnvVar, n, MinPagingCapacity, MinPagingCapacity,
+		)
 	}
 	return n, ""
 }
@@ -955,8 +956,8 @@ func crashedExit(werr error, serverInitiated bool) bool {
 	if werr == nil || serverInitiated {
 		return false
 	}
-	var ee *exec.ExitError
-	if !errors.As(werr, &ee) {
+	ee, isExitErr := errors.AsType[*exec.ExitError](werr)
+	if !isExitErr {
 		return false
 	}
 	if ws, ok := ee.Sys().(syscall.WaitStatus); ok && ws.Signaled() && ws.Signal() == syscall.SIGHUP {
@@ -1757,15 +1758,13 @@ func (h *Handler) dispatchFrame(frame *flushFrame) {
 	var deliveredMu sync.Mutex
 	delivered := make(map[*websocket.Conn]uint64, len(frame.clients))
 	for ws, ack := range frame.clients {
-		wg.Add(1)
-		go func(ws *websocket.Conn, ack uint64) {
-			defer wg.Done()
+		wg.Go(func() {
 			if stamped, ok := writeClientPayloads(ws, ack, frame.writers[ws], frame.gens[ws], payloads, durable); ok {
 				deliveredMu.Lock()
 				delivered[ws] = stamped
 				deliveredMu.Unlock()
 			}
-		}(ws, ack)
+		})
 	}
 	wg.Wait()
 	// Record what each client was just told, so the next no-frame tick's ack

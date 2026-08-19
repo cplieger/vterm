@@ -117,11 +117,11 @@ func sessionAndGroupOf(pid int) (sid, pgid int, ok bool) {
 		return 0, 0, false
 	}
 	s := string(b)
-	i := strings.LastIndexByte(s, ')')
-	if i < 0 {
+	_, afterComm, found := strings.CutLast(s, ")")
+	if !found {
 		return 0, 0, false
 	}
-	f := strings.Fields(s[i+1:])
+	f := strings.Fields(afterComm)
 	if len(f) < 4 {
 		return 0, 0, false
 	}

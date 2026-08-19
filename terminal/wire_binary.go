@@ -268,27 +268,33 @@ func WirePairIncompatibility(p WirePair) string {
 	case server.Rev <= 0 || server.MinPeer <= 0:
 		return fmt.Sprintf(
 			"server wire revisions must be positive (got rev %d, min client %d)",
-			server.Rev, server.MinPeer)
+			server.Rev, server.MinPeer,
+		)
 	case client.Rev <= 0 || client.MinPeer <= 0:
 		return fmt.Sprintf(
 			"client wire revisions must be positive (got rev %d, min server %d)",
-			client.Rev, client.MinPeer)
+			client.Rev, client.MinPeer,
+		)
 	case server.MinPeer > server.Rev:
 		return fmt.Sprintf(
 			"the Go server half is self-inconsistent: it demands client revision >= %d while itself speaking revision %d, so it could not talk to a client of its own build; these two numbers cannot both come from one released artifact, so treat this as corrupt or mis-extracted input (re-check how the constants were read) rather than a version skew to fix by bumping a pin",
-			server.MinPeer, server.Rev)
+			server.MinPeer, server.Rev,
+		)
 	case client.MinPeer > client.Rev:
 		return fmt.Sprintf(
 			"the TS client half is self-inconsistent: it demands server revision >= %d while itself speaking revision %d, so it could not talk to a server of its own build; these two numbers cannot both come from one released artifact, so treat this as corrupt or mis-extracted input (re-check how the constants were read) rather than a version skew to fix by bumping a pin",
-			client.MinPeer, client.Rev)
+			client.MinPeer, client.Rev,
+		)
 	case server.Rev < client.MinPeer:
 		return fmt.Sprintf(
 			"Go server wire revision %d is below the TS client's minimum supported server revision %d (the Go half is behind)",
-			server.Rev, client.MinPeer)
+			server.Rev, client.MinPeer,
+		)
 	case client.Rev < server.MinPeer:
 		return fmt.Sprintf(
 			"TS client wire revision %d is below the Go server's minimum supported client revision %d (the TS half is behind)",
-			client.Rev, server.MinPeer)
+			client.Rev, server.MinPeer,
+		)
 	default:
 		return ""
 	}

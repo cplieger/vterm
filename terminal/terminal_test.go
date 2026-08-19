@@ -1203,8 +1203,8 @@ func TestEnsureStarted_reaperInvokesOnProcessExitWithStatus(t *testing.T) {
 
 	select {
 	case err := <-exitErr:
-		var ee *exec.ExitError
-		if !errors.As(err, &ee) {
+		ee, isExitErr := errors.AsType[*exec.ExitError](err)
+		if !isExitErr {
 			t.Fatalf("onProcessExit err = %v (%T), want *exec.ExitError from cmd.Wait", err, err)
 		}
 		if ee.ExitCode() != 7 {

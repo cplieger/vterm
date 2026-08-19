@@ -154,10 +154,13 @@ func (s *Screen) makeRunWithURL(text string, st Style, url string) WireRun {
 	if st.Inverse {
 		fg, bg = bg, fg
 	}
-	r := WireRun{T: text, U: url}
-	r.F = s.colorToWire(fg)
-	r.B = s.colorToWire(bg)
-	r.Uc = s.colorToWire(st.UnderlineColor)
+	r := WireRun{
+		T:  text,
+		U:  url,
+		F:  s.colorToWire(fg),
+		B:  s.colorToWire(bg),
+		Uc: s.colorToWire(st.UnderlineColor),
+	}
 	// Minimum-contrast floor (contrast.go), off unless a consumer asked for it.
 	// Skipped for concealed text: SGR 8 hides content deliberately, and a client
 	// that implements conceal by painting the text in its background color must

@@ -119,7 +119,8 @@ func DecodeWireManifest(data []byte) (WireManifest, error) {
 	if m.ProtocolVersion <= 0 || m.MinimumServerProtocolVersion <= 0 {
 		return WireManifest{}, fmt.Errorf(
 			"terminal: wire-compatibility manifest carries no usable revisions (protocolVersion %d, minimumServerProtocolVersion %d)",
-			m.ProtocolVersion, m.MinimumServerProtocolVersion)
+			m.ProtocolVersion, m.MinimumServerProtocolVersion,
+		)
 	}
 	return m, nil
 }

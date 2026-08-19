@@ -22,6 +22,7 @@ package terminal
 import (
 	"fmt"
 	"os"
+	"strings"
 	"testing"
 	"time"
 )
@@ -85,17 +86,14 @@ func childStateForDiag(h *Handler) string {
 	}
 	// State is the field after the closing paren of the parenthesized comm,
 	// which may itself contain spaces and parens (see alive()).
-	s := string(b)
-	i := len(s) - 1
-	for ; i >= 0 && s[i] != ')'; i-- {
-	}
-	if i < 0 || i+2 >= len(s) {
+	_, afterComm, found := strings.CutLast(string(b), ")")
+	if !found || len(afterComm) < 2 {
 		return fmt.Sprintf("pid %d has an unparseable /proc stat line", pid)
 	}
-	if s[i+2] == 'Z' {
+	if afterComm[1] == 'Z' {
 		return fmt.Sprintf("pid %d is a zombie, so it exited and the monitor has not latched yet", pid)
 	}
-	return fmt.Sprintf("pid %d is still running in state %q", pid, s[i+2:i+3])
+	return fmt.Sprintf("pid %d is still running in state %q", pid, afterComm[1:2])
 }
 
 // TestExitOutcomeClassification walks the documented boundary with real

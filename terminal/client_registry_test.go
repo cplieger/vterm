@@ -136,18 +136,16 @@ func TestRegistry_ConcurrentResolveIncrementSnapshot(t *testing.T) {
 	const iters = 200
 
 	var wg sync.WaitGroup
-	wg.Add(goroutines)
 	for g := range goroutines {
-		go func(id int) {
-			defer wg.Done()
+		wg.Go(func() {
 			for i := range iters {
 				state := &clientState{}
-				sessionID := SessionID("session-" + string(rune('A'+id)) + "-" + string(rune('0'+i%10)))
+				sessionID := SessionID("session-" + string(rune('A'+g)) + "-" + string(rune('0'+i%10)))
 				_, _ = r.ResolveSession(state, sessionID)
 				r.IncrementReceived(state, 42)
 				_, _, _ = r.Snapshot()
 			}
-		}(g)
+		})
 	}
 	wg.Wait()
 }
@@ -161,10 +159,8 @@ func TestRegistry_ConcurrentResolveSharedSession(t *testing.T) {
 	const iters = 100
 
 	var wg sync.WaitGroup
-	wg.Add(goroutines)
 	for range goroutines {
-		go func() {
-			defer wg.Done()
+		wg.Go(func() {
 			for i := range iters {
 				state := &clientState{}
 				sid := SessionID("shared-session")
@@ -174,7 +170,7 @@ func TestRegistry_ConcurrentResolveSharedSession(t *testing.T) {
 				_, _ = r.ResolveSession(state, sid)
 				r.IncrementReceived(state, 10)
 			}
-		}()
+		})
 	}
 	wg.Wait()
 }

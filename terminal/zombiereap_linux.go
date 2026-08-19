@@ -66,11 +66,11 @@ func statStateAndPPID(path string) (state byte, ppid int, ok bool) {
 	}
 	// Everything before the LAST ')' is pid + comm; the fields after it are
 	// positionally reliable regardless of what the executable was called.
-	commEnd := bytes.LastIndexByte(buf, ')')
-	if commEnd < 0 {
+	_, afterComm, found := bytes.CutLast(buf, []byte(")"))
+	if !found {
 		return 0, 0, false
 	}
-	fields := bytes.Fields(buf[commEnd+1:])
+	fields := bytes.Fields(afterComm)
 	if len(fields) < 2 || len(fields[0]) == 0 {
 		return 0, 0, false
 	}

@@ -121,14 +121,13 @@ func alive(pid int) bool {
 	if err != nil {
 		return false
 	}
-	s := string(b)
-	i := len(s) - 1
-	for ; i >= 0 && s[i] != ')'; i-- {
-	}
-	if i < 0 || i+2 >= len(s) {
+	// The state byte follows the closing paren of the parenthesized comm, which
+	// may itself contain spaces and parens — so split around the LAST one.
+	_, afterComm, found := strings.CutLast(string(b), ")")
+	if !found || len(afterComm) < 2 {
 		return false
 	}
-	return s[i+2] != 'Z'
+	return afterComm[1] != 'Z'
 }
 
 // waitGone polls until pid is gone or the deadline passes.
@@ -152,12 +151,13 @@ func sidOf(t *testing.T, pid int) int {
 		t.Fatalf("read stat %d: %v", pid, err)
 	}
 	s := string(b)
-	i := len(s) - 1
-	for ; i >= 0 && s[i] != ')'; i-- {
+	_, afterComm, found := strings.CutLast(s, ")")
+	if !found {
+		t.Fatalf("parse stat %d: no comm field in %q", pid, s)
 	}
 	var state string
 	var ppid, pgrp, sid int
-	if _, err := fmt.Sscan(s[i+2:], &state, &ppid, &pgrp, &sid); err != nil {
+	if _, err := fmt.Sscan(afterComm, &state, &ppid, &pgrp, &sid); err != nil {
 		t.Fatalf("parse stat %d: %v", pid, err)
 	}
 	return sid

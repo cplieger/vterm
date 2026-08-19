@@ -1,6 +1,6 @@
 module github.com/cplieger/web-terminal-engine/v4
 
-go 1.26.6
+go 1.26.7
 
 require (
 	github.com/coder/websocket v1.8.15

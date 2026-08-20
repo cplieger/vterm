@@ -35,7 +35,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/cplieger/runesafe"
+	"github.com/cplieger/runesafe/v2"
 )
 
 // decodeTitle applies the XTSMTITLE set-mode to an incoming OSC 0/1/2 title

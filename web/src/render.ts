@@ -7,7 +7,7 @@
 // "scrollback": the live window is simply the last `height` absolute indices,
 // and a line that scrolls into history just stops being updated. This is what
 // removes the live/history reconciliation that caused the duplicate-rows and
-// view-jumping bugs (see the #web-terminal-engine steering doc, "Design rationale").
+// view-jumping bugs.
 //
 // Decode frames feed the store (handleScreen/handleScroll); a single
 // requestAnimationFrame flush drains the store's change set and applies it:

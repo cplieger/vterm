@@ -14,8 +14,7 @@
 // the ANSI/CSS attribute mapping), not copied from render.ts. A mismatch is a
 // finding.
 //
-// Fresh headless Chromium per the chromium-sidecar steering doc (the shared
-// sidecar is debug-only). Out of the vitest battery; run `npm run test:e2e`.
+// Fresh headless Chromium (the shared sidecar is debug-only). Out of the vitest battery; run `npm run test:e2e`.
 import { test, expect } from "@playwright/test";
 import { standard256, rgb, kitty16 } from "../src/test-helpers/spec-colors.js";
 import { bundleEngine, HARNESS, readGolden, frameBytesArray, waitForRows } from "./e2e-harness.js";

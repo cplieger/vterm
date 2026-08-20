@@ -16,7 +16,7 @@ import (
 // comparing by absolute index means a pure scroll re-sends nothing: only
 // genuinely new or rewritten lines go on the wire. This is what lets the
 // client store every line idempotently by absolute index and never see a
-// duplicate (see the #web-terminal-engine steering doc, "Design rationale").
+// duplicate.
 type flushFrameBuilder struct {
 	prevTitle       string
 	prevRowWires    [][]vt.WireRun // last-sent window content; prevRowWires[i] is absolute index prevBase+i

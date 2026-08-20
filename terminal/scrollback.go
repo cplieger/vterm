@@ -20,8 +20,7 @@ import "github.com/cplieger/web-terminal-engine/v5/vt"
 // — 2.3 MB at the 100k default before a single line was printed, and 240 MB
 // for an operator who asked for 10 million.
 //
-// Absolute indexing is the backbone of the engine (see the
-// #web-terminal-engine steering doc, "Design rationale"). It makes resume
+// Absolute indexing is the backbone of the engine. It makes resume
 // alignment exact (the client asks for
 // "everything after index H") and makes duplicate delivery structurally
 // impossible (writing the same index twice overwrites the same row),

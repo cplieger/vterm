@@ -3,7 +3,7 @@
 // on resumeAck, altActive cursor-flag bit). These lock the byte layout
 // that pairs with the Go encoder in terminal/wire_binary.go (the
 // authoritative byte definition); see the README "Wire Protocol" section
-// and the #web-terminal-engine steering doc "Design rationale" for the model.
+// for the model.
 
 import { describe, it, expect } from "vitest";
 import { decodeWireBinary } from "./wire-binary.js";

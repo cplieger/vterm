@@ -184,7 +184,7 @@ func TestAppendRowIfMissing_rowCountBoundary(t *testing.T) {
 // by absolute index. It then asserts the client's reconstructed buffer is
 // gap-free and correctly ordered: line N always lands at absolute index N,
 // with no duplicates and no holes. This is the property that makes resume
-// dedup/gap-free (see the #web-terminal-engine steering doc, "Design rationale").
+// dedup/gap-free.
 func TestBuild_AbsoluteIndexIntegrity(t *testing.T) {
 	screen := vt.New(3, 20) // tiny screen so each printed line soon scrolls
 	ring := newScrollbackRing(1000)

@@ -7,7 +7,7 @@
 // suppress timer, and no programmatic-vs-user flag. That heuristic soup (a
 // 100px tolerance, a 150ms debounce, a 60-second touch window) was the source
 // of the view-jumping and scroll-interruption bugs (the legacy heuristic-soup
-// failure mode; see the #web-terminal-engine steering doc, "Design rationale").
+// failure mode).
 //
 // The renderer calls stickToBottom() once after each flush: if following, pin
 // to the new bottom; if holding, do nothing. Holding the reading position when

@@ -1,8 +1,7 @@
 // Absolute-index line store: the client's authoritative model of the
 // terminal. One buffer keyed by absolute line index, with the live screen
 // window sliding along it. This is the data model that resolves the
-// live/history split (see the #web-terminal-engine steering doc, "Design
-// rationale"): there is no separate
+// live/history split: there is no separate
 // "live zone" and "scrollback" here, only lines addressed by absolute index,
 // the last `height` of which happen to still be changing.
 //
@@ -160,8 +159,7 @@ function isWireRunArray(value: unknown): value is WireRun[] {
  * streaming session into one whole-layer invalidation PER LINE — on WebKit
  * (which re-rasterizes the resident tiles each time) that is the single largest
  * compositor cost this client can trigger, and on a memory-pressured iPhone it
- * is churn the page cannot afford (see the web-terminal-ui steering doc, "iOS
- * memory ceiling"). Batching keeps appends eviction-free between passes, so the
+ * is churn the page cannot afford. Batching keeps appends eviction-free between passes, so the
  * layer shifts once per batch instead of once per line. The retained count is
  * hard-bounded at `max(maxLines, live-window height)` after every apply — the
  * window is never evicted (a cap at or below the screen height keeps the full
@@ -1482,7 +1480,6 @@ export class LineStore {
 
   /**
    * applyLine is the guarded core. It enforces the apply-line guard set
-   * (see the #web-terminal-engine steering doc, "Design rationale"):
    * valid index, not stale, idempotent, and
    * cap-bounded. Returns nothing; effects are recorded in the dirty/evicted
    * sets for the next drain.

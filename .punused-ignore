@@ -1,6 +1,6 @@
 # punused findings adjudicated for this repo. One literal substring per line,
 # matched against punused's output line; full-line `#` comments carry the
-# reason. Invalid-by-construction classes: `.kiro/steering/tools.md`.
+# reason.
 #
 # web-terminal-engine is a LIBRARY that ships a `main` package
 # (internal/e2etestserver), so cplieger/ci's app-mode detection ("a main package

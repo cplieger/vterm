@@ -125,11 +125,13 @@ addressed by absolute line index. That depth is how far back a user can scroll
 and what a reconnect can replay.
 
 `WithScrollbackCapacity(n)` sets it; the default is
-`terminal.DefaultScrollbackCapacity` (100000 lines, roughly 34 MB per session at
-the ceiling). The buffer GROWS as history is produced rather than being allocated
-at the ceiling, so a large capacity costs a short-lived session nothing — which is
-also why there is no "unlimited" sentinel: a number larger than any session will
-reach IS unlimited. `0` disables retention entirely (the live screen still works;
+`terminal.DefaultScrollbackCapacity` (100000 lines). What that costs depends on
+what the session printed: measured on this ring, a full 100000 lines is about
+7 MB of short lines, 21 MB of ordinary 80-column lines, and 64 MB of dense
+200-column styled output. The buffer GROWS as history is produced rather than
+being allocated at the ceiling, so a large capacity costs a short-lived session
+nothing. That is also why there is no "unlimited" sentinel: a number larger than
+any session will reach IS unlimited. `0` disables retention entirely (the live screen still works;
 nothing survives scrolling off).
 
 Consumers that expose the depth to an operator should use the engine's own name

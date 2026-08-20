@@ -135,7 +135,8 @@ func (s *Screen) handleParam(b byte) {
 		// Digit
 		s.paramSeen = true
 		v := min(uint32(s.curParam)*10+uint32(b-'0'), maxCSIArgValue)
-		s.curParam = uint16(v) //nolint:gosec // v capped at 65535
+		// min caps v at maxCSIArgValue (65535), so the narrowing cannot overflow.
+		s.curParam = uint16(v)
 	}
 }
 

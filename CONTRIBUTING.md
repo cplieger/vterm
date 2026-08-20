@@ -35,7 +35,7 @@ Two rules keep the two halves honest, and both have been broken:
   Send through `sendControl`, which owns that decision, rather than reaching for
   `controlFrame` directly.
 
-The Go and TypeScript artifacts can be installed and upgraded independently. Package-version equality isn't the compatibility contract. Each release exports a current wire revision and a directional receiver floor:
+The Go and TypeScript artifacts can be installed and upgraded independently. Package-version equality is not the compatibility contract. Each release exports a current wire revision and a directional receiver floor:
 
 - Go: `terminal.WireProtocolVersion` and `terminal.MinSupportedClientWireVersion`
 - TypeScript: `WIRE_PROTOCOL_VERSION`, `MIN_SUPPORTED_SERVER_WIRE_VERSION`, `WIRE_INCOMPATIBLE_CLOSE_CODE`, and `WIRE_COMPATIBILITY`
@@ -86,7 +86,7 @@ Advance the frozen snapshot and pinned previous decoder only when intentionally 
 
 ### Intentional non-features
 
-The README's [Unsupported by Design](README.md#unsupported-by-design) table lists deliberate VT/DEC scope decisions. Input for those sequences is consumed but produces no effect. Don't file them as bugs or implement them without first proposing a scope change.
+The README's [Unsupported by Design](README.md#unsupported-by-design) table lists deliberate VT/DEC scope decisions. Input for those sequences is consumed but produces no effect. Do not file them as bugs or implement them without first proposing a scope change.
 
 ## Local development
 
@@ -127,12 +127,12 @@ CI (`.github/workflows/ci.yaml`) detects both surfaces and runs Go and TypeScrip
 
 - **Tests live beside the code** (`*_test.go`, `*.test.ts`). The suites rely on fuzz and adversarial tests. Extend the fuzz corpus for parser or codec changes instead of adding only a happy path.
 - **Public API is a contract.** Exported Go symbols and TypeScript package exports are documented in the READMEs. Keep them synchronized when adding or renaming public symbols.
-- **Keep dependencies small.** The Go side uses the standard library, `coder/websocket`, `creack/pty`, and `cplieger/runesafe`; the TypeScript package has zero runtime dependencies.
-- **The session surface refuses caching, and the policy is stated upstream of the mux.** A session id is the `/ws` attach + resume capability, and it travels as a path segment on every REST route past the collection, so a cache that stores such a response retains an entry keyed by a live credential. `withNoStore` (`terminal/mount.go`) sets `Cache-Control: no-store` before the handler runs — wrapping `RESTHandler`'s mux and, again, the mount's REST handler outside any create gate. Adding a REST route or a gate therefore inherits the policy with no change here. Two rules to preserve when touching it: set the header BEFORE calling through, since a header written after the response is committed is dropped on the wire, and leave an already-present value alone, which is the consumer's deliberate override (`writeJSON` is the one exception and always overwrites, because its bodies contain the id). Don't wrap the WebSocket handshake, and don't wrap the SSE stream — it states its own stricter `no-cache, no-store`.
+- **Keep dependencies small.** The Go side uses the standard library, `coder/websocket`, `creack/pty`, `golang.org/x/sys`, and `cplieger/runesafe/v2`; the TypeScript package has zero runtime dependencies.
+- **The session surface refuses caching, and the policy is stated upstream of the mux.** A session id is the `/ws` attach + resume capability, and it travels as a path segment on every REST route past the collection, so a cache that stores such a response retains an entry keyed by a live credential. `withNoStore` (`terminal/mount.go`) sets `Cache-Control: no-store` before the handler runs — wrapping `RESTHandler`'s mux and, again, the mount's REST handler outside any create gate. Adding a REST route or a gate therefore inherits the policy with no change here. Two rules to preserve when touching it: set the header BEFORE calling through, since a header written after the response is committed is dropped on the wire, and leave an already-present value alone, which is the consumer's deliberate override (`writeJSON` is the one exception and always overwrites, because its bodies contain the id). Do not wrap the WebSocket handshake, and do not wrap the SSE stream — it states its own stricter `no-cache, no-store`.
 
 ## Publishing model
 
-Releases are automated through `.github/workflows/release.yaml`. Repository releases publish the Go module as `github.com/cplieger/web-terminal-engine/v5` and the TypeScript package to npm and JSR as `@cplieger/web-terminal-engine`. Consumers install and upgrade those artifacts independently, with compatibility determined by wire metadata rather than package-version equality. Don't publish manually.
+Releases are automated through `.github/workflows/release.yaml`. Repository releases publish the Go module as `github.com/cplieger/web-terminal-engine/v5` and the TypeScript package to npm and JSR as `@cplieger/web-terminal-engine`. Consumers install and upgrade those artifacts independently, with compatibility determined by wire metadata rather than package-version equality. Do not publish manually.
 
 ## Commits and PRs
 

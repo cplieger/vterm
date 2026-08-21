@@ -204,3 +204,110 @@ describe("replayBoundary: across persistence", () => {
     }
   });
 });
+
+describe("replayBoundary: the floor must never wedge", () => {
+  // Three ordinary events deliver content far above the floor and leave nothing
+  // that can reach it from below. Before these cases existed the floor stayed put
+  // for the rest of the epoch, every attach asked for a maximal replay, and
+  // `snapshot()` carried the wedge across reloads: strictly worse than the defect
+  // the floor exists to fix. Measured at the time: a floor of 99 surviving
+  // `highest` reaching 297, and 5223.
+
+  it("heals across an ED3, which drops the floor's own neighbourhood", () => {
+    const s = new LineStore();
+    s.applyScroll(scrollMsg(0, 100));
+    s.applyScreen(screenMsg(100, 24));
+    expect(s.replayBoundary()).toBe(99);
+
+    // ED3 erases the saved lines: everything below the new base goes.
+    s.applyScreen({ ...screenMsg(124, 24), scrollbackCleared: true });
+    expect(s.oldestIndex()).toBe(124);
+    // The floor cannot stay at 99: nothing at or above it is held any more.
+    expect(s.replayBoundary()).toBeGreaterThanOrEqual(123);
+
+    // And it keeps tracking, rather than being merely nudged once.
+    for (let i = 0; i < 15; i++) {
+      const base = 124 + (i + 1) * 10;
+      s.applyScreen(screenMsg(base, 24));
+      s.applyScroll(scrollMsg(base - 10, 10));
+    }
+    expect(s.replayBoundary()).toBe(273);
+    expect(s.highestIndex()).toBe(297);
+  });
+
+  it("heals when a replay lands far above an orphaned floor", () => {
+    const s = new LineStore();
+    s.applyScroll(scrollMsg(0, 100));
+    s.applyScreen(screenMsg(100, 24));
+    expect(s.replayBoundary()).toBe(99);
+
+    // A clamped replay: the server's ring moved on, so nothing arrives adjacent to
+    // the floor and the rows it was protecting are evicted out from under it.
+    s.applyScreen({ ...screenMsg(5000, 24), scrollbackCleared: true });
+    s.applyScroll(scrollMsg(5000, 200));
+    s.applyScreen(screenMsg(5200, 24));
+    expect(s.replayBoundary()).toBeGreaterThan(1000);
+  });
+
+  it("still refuses to raise over rows it is genuinely protecting", () => {
+    // The heal must not become a blanket raise. Here the floor's rows are still
+    // held, so a chunk arriving above them changes nothing.
+    const s = new LineStore();
+    s.applyScroll(scrollMsg(0, 100));
+    s.applyScreen(screenMsg(100, 24));
+    s.applyScroll(scrollMsg(200, 10));
+    expect(s.oldestIndex()).toBe(0);
+    expect(s.replayBoundary()).toBe(99);
+  });
+});
+
+describe("replayBoundary: interaction with the replay-jump prediction", () => {
+  it("predicts no jump when the boundary sits below everything held", () => {
+    // The lower wire value made `sentHaveThrough < oldest` reachable in an
+    // ordinary shape: a post-ED3 store has `oldest === win.base` and claims
+    // `win.base - 1`. The prediction correctly declines, because the stranded band
+    // is `keys <= sentHaveThrough` and is therefore empty, so the reclassify and
+    // the budget pass it gates would both be no-ops. Asserted so the reasoning is
+    // pinned rather than inferred from a passing suite.
+    const s = new LineStore();
+    s.applyScroll(scrollMsg(0, 100));
+    s.applyScreen({ ...screenMsg(100, 24), scrollbackCleared: true });
+    expect(s.oldestIndex()).toBe(100);
+
+    const boundary = s.replayBoundary();
+    expect(boundary).toBeLessThan(s.oldestIndex());
+    const cacheBefore = s.browseCacheSize();
+
+    s.applyResumeAck({
+      epochChanged: false,
+      committed: 9000,
+      serverOldest: 8000, // a real eviction gap: the replay will start far above
+      paging: true,
+      sentHaveThrough: boundary,
+      sentReplayMax: null,
+      viewportAbs: 100,
+      following: false,
+    });
+    // Nothing was claimed that is still held, so nothing is reclassified.
+    expect(s.browseCacheSize()).toBe(cacheBefore);
+  });
+
+  it("still predicts a jump when the boundary does cover held rows", () => {
+    // The counterpart, so the case above is not read as "the prediction is dead".
+    const s = new LineStore();
+    s.applyScroll(scrollMsg(0, 100));
+    expect(s.replayBoundary()).toBe(99);
+
+    s.applyResumeAck({
+      epochChanged: false,
+      committed: 9000,
+      serverOldest: 8000,
+      paging: true,
+      sentHaveThrough: s.replayBoundary(),
+      sentReplayMax: null,
+      viewportAbs: 50,
+      following: false,
+    });
+    expect(s.browseCacheSize()).toBe(100);
+  });
+});

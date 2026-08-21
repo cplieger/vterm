@@ -364,6 +364,25 @@ describe("connection: the outbox and the acked-byte window", () => {
       expect(controlsOfType(sock, "resize").at(-1)).toEqual({ type: "resize", cols: 80, rows: 30 });
     });
 
+    it("announces a resize that changed only the column count", () => {
+      const sock = openSession();
+      computeSize.mockReturnValue({ cols: 80, rows: 24 });
+      sendResize();
+      const before = controlsOfType(sock, "resize").length;
+      computeSize.mockReturnValue({ cols: 100, rows: 24 });
+
+      sendResize();
+
+      // The mirror of the row-only case: each dimension has to be compared on
+      // its own, and a column-only change is the common one (a rotated phone).
+      expect(controlsOfType(sock, "resize").length).toBe(before + 1);
+      expect(controlsOfType(sock, "resize").at(-1)).toEqual({
+        type: "resize",
+        cols: 100,
+        rows: 24,
+      });
+    });
+
     it("does not ask the consumer to measure while there is no socket", () => {
       openSession();
       disconnect();

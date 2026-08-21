@@ -362,3 +362,217 @@ func TestOSC104ResetAllPalette(t *testing.T) {
 		t.Errorf("index 1 override survived OSC 104 reset-all: %q", got)
 	}
 }
+
+// TestOSC4PaletteIndexBounds walks OSC 4's addressable range end to end: the
+// first palette slot, the last special-color register, and the overlap point
+// where OSC 4's index 256 and OSC 5's index 0 name the SAME register. A
+// rejected endpoint is a slot an application can never set or read back.
+func TestOSC4PaletteIndexBounds(t *testing.T) {
+	t.Run("first_palette_slot", func(t *testing.T) {
+		s := New(2, 10)
+		if _, err := s.Write([]byte("\x1b]4;0;rgb:00/ff/00\x07\x1b]4;0;?\x07")); err != nil {
+			t.Fatalf("write: %v", err)
+		}
+		if got, want := string(s.TakeResponse()), "\x1b]4;0;rgb:0000/ffff/0000\x1b\\"; got != want {
+			t.Errorf("OSC 4 query of index 0 after set = %q, want %q", got, want)
+		}
+	})
+
+	t.Run("last_special_color_register", func(t *testing.T) {
+		s := New(2, 10)
+		if _, err := s.Write([]byte("\x1b]4;263;?\x07")); err != nil {
+			t.Fatalf("write: %v", err)
+		}
+		if got, want := string(s.TakeResponse()), "\x1b]4;263;rgb:0000/0000/0000\x1b\\"; got != want {
+			t.Errorf("OSC 4 query of index 263 = %q, want %q (unset register reports black)", got, want)
+		}
+	})
+
+	t.Run("index_256_is_special_color_0", func(t *testing.T) {
+		s := New(2, 10)
+		// Set through OSC 4's special-color range, read back through OSC 5.
+		if _, err := s.Write([]byte("\x1b]4;256;rgb:00/ff/00\x07\x1b]5;0;?\x07")); err != nil {
+			t.Fatalf("write: %v", err)
+		}
+		if got, want := string(s.TakeResponse()), "\x1b]5;0;rgb:0000/ffff/0000\x1b\\"; got != want {
+			t.Errorf("OSC 5 query of special color 0 after an OSC 4;256 set = %q, want %q", got, want)
+		}
+	})
+
+	t.Run("trailing_index_without_a_spec_is_ignored", func(t *testing.T) {
+		s := New(2, 10)
+		// Untrusted output can end a pair list mid-pair; the dangling index has
+		// no spec to read.
+		if _, err := s.Write([]byte("\x1b]4;1;rgb:00/ff/00;2\x07\x1b]4;1;?\x07")); err != nil {
+			t.Fatalf("write: %v", err)
+		}
+		if got, want := string(s.TakeResponse()), "\x1b]4;1;rgb:0000/ffff/0000\x1b\\"; got != want {
+			t.Errorf("OSC 4 query after a pair list with a dangling index = %q, want %q", got, want)
+		}
+	})
+}
+
+// TestOSC5SpecialColorIndexBounds is the same walk for OSC 5's own numbering:
+// register 7 is the last one, 8 does not exist, and register k must be the same
+// storage OSC 4 reaches at 256+k.
+func TestOSC5SpecialColorIndexBounds(t *testing.T) {
+	t.Run("last_register", func(t *testing.T) {
+		s := New(2, 10)
+		if _, err := s.Write([]byte("\x1b]5;7;rgb:00/00/ff\x07\x1b]5;7;?\x07")); err != nil {
+			t.Fatalf("write: %v", err)
+		}
+		if got, want := string(s.TakeResponse()), "\x1b]5;7;rgb:0000/0000/ffff\x1b\\"; got != want {
+			t.Errorf("OSC 5 query of register 7 after set = %q, want %q", got, want)
+		}
+	})
+
+	t.Run("past_the_last_register_is_ignored", func(t *testing.T) {
+		s := New(2, 10)
+		if _, err := s.Write([]byte("\x1b]5;8;?\x07")); err != nil {
+			t.Fatalf("write: %v", err)
+		}
+		if got := string(s.TakeResponse()); got != "" {
+			t.Errorf("OSC 5 query of register 8 = %q, want no reply (there are 8 registers, 0..7)", got)
+		}
+	})
+
+	t.Run("register_k_is_osc4_index_256_plus_k", func(t *testing.T) {
+		s := New(2, 10)
+		if _, err := s.Write([]byte("\x1b]5;1;rgb:ff/00/00\x07\x1b]4;257;?\x07")); err != nil {
+			t.Fatalf("write: %v", err)
+		}
+		if got, want := string(s.TakeResponse()), "\x1b]4;257;rgb:ffff/0000/0000\x1b\\"; got != want {
+			t.Errorf("OSC 4 query of index 257 after an OSC 5;1 set = %q, want %q", got, want)
+		}
+	})
+
+	t.Run("trailing_index_without_a_spec_is_ignored", func(t *testing.T) {
+		s := New(2, 10)
+		if _, err := s.Write([]byte("\x1b]5;0;rgb:00/ff/00;1\x07\x1b]5;0;?\x07")); err != nil {
+			t.Fatalf("write: %v", err)
+		}
+		if got, want := string(s.TakeResponse()), "\x1b]5;0;rgb:0000/ffff/0000\x1b\\"; got != want {
+			t.Errorf("OSC 5 query after a pair list with a dangling index = %q, want %q", got, want)
+		}
+	})
+}
+
+// TestOSCResetsAddressTheRequestedIndex: OSC 104 and OSC 105 must clear exactly
+// the index named, at both ends of each range. A reset that misses leaves an
+// application's override in place for the rest of the session.
+func TestOSCResetsAddressTheRequestedIndex(t *testing.T) {
+	cases := []struct {
+		name  string
+		write string
+		query string
+		want  string
+	}{
+		{
+			name:  "palette_index_0",
+			write: "\x1b]4;0;rgb:00/ff/00\x07\x1b]104;0\x07",
+			query: "\x1b]4;0;?\x07",
+			want:  "\x1b]4;0;rgb:0000/0000/0000\x1b\\", // the palette's own slot 0
+		},
+		{
+			name:  "palette_index_255",
+			write: "\x1b]4;255;rgb:00/ff/00\x07\x1b]104;255\x07",
+			query: "\x1b]4;255;?\x07",
+			want:  "\x1b]4;255;rgb:eeee/eeee/eeee\x1b\\", // the grayscale ramp's top
+		},
+		{
+			name:  "special_color_1",
+			write: "\x1b]5;1;rgb:ff/00/00\x07\x1b]105;1\x07",
+			query: "\x1b]5;1;?\x07",
+			want:  "\x1b]5;1;rgb:0000/0000/0000\x1b\\",
+		},
+		{
+			name:  "special_color_7",
+			write: "\x1b]5;7;rgb:ff/00/00\x07\x1b]105;7\x07",
+			query: "\x1b]5;7;?\x07",
+			want:  "\x1b]5;7;rgb:0000/0000/0000\x1b\\",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			s := New(2, 10)
+			if _, err := s.Write([]byte(tc.write)); err != nil {
+				t.Fatalf("write: %v", err)
+			}
+			s.TakeResponse()
+			if _, err := s.Write([]byte(tc.query)); err != nil {
+				t.Fatalf("query: %v", err)
+			}
+			if got := string(s.TakeResponse()); got != tc.want {
+				t.Errorf("query after reset = %q, want %q (the override must be gone)", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestParseXColorAcceptsEveryDigitCount: both X11 color forms accept 1 to 4 hex
+// digits per channel, and the two forms differ in how they widen a short one —
+// "#" left-justifies into a 16-bit field, "rgb:" scales proportionally. The
+// 4-digit forms are what a terminal itself emits, so rejecting them would break
+// feeding one terminal's reply back into another.
+func TestParseXColorAcceptsEveryDigitCount(t *testing.T) {
+	cases := []struct {
+		name string
+		spec string
+		want string
+	}{
+		{name: "hash_one_digit_per_channel", spec: "#f00", want: "\x1b]4;1;rgb:f0f0/0000/0000\x1b\\"},
+		{name: "hash_two_digits_per_channel", spec: "#ff0000", want: "\x1b]4;1;rgb:ffff/0000/0000\x1b\\"},
+		{name: "hash_four_digits_per_channel", spec: "#ffff00000000", want: "\x1b]4;1;rgb:ffff/0000/0000\x1b\\"},
+		{name: "rgb_one_digit_per_channel", spec: "rgb:f/0/0", want: "\x1b]4;1;rgb:ffff/0000/0000\x1b\\"},
+		{name: "rgb_four_digits_per_channel", spec: "rgb:ffff/0000/0000", want: "\x1b]4;1;rgb:ffff/0000/0000\x1b\\"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			s := New(2, 10)
+			if _, err := s.Write([]byte("\x1b]4;1;" + tc.spec + "\x07\x1b]4;1;?\x07")); err != nil {
+				t.Fatalf("write: %v", err)
+			}
+			if got := string(s.TakeResponse()); got != tc.want {
+				t.Errorf("OSC 4 query after setting index 1 to %q = %q, want %q", tc.spec, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestOSCDynamicColorAdvancesOneSlotPerSpec: a dynamic-color OSC carrying
+// several specs walks UP the slot numbers from the one it names (xterm: OSC 10
+// with two specs addresses 10 then 11), and stops at slot 19, the last dynamic
+// color defined.
+func TestOSCDynamicColorAdvancesOneSlotPerSpec(t *testing.T) {
+	t.Run("second_spec_addresses_the_next_slot", func(t *testing.T) {
+		s := New(2, 10)
+		// Slot 10 is the default foreground, 11 the default background.
+		if _, err := s.Write([]byte("\x1b]10;#ff0000;#00ff00\x07")); err != nil {
+			t.Fatalf("write: %v", err)
+		}
+		s.TakeResponse()
+		if _, err := s.Write([]byte("\x1b]10;?;?\x07")); err != nil {
+			t.Fatalf("query: %v", err)
+		}
+		want := "\x1b]10;rgb:ffff/0000/0000\x1b\\" + "\x1b]11;rgb:0000/ffff/0000\x1b\\"
+		if got := string(s.TakeResponse()); got != want {
+			t.Errorf("OSC 10 two-spec query = %q, want %q", got, want)
+		}
+	})
+
+	t.Run("the_walk_stops_after_the_last_slot", func(t *testing.T) {
+		s := New(2, 10)
+		if _, err := s.Write([]byte("\x1b]19;#0000ff\x07")); err != nil {
+			t.Fatalf("write: %v", err)
+		}
+		s.TakeResponse()
+		// Two specs from slot 19: the first is slot 19, the second would be 20.
+		if _, err := s.Write([]byte("\x1b]19;?;?\x07")); err != nil {
+			t.Fatalf("query: %v", err)
+		}
+		want := "\x1b]19;rgb:0000/0000/ffff\x1b\\"
+		if got := string(s.TakeResponse()); got != want {
+			t.Errorf("OSC 19 two-spec query = %q, want only the slot-19 reply %q", got, want)
+		}
+	})
+}

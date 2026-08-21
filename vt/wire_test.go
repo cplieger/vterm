@@ -172,6 +172,7 @@ func TestRenderRowWire256Color(t *testing.T) {
 		want int32
 	}{
 		{"\x1b[38;5;9mX\x1b[0m", 9, 0xf2201f},     // <16: delegates to basic-16 palette
+		{"\x1b[38;5;16mX\x1b[0m", 16, 0x000000},   // cube: first entry, black (not the palette's slot 16)
 		{"\x1b[38;5;21mX\x1b[0m", 21, 0x0000ff},   // cube: pure blue
 		{"\x1b[38;5;46mX\x1b[0m", 46, 0x00ff00},   // cube: pure green
 		{"\x1b[38;5;196mX\x1b[0m", 196, 0xff0000}, // cube: pure red

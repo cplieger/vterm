@@ -769,3 +769,139 @@ func TestScrollbackDrainAllocationCostIsBoundedPerScrolledLine(t *testing.T) {
 	}
 	t.Logf("scrollback drain costs %v allocations per line at %d columns and %v at %d", narrow, widths[0], wide, widths[1])
 }
+
+// TestMarginsDefaultToTheScreenEdges: with no DECSLRM ever sent, enabling
+// DECLRMM finds the left/right margins already at the screen's own columns, and
+// a resize moves them to the new width. A margin past the last column would put
+// the autowrap edge outside the buffer.
+func TestMarginsDefaultToTheScreenEdges(t *testing.T) {
+	s := New(4, 20)
+	if _, err := s.Write([]byte("\x1b[?69h\x1bP$qs\x1b\\")); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	if got, want := string(s.TakeResponse()), "\x1bP1$r1;20s\x1b\\"; got != want {
+		t.Errorf("DECRQSS DECSLRM on a fresh 20-column screen = %q, want %q", got, want)
+	}
+	s.Resize(4, 30)
+	if _, err := s.Write([]byte("\x1bP$qs\x1b\\")); err != nil {
+		t.Fatalf("write after resize: %v", err)
+	}
+	if got, want := string(s.TakeResponse()), "\x1bP1$r1;30s\x1b\\"; got != want {
+		t.Errorf("DECRQSS DECSLRM after Resize(4, 30) = %q, want %q", got, want)
+	}
+}
+
+// TestAutowrapEdgeInsideAndOutsideAMarginBox: text typed inside a DECSLRM box
+// wraps at the RIGHT MARGIN and lands on the left margin, while text typed
+// outside the box wraps at the screen's last column and lands on column 0. The
+// cursor sitting exactly ON an edge is the case that decides which of the two
+// rules applies, so each case fills its edge column and then writes one more
+// character.
+func TestAutowrapEdgeInsideAndOutsideAMarginBox(t *testing.T) {
+	// DECSLRM 5;10 -> 0-indexed margins 4..9 on a 20-column screen.
+	const box = "\x1b[?69h\x1b[5;10s"
+	cases := []struct {
+		name          string
+		cup           string
+		wantFirstRow  string
+		wantSecondRow string
+		wantCursorCol int
+	}{
+		{
+			name:          "inside_the_box_wraps_at_the_right_margin",
+			cup:           "\x1b[1;10H", // the right margin, 0-indexed 9
+			wantFirstRow:  "         a",
+			wantSecondRow: "    b",
+			wantCursorCol: 5,
+		},
+		{
+			name:          "outside_the_box_wraps_at_the_screen_edge",
+			cup:           "\x1b[1;20H", // the last column, right of the box
+			wantFirstRow:  "                   a",
+			wantSecondRow: "b",
+			wantCursorCol: 1,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			s := New(3, 20)
+			if _, err := s.Write([]byte(box + tc.cup + "ab")); err != nil {
+				t.Fatalf("write: %v", err)
+			}
+			if got := s.RowString(0); got != tc.wantFirstRow {
+				t.Errorf("RowString(0) = %q, want %q", got, tc.wantFirstRow)
+			}
+			if got := s.RowString(1); got != tc.wantSecondRow {
+				t.Errorf("RowString(1) = %q, want %q", got, tc.wantSecondRow)
+			}
+			if _, got := s.CursorPos(); got != tc.wantCursorCol {
+				t.Errorf("CursorPos() column = %d, want %d", got, tc.wantCursorCol)
+			}
+		})
+	}
+}
+
+// TestAltScreenBufferLifetimePerMode pins what each alt-screen mode promises
+// about the buffer it switches to. Mode 47 is the legacy shape: it shares the
+// cursor with the main screen and its buffer survives an exit, so re-entering
+// finds the previous alt session's content. Mode 1049 is the modern one every
+// full-screen TUI uses: it always starts cleared with the cursor homed, and it
+// discards the buffer on exit, so a second enter cannot leak the first session's
+// screen.
+func TestAltScreenBufferLifetimePerMode(t *testing.T) {
+	t.Run("mode_47_keeps_its_buffer_and_the_cursor", func(t *testing.T) {
+		s := New(3, 10)
+		if _, err := s.Write([]byte("main")); err != nil {
+			t.Fatalf("write main: %v", err)
+		}
+		if _, err := s.Write([]byte("\x1b[?47h")); err != nil {
+			t.Fatalf("enter alt: %v", err)
+		}
+		if _, got := s.CursorPos(); got != 4 {
+			t.Errorf("CursorPos() column after CSI ?47h = %d, want 4 (mode 47 shares the cursor)", got)
+		}
+		if _, err := s.Write([]byte("\x1b[Halt\x1b[?47l")); err != nil {
+			t.Fatalf("write alt and exit: %v", err)
+		}
+		if got := s.RowString(0); got != "main" {
+			t.Errorf("RowString(0) after exit = %q, want %q", got, "main")
+		}
+		if _, err := s.Write([]byte("\x1b[?47h")); err != nil {
+			t.Fatalf("re-enter alt: %v", err)
+		}
+		if got := s.RowString(0); got != "alt" {
+			t.Errorf("RowString(0) on mode 47 re-enter = %q, want %q (the buffer survives an exit)", got, "alt")
+		}
+	})
+
+	t.Run("mode_1049_starts_cleared_and_homed", func(t *testing.T) {
+		s := New(3, 10)
+		if _, err := s.Write([]byte("main")); err != nil {
+			t.Fatalf("write main: %v", err)
+		}
+		if _, err := s.Write([]byte("\x1b[?1049h")); err != nil {
+			t.Fatalf("enter alt: %v", err)
+		}
+		if row, col := s.CursorPos(); row != 0 || col != 0 {
+			t.Errorf("CursorPos() after CSI ?1049h = (%d, %d), want (0, 0)", row, col)
+		}
+		if _, err := s.Write([]byte("alt\x1b[?1049l\x1b[?1049h")); err != nil {
+			t.Fatalf("write alt, exit and re-enter: %v", err)
+		}
+		if got := s.RowString(0); got != "" {
+			t.Errorf("RowString(0) on mode 1049 re-enter = %q, want empty (1049 always starts cleared)", got)
+		}
+	})
+
+	t.Run("a_screen_with_no_rows_reuses_no_stashed_buffer", func(t *testing.T) {
+		// A zero-dimension screen has no row 0 to compare widths against, so the
+		// stashed buffer can never match and must not be inspected.
+		s := New(0, 10)
+		if _, err := s.Write([]byte("\x1b[?47h\x1b[?47l\x1b[?47h")); err != nil {
+			t.Fatalf("alt enter/exit/enter: %v", err)
+		}
+		if !s.InAltScreen {
+			t.Errorf("InAltScreen = false after CSI ?47h, want true")
+		}
+	})
+}

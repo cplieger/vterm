@@ -394,6 +394,7 @@ func TestUTF8ValidationEmitsReplacement(t *testing.T) {
 		{"overlong 3-byte solidus", []byte{0xE0, 0x80, 0xAF}},
 		{"overlong 4-byte NUL", []byte{0xF0, 0x80, 0x80, 0x80}},
 		{"surrogate U+D800", []byte{0xED, 0xA0, 0x80}},
+		{"surrogate U+DFFF", []byte{0xED, 0xBF, 0xBF}},
 		{"U+FFFF wire-sentinel collision", []byte{0xEF, 0xBF, 0xBF}},
 		{"above U+10FFFF", []byte{0xF7, 0xBF, 0xBF, 0xBF}},
 	}
@@ -405,5 +406,99 @@ func TestUTF8ValidationEmitsReplacement(t *testing.T) {
 				t.Errorf("%s: Cells[0][0].Ch = %U, want U+FFFD", tc.name, got)
 			}
 		})
+	}
+}
+
+// TestUTF8AcceptsShortestFormBoundaries is the other side of the overlong
+// rejection above: the SMALLEST code point each sequence length may legally
+// encode is well-formed, as is the highest code point Unicode defines. Rejecting
+// these would replace legitimate text (U+0800 opens the CJK-punctuation range,
+// U+10000 the supplementary planes) with U+FFFD.
+//
+// U+0080 is well-formed too, but it is a C1 CONTROL, so it is consumed rather
+// than printed: it takes no column and leaves the cell blank. That is the
+// distinction the case pins — a control, not ill-formed input.
+func TestUTF8AcceptsShortestFormBoundaries(t *testing.T) {
+	cases := []struct {
+		name     string
+		in       []byte
+		wantCell rune
+		wantCol  int
+	}{
+		{name: "shortest 2-byte form U+0080", in: []byte{0xC2, 0x80}, wantCell: ' ', wantCol: 0},
+		{name: "shortest 3-byte form U+0800", in: []byte{0xE0, 0xA0, 0x80}, wantCell: 0x0800, wantCol: 1},
+		{name: "shortest 4-byte form U+10000", in: []byte{0xF0, 0x90, 0x80, 0x80}, wantCell: 0x10000, wantCol: 1},
+		{name: "highest code point U+10FFFF", in: []byte{0xF4, 0x8F, 0xBF, 0xBF}, wantCell: 0x10FFFF, wantCol: 1},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			s := New(1, 5)
+			if _, err := s.Write(tc.in); err != nil {
+				t.Fatalf("write: %v", err)
+			}
+			if got := s.Cells[0][0].Ch; got != tc.wantCell {
+				t.Errorf("Write(% x): Cells[0][0].Ch = %U, want %U", tc.in, got, tc.wantCell)
+			}
+			if _, got := s.CursorPos(); got != tc.wantCol {
+				t.Errorf("Write(% x): CursorPos() column = %d, want %d", tc.in, got, tc.wantCol)
+			}
+		})
+	}
+}
+
+// TestCarriageReturnHonorsLeftMargin: inside a DECSLRM box, CR returns to the
+// LEFT MARGIN rather than to column 0 — including when the cursor already sits
+// exactly on the margin, which must not send it to the screen edge. A cursor
+// left of the margin is outside the box, so its CR goes to column 0 (xterm's
+// left/right-margin behavior).
+func TestCarriageReturnHonorsLeftMargin(t *testing.T) {
+	const leftMarginCol = 5 // DECSLRM 6;15 -> 0-indexed left margin 5
+	cases := []struct {
+		name string
+		cup  string
+		want int
+	}{
+		{name: "right_of_the_margin", cup: "\x1b[1;11H", want: leftMarginCol},
+		{name: "on_the_margin", cup: "\x1b[1;6H", want: leftMarginCol},
+		{name: "left_of_the_margin", cup: "\x1b[1;3H", want: 0},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			s := New(3, 20)
+			if _, err := s.Write([]byte("\x1b[?69h\x1b[6;15s" + tc.cup + "\r")); err != nil {
+				t.Fatalf("write: %v", err)
+			}
+			if _, got := s.CursorPos(); got != tc.want {
+				t.Errorf("CursorPos() column after CUP %q + CR = %d, want %d", tc.cup, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestDECALNResetsRegionAndMargins: the alignment test (ESC # 8) restores the
+// scroll region and the left/right margins to the screen's own bounds, so a
+// DECSLRM box set before it is gone afterwards. The margins are read back
+// through DECRQSS with DECLRMM re-enabled, because that report only reflects the
+// stored margins while the mode is on.
+func TestDECALNResetsRegionAndMargins(t *testing.T) {
+	s := New(6, 20)
+	// A scroll region and a margin box, then DECALN.
+	if _, err := s.Write([]byte("\x1b[?69h\x1b[2;5r\x1b[3;10s\x1b#8")); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	s.TakeResponse()
+	if _, err := s.Write([]byte("\x1bP$qr\x1b\\")); err != nil {
+		t.Fatalf("write scroll-region query: %v", err)
+	}
+	if got, want := string(s.TakeResponse()), "\x1bP1$r1;6r\x1b\\"; got != want {
+		t.Errorf("DECRQSS DECSTBM after DECALN = %q, want %q (full screen)", got, want)
+	}
+	// DECALN also turns DECLRMM off; re-enable it and the margins report as the
+	// screen's own edges.
+	if _, err := s.Write([]byte("\x1b[?69h\x1bP$qs\x1b\\")); err != nil {
+		t.Fatalf("write margin query: %v", err)
+	}
+	if got, want := string(s.TakeResponse()), "\x1bP1$r1;20s\x1b\\"; got != want {
+		t.Errorf("DECRQSS DECSLRM after DECALN = %q, want %q (full width)", got, want)
 	}
 }

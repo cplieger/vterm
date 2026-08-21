@@ -230,6 +230,26 @@ describe("the caret covers the cell the cursor is on", () => {
     // Row 2 of the alt grid, at a 17px line: 2 * 17.
     expect(caret().style.top).toBe("34px");
   });
+
+  it("reports the row it paints on to the consumer, not the top of the terminal", () => {
+    // `getCursorPx` is the only channel to the consumer's IME view and hidden
+    // textarea, so it must resolve the cursor's row the same way the caret
+    // does. It did not: it answered the content origin for every row the
+    // element map does not hold, which is EVERY row of an alt-screen session
+    // (only the main-screen builder registers rows, and entering alt clears
+    // them). The caret painted on row 2 while the consumer was told row 0 for
+    // as long as the TUI was up.
+    paint({ rows: [row("main")], cursor: [0, 0], base: 5 });
+    paint({
+      rows: [row("alt0"), row("alt1"), row("alt2")],
+      cursor: [2, 0],
+      base: 5,
+      altActive: true,
+    });
+    expect(render.getCursorPx().top).toBe(34);
+    // The same 34px the caret is painted at, one line above.
+    expect(caret().style.top).toBe("34px");
+  });
 });
 
 describe("the terminal's padding offsets the overlays", () => {

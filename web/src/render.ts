@@ -2309,19 +2309,48 @@ function rowTopInTermWrap(el: HTMLElement): number {
   return top;
 }
 
+// rowTopFor resolves the top of the row holding absolute line `abs`, in
+// termWrap's coordinate space. Three positioners need that answer — the caret
+// overlay, the predicted-cursor overlay, and `getCursorPx` for the consumer's
+// IME view and hidden textarea — and they must not disagree, because they
+// describe the same row. They did: `getCursorPx` fell back to a bare `padT`
+// while the two that PAINT fell back to grid arithmetic, and `rowEls` is
+// populated only by the main-screen row builder (`renderAlt` clears it), so for
+// an ENTIRE alt-screen session the caret painted on the right row while the
+// consumer was told the top of the terminal every frame.
+//
+// Three cases, in order:
+//   - the map holds a built row: its own DOM offset, walked into termWrap space.
+//   - no row for a real index (an alt-screen grid row, or a main row this flush
+//     has not built yet): uniform-grid arithmetic from the window base.
+//   - `abs < 0`: not a row at all. That is the state
+//     `collapseContentSpaceOverlays` leaves behind, where the cursor genuinely
+//     has no row and the content origin IS the accurate answer; the arithmetic
+//     would put the overlay a cell above it.
+function rowTopFor(abs: number): number {
+  const el = rowEls.get(abs);
+  if (el) {
+    return rowTopInTermWrap(el);
+  }
+  const { padT } = termPadding();
+  if (abs < 0) {
+    return padT;
+  }
+  return padT + (abs - store.getWindow().base) * cellHeight;
+}
+
 /**
  * Returns the cursor's pixel position relative to the scroll container
  * (termWrap) — the coordinate space of the absolutely-positioned overlays
  * (predicted-cursor, IME composition view) — plus the current cell height.
- * Uses the cursor row's actual DOM offset.
+ * Uses the cursor row's actual DOM offset, or the grid position of a row that
+ * has none (see rowTopFor).
  */
 export function getCursorPx(): { left: number; top: number; cellH: number } {
-  const { padL, padT } = termPadding();
-  const el = rowEls.get(cursorAbs);
-  const top = el ? rowTopInTermWrap(el) : padT;
+  const { padL } = termPadding();
   return {
     left: Math.round(padL + cursorCol * cellWidth),
-    top: Math.round(top),
+    top: Math.round(rowTopFor(cursorAbs)),
     cellH: cellHeight,
   };
 }
@@ -2381,15 +2410,13 @@ function positionCursorOverlay(runs: readonly WireRun[] | undefined): void {
     el.className = "term-cursor-overlay";
     return;
   }
-  const win = store.getWindow();
-  const { padL, padT } = termPadding();
-  const rowEl = rowEls.get(cursorAbs);
-  // Alt-screen rows are not registered in rowEls; their grid is uniform, so
-  // the row offset derives from the window-relative row index. Main-screen
-  // rows exist by the time this runs (the flush force-builds the cursor row).
-  // rowTopInTermWrap (not bare offsetTop) so the top is in termWrap space
-  // regardless of which ancestor is the rows' offsetParent.
-  const top = rowEl ? rowTopInTermWrap(rowEl) : padT + (cursorAbs - win.base) * cellHeight;
+  const { padL } = termPadding();
+  // Alt-screen rows are not registered in rowEls; their grid is uniform, so the
+  // row offset derives from the window-relative row index. Main-screen rows
+  // exist by the time this runs (the flush force-builds the cursor row).
+  // rowTopFor is shared with getCursorPx so the consumer's IME view cannot be
+  // told a different row than the one the caret paints on.
+  const top = rowTopFor(cursorAbs);
   const ch = glyphAt(runs, cursorCol);
   // A wide glyph (CJK, emoji) owns two cells; the overlay covers both, like
   // the old inline cursor span did via its continuation-spacer adjustment.
@@ -2433,9 +2460,14 @@ export function setPredictedCursor(row: number, col: number, active: boolean): v
     el.classList.remove("visible");
     return;
   }
-  const { padL, padT } = termPadding();
-  const rowEl = rowEls.get(predAbs);
-  const top = rowEl ? rowTopInTermWrap(rowEl) : padT + row * cellHeight;
+  const { padL } = termPadding();
+  // Same resolver as the caret and getCursorPx. A row the flush has not built
+  // yet answers from grid arithmetic, which for `predAbs >= 0` is exactly the
+  // `padT + row * cellHeight` this used to compute inline. A prediction BELOW
+  // the first line of the session (`predAbs < 0`) now lands on the content
+  // origin instead of a negative top: that row does not exist, and an overlay
+  // at a negative offset paints over the terminal's top padding.
+  const top = rowTopFor(predAbs);
   el.style.left = `${Math.round(padL + col * cellWidth)}px`;
   el.style.top = `${Math.round(top)}px`;
   el.style.width = `${cellWidth}px`;

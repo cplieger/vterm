@@ -9,7 +9,13 @@
   "typescriptChecker": {
     "prioritizePerformanceOverAccuracy": false
   },
-  "mutate": ["src/**/*.ts", "!src/**/*.test.ts", "!src/**/*.fuzz.test.ts", "!src/**/*-setup.ts"],
+  "mutate": [
+    "src/**/*.ts",
+    "!src/**/*.test.ts",
+    "!src/**/*.fuzz.test.ts",
+    "!src/**/*-setup.ts",
+    "!src/test-helpers/**"
+  ],
   "mutator": {
     "excludedMutations": ["StringLiteral"]
   },

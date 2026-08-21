@@ -42,6 +42,7 @@ import * as modes from "./modes.js";
 // anchor — the shape that leaves the rows under the reader blank while the far
 // end of the gap fills.
 import { PAGE_SIZE } from "./store.js";
+import * as render from "./render.js";
 import type { ControlMessage, ScrollMessage, ServerMessage } from "./types.js";
 import { INITIAL_DELAY_MS, nextBackoffDelay } from "./reconnect.js";
 
@@ -528,8 +529,47 @@ export interface Callbacks {
 
 let cb: Callbacks | null = null;
 
+/**
+ * The members this module answers for ITSELF, from the renderer.
+ *
+ * Every one of them is a fact about local state, not a decision: what this client
+ * already holds, how much replay it wants, where to route a resume ack or a history
+ * reply. The renderer is the layer that knows, because several carry a viewport
+ * reading only it can take, and both modules belong to this library. A consumer
+ * that supplied them was choosing between engine accessors on the engine's behalf,
+ * which is how `getHaveThrough` came to be wired to the highest index HELD rather
+ * than the highest the server had confirmed: the resume then claimed rows the
+ * application had merely drawn, and a frozen copy of its input box appeared in
+ * scrollback on almost every reattach.
+ *
+ * A consumer may still override any of them, and `getReplayMax` is the one where
+ * that is expected: how much history a client wants resident is its policy, not the
+ * engine's fact. The rest exist as overrides only because removing them from
+ * `Callbacks` would break a published surface; treat them as deprecated and prefer
+ * supplying nothing.
+ *
+ * Read lazily, per resume, rather than captured at init: the renderer's answers are
+ * functions of whichever store is currently bound, which a tab switch changes.
+ */
+function engineDefaults(): Partial<Callbacks> {
+  return {
+    getHaveThrough: render.getReplayBoundary,
+    getReplayMax: render.replayMaxForResume,
+    onResumeTransition: render.applyResumeTransition,
+    onResumeBounds: render.noteResumeBounds,
+    onHistoryReply: render.handleHistoryReply,
+    noteSolicited: render.noteSolicited,
+    clearSolicited: render.clearSolicited,
+    onHistoryRetry: render.maybeFetchHistory,
+  };
+}
+
 export function init(callbacks: Callbacks): void {
-  cb = callbacks;
+  // Consumer last: an explicit member wins, an absent one gets the engine's own.
+  // The alternative, leaving them absent, is not neutral — the resume send reads
+  // `cb?.getHaveThrough?.() ?? -1`, so silence asks for a full bounded replay on
+  // every attach, which is the worst answer available rather than the safe one.
+  cb = { ...engineDefaults(), ...callbacks };
   if (callbacks.wsPath !== undefined) {
     wsPath = callbacks.wsPath;
   }

@@ -1445,7 +1445,6 @@ export class LineStore {
     this.everEvictedThrough = -1;
     this.erasedThrough = -1;
     this.unconfirmedFrom = Number.POSITIVE_INFINITY;
-    this.paging = false;
     this.serverOldest = -1;
     this.win = emptyWindow();
     this.alt = false;

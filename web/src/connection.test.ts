@@ -29,6 +29,8 @@ import {
   setSession,
 } from "./connection.js";
 import * as modes from "./modes.js";
+import * as render from "./render.js";
+import { LineStore } from "./store.js";
 import { mapKeyboardEvent } from "./keyboard.js";
 import type { ServerMessage } from "./types.js";
 
@@ -313,7 +315,11 @@ describe("connection: wake reconnect resumes from the held index (bug 2)", () =>
     expect(resume!.haveThrough).toBe(42); // server replays only lines after 42
   });
 
-  it("falls back to haveThrough = -1 (full retained replay) when no getHaveThrough is wired", () => {
+  it("sends -1 with nothing wired AND nothing held, because that is the boundary", () => {
+    // Reads as the old "no callback means -1" case and is no longer that. A
+    // consumer supplying no getHaveThrough now gets the engine's own answer, and
+    // for an empty store that answer IS -1: nothing is held, so nothing can be
+    // claimed. The next test is the one that distinguishes the two.
     init(baseCallbacks());
     connect();
     const sock = allMockWebSockets[0]!;
@@ -322,6 +328,42 @@ describe("connection: wake reconnect resumes from the held index (bug 2)", () =>
     const resume = controlFramesSent(sock).find((m) => m.type === "resume");
     expect(resume).toBeDefined();
     expect(resume!.haveThrough).toBe(-1);
+  });
+
+  it("claims the engine's own boundary when the consumer wires nothing", () => {
+    // The point of the engine defaults. Before them, a consumer that supplied no
+    // getHaveThrough asked for a full bounded replay on every attach, and one that
+    // supplied the wrong accessor claimed rows the application had merely drawn.
+    // Neither is now reachable by omission: the transport answers from the store.
+    //
+    // Fails if engineDefaults() loses its getHaveThrough member, which is the
+    // regression this guards.
+    // render.bind rebuilds DOM rows, so the renderer needs its two elements. Two
+    // divs is the whole requirement; nothing here depends on layout or geometry.
+    const output = document.createElement("div");
+    const termWrap = document.createElement("div");
+    termWrap.appendChild(output);
+    document.body.appendChild(termWrap);
+    render.init({ output, termWrap });
+
+    const store = new LineStore();
+    store.applyScroll({
+      type: "scroll",
+      firstIndex: 0,
+      lines: Array.from({ length: 100 }, (_, i) => [
+        { t: `h${String(i)}`, f: -1, b: -1, a: 0, uc: -1 },
+      ]),
+    });
+    render.bind(store);
+
+    init(baseCallbacks());
+    connect();
+    const sock = allMockWebSockets[0]!;
+    sock.fireOpen();
+
+    const resume = controlFramesSent(sock).find((m) => m.type === "resume");
+    expect(resume).toBeDefined();
+    expect(resume!.haveThrough).toBe(99);
   });
 
   it("announces the initial size BEFORE the resume so the snapshot comes back at it", () => {

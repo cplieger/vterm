@@ -1,7 +1,8 @@
 {
   "testRunner": "vitest",
   "vitest": {
-    "configFile": "vitest.stryker.config.ts"
+    "configFile": "vitest.stryker.config.ts",
+    "related": false
   },
   "checkers": ["typescript"],
   "tsconfigFile": "tsconfig.json",

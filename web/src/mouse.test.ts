@@ -23,13 +23,20 @@
 //   offset by +32 (that was an X10-only printable-byte trick); a distinct
 //   final char (m) disambiguates which button was released.
 //
-// DEVIATIONS found (see it.skip blocks at the bottom and the report):
-//   D1 [bug]     any-event (1003) motion with no button -> spec 35, got 32
-//   D2 [bug]     aux button (DOM button >=3) -> spec 3 (none), got 0 (left)
+// DEVIATIONS found (see it.skip blocks at the bottom and the report). The
+// [bug] ones have since been FIXED in mouse.ts; their cases are promoted to
+// live tests above and state the spec value they now assert:
+//   D1 [bug→fixed] any-event (1003) motion with no button -> spec 35, was 32
+//   D2 [bug→fixed] aux button (DOM button >=3) -> spec 128/129 (the +128
+//                extended-button bit for X11 8/9), was 0 (left)
 //   D3 [choice]  DOM metaKey (Cmd/Win) -> spec Meta bit +8, got +0
 //                (encoder derives +8 from altKey only; matches xterm.js)
 //   D4 [scope]   normal tracking (1000) w/o SGR -> spec legacy CSI M report,
 //                got nothing (encoder is SGR-1006-only by design)
+//   D5 [bug→fixed] wheel with no vertical delta (horizontal gesture) -> spec
+//                no report, was b=65 (wheel-down). preventDefault stays
+//                unconditional, which is also what xterm.js's wheel handler
+//                does: report nothing, still swallow the gesture.
 
 import { describe, it, expect, beforeEach } from "vitest";
 import { encodeSGR, init as initMouse, type MouseInputHandler } from "./mouse.js";
@@ -292,6 +299,18 @@ describe("button-byte composition via init() event path — wheel (SGR 1006)", (
     term.dispatchEvent(makeWheel({ deltaY, shift, ctrl, alt }));
     expect(sent).toEqual([expectedSGR(b, 3, 3, false)]);
   });
+
+  it("reports nothing for a gesture with no vertical delta", () => {
+    // A horizontal trackpad swipe (or shift-wheel, where some browsers route
+    // the delta to deltaX) delivers deltaY 0. There is no wheel button for
+    // that: the xterm.js reference encoder returns before encoding when the
+    // vertical delta is zero. (Was a bug: `deltaY < 0 ? 64 : 65` had no zero
+    // case, so a sideways gesture reported 65 and scrolled the TUI DOWN.)
+    enableSGR(1002);
+    const { term, sent } = setup();
+    term.dispatchEvent(makeWheel({ deltaY: 0 }));
+    expect(sent).toEqual([]);
+  });
 });
 
 describe("coordinates: 1-based cell mapping (spec: upper-left cell = 1,1)", () => {
@@ -405,18 +424,6 @@ describe("DEVIATIONS from xterm spec (skipped — see report)", () => {
     const { term, sent } = setup();
     term.dispatchEvent(makeMouse("mousedown", { button: 0, meta: true }));
     expect(sent).toEqual([expectedSGR(0 + META, 3, 3, false)]);
-  });
-
-  it.skip("DEVIATION: wheel with deltaY 0 (horizontal scroll) - spec: no report; got: b=65 (wheel-down)", () => {
-    // A horizontal trackpad or shift-wheel gesture delivers deltaY 0 with only
-    // deltaX set. The xterm.js reference encoder this file cross-checks against
-    // reports nothing when the vertical delta is zero; mouse.ts's
-    // `deltaY < 0 ? 64 : 65` has no zero case, so it falls to wheel-DOWN and a
-    // sideways gesture scrolls the TUI down. [bug]
-    enableSGR(1002);
-    const { term, sent } = setup();
-    term.dispatchEvent(makeWheel({ deltaY: 0 }));
-    expect(sent).toEqual([]);
   });
 
   it.skip("DEVIATION: normal tracking (1000) without SGR - spec legacy 'CSI M CbCxCy', got nothing", () => {

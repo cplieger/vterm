@@ -264,10 +264,20 @@ function onWheel(e: WheelEvent): void {
   if (!pos) {
     return;
   }
-  // Wheel up = button 64, wheel down = button 65
-  const btn = e.deltaY < 0 ? 64 : 65;
-  const code = buttonCode(btn, false, e.shiftKey, e.altKey, e.ctrlKey);
-  handler.send(encodeSGR(code, pos.col, pos.row, false));
+  // Wheel up = button 64, wheel down = button 65. A gesture with NO vertical
+  // component — a horizontal trackpad swipe, or shift-wheel where the browser
+  // routes the delta to deltaX — has no wheel button to report: xterm.js's
+  // reference encoder returns before encoding when the vertical delta is zero,
+  // while its wheel handler still calls preventDefault unconditionally. So
+  // parity is "report nothing, still swallow the gesture": a terminal owns the
+  // wheel, and letting a sideways swipe through would scroll the page instead.
+  // Reporting 65 here (the pre-fix behavior, `deltaY < 0 ? 64 : 65` with no
+  // zero case) scrolled the TUI DOWN on a sideways gesture.
+  if (e.deltaY !== 0) {
+    const btn = e.deltaY < 0 ? 64 : 65;
+    const code = buttonCode(btn, false, e.shiftKey, e.altKey, e.ctrlKey);
+    handler.send(encodeSGR(code, pos.col, pos.row, false));
+  }
   e.preventDefault();
 }
 

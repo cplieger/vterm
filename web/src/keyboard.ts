@@ -57,17 +57,6 @@ function modifiersDigit(ev: KeyboardEvent): number {
 /** The cursor-key trailing letters that honor DECCKM (arrows + Home/End). */
 type CursorKeyLetter = "A" | "B" | "C" | "D" | "H" | "F";
 
-function isCursorKeyLetter(letter: string): letter is CursorKeyLetter {
-  return (
-    letter === "A" ||
-    letter === "B" ||
-    letter === "C" ||
-    letter === "D" ||
-    letter === "H" ||
-    letter === "F"
-  );
-}
-
 /**
  * plainCursorKeySeq is THE encoding of an unmodified logical cursor-key press
  * (arrows, Home, End) — the one home for the mode decision, shared by the
@@ -114,21 +103,31 @@ function kittyActiveIn(modes: KeyboardModes): boolean {
   return (modes.getKeyboardFlags() & KITTY_DISAMBIGUATE) !== 0;
 }
 
-// Letter is the xterm trailing letter (ABCDEFGHPQRS for arrows / Home /
-// End / F1-F4 etc.). Without modifiers we send the bare CSI form; with
-// modifiers we send CSI 1;{mod}{letter}. xterm.js Keyboard.ts pattern.
+// Letter is the xterm trailing letter for the keys that honor DECCKM: the four
+// arrows plus Home (H) and End (F). Without modifiers we send the bare CSI form;
+// with modifiers we send CSI 1;{mod}{letter}. xterm.js Keyboard.ts pattern.
+// (F1-F4's SS3/CSI pair is encoded inline at its own call site, not here.)
+//
+// The parameter type is `CursorKeyLetter` rather than `string`, so "every
+// letter reaching here honors DECCKM" is a compiler guarantee instead of a
+// runtime net: all three call sites pass A/B/C/D from ARROW_LETTER, or the H/F
+// literals.
 //
 // Application cursor mode (DECCKM, CSI ?1) is plumbed via modes.ts.
 // When the application has set DECCKM, the modifier-less form switches
 // from CSI to SS3 (ESC O letter) via plainCursorKeySeq; modifier-bearing
 // forms stay on CSI because they have no SS3 equivalent.
-function csiLetter(letter: string, ev: KeyboardEvent, modes: KeyboardModes): string {
+function csiLetter(letter: CursorKeyLetter, ev: KeyboardEvent, modes: KeyboardModes): string {
   const m = modifiersDigit(ev);
   if (m === 1) {
-    if (isCursorKeyLetter(letter)) {
-      return plainCursorKeySeq(letter, kittyActiveIn(modes), modes.isApplicationCursor());
-    }
-    return `${ESC}[${letter}`;
+    // `kittyActiveIn(modes)` is always FALSE as reached from today's only
+    // caller: mapKeyboardEvent returns through encodeKittyDisambiguate before
+    // any cursor key gets here. It is passed anyway rather than hard-coded,
+    // because plainCursorKeySeq is the one home for the mode decision and a
+    // literal `false` would make this function structurally unable to express
+    // the kitty form — a later change to that early return would then
+    // mis-encode silently instead of failing to compile or reading wrong.
+    return plainCursorKeySeq(letter, kittyActiveIn(modes), modes.isApplicationCursor());
   }
   return `${ESC}[1;${m}${letter}`;
 }
@@ -169,7 +168,7 @@ const FN_TILDE: Record<string, number | undefined> = {
   F20: 34,
 };
 
-const ARROW_LETTER: Record<string, string | undefined> = {
+const ARROW_LETTER: Record<string, CursorKeyLetter | undefined> = {
   ArrowUp: "A",
   ArrowDown: "B",
   ArrowRight: "C",

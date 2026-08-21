@@ -39,9 +39,9 @@ consumer, and none of them reinterprets a standard control function. A
 resize-triggered ED3 reinterpretation would be the first, it would be
 kiro-cli-shaped, and every other application on this terminal would inherit it.
 
-A previous attempt shipped and was reverted (`ce0e90f`, reverted by `eb07d60`); its
-two measured defects are recorded in `resume-watermark.md` §9. The reason not to
-retry it is the one above, not those defects.
+An engine-side mitigation was written and then abandoned before it ever landed;
+what it measured is recorded in `resume-watermark.md` §9. The reason not to retry
+it is the one above, not those defects.
 
 ## What we do
 

@@ -38,31 +38,20 @@ The row positions the composer occupies are the bottom of the screen, which is
 exactly `haveThrough` and the rows just under it. That is why the artifact is
 always the input box and always immediately above the live region.
 
-## 2. Two independent causes, and this change fixes one
+## 2. A second producer of the same artifact, which is not ours
 
-The watermark above is necessary and NOT sufficient. A second defect produces the
-same artifact through the server's ring, so replaying the ring cannot heal it:
+The watermark below is necessary and not sufficient: the same visible artifact has
+a second producer, and that one is the application's. An inline TUI that erases
+only part of its frame before repainting leaves the remainder on screen, the
+repaint scrolls it off, and a conforming terminal commits it as history. Nothing
+the client claims or declines to claim can undo that, because the server's ring
+holds those rows as committed truth.
 
-- kiro-cli's resize redraw writes `CLEAR_ALL` = `\x1b[3J\x1b[2J\x1b[H`, so ED3
-  arrives BEFORE the repaint.
-- `handlePTYData` consumes it immediately: `scrollback.Clear()` plus
-  `scrollbackClearedPending = true` (terminal.go:1402-1408).
-- The repaint's own overflow drains afterwards and is appended to the ring AFTER
-  that clear (`buildFrame`, terminal.go:1530-1531), and the clear flag is attached
-  to the same frame (terminal.go:1533).
-- `dispatchFrame` writes payloads `modes, title, clipboard, screen, scroll`
-  (terminal.go:1724-1732) and the clear bit rides the SCREEN message, so the
-  client drops history and then immediately re-seats the redraw's overflow.
+The ruling on it, and why the engine changes nothing, is `ed3-resize-artifact.md`.
+Read that before proposing an engine-side mitigation here.
 
-`armRedrawSettle` makes this the normal path rather than a race: it holds flushes
-until the child's redraw output goes quiet, so the ED3 and the whole overflow are
-coalesced into one frame. The result is a stale frame tail committed to the ring
-as canonical history. That is a Go-side ordering defect, it is out of scope here,
-and it needs its own change plus a decision on whether a resize redraw is an
-atomic old-for-new transaction stronger than raw xterm ED3 semantics.
-
-So the acceptance criterion for THIS change is "the client stops presenting its
-own unconfirmed rows as history", not "the frozen box is gone".
+So the acceptance criterion for THIS change is "the client stops presenting its own
+unconfirmed rows as history", not "the frozen box is gone".
 
 ## 3. This is a known, deferred residual
 
@@ -104,8 +93,9 @@ accretion around a bad one, and removing them re-opens documented bugs.
 
 ## 5. What shipped
 
-Status: the client half is implemented. The ED3 half in §2 was implemented,
-reviewed, measured to lose data, and REVERTED; see §9.
+Status: implemented. The second producer named in §2 is the application's and the
+engine changes nothing for it; an engine-side mitigation was written and abandoned,
+recorded in §9.
 
 The resume claim is `LineStore.replayBoundary()`, derived from one new scalar:
 
@@ -232,35 +222,30 @@ Two accessors now exist with confusable names, and nothing enforces the choice.
 That is the price of the additive route, mitigated only by the doc comments on both
 and by the consumer test that pins which one the kernel prefers.
 
-## 9. The ED3 half: implemented, then reverted
+## 9. The engine-side mitigation that was abandoned
 
-§2's second cause is real and reproduced: an over-height repaint after an ED3
-pushes the erased frame off the top, those rows are appended to the ring the erase
-had just emptied, and the clear signal ships ahead of them, so a client drops its
-history and takes the dead frame back. A probe showed the composer row landing in
-the ring at index 10.
+An engine-side fix for §2's producer was written and then abandoned before landing.
+Recorded because what it measured is the argument against retrying it, and because
+the reason it was wrong is not the reason it was abandoned.
 
-A fix shipped as `ce0e90f` and was reverted as `eb07d60` after review, because it
-was measurably worse than the defect:
+It suppressed the rows a post-erase repaint pushed off the top, gated on the
+post-resize redraw hold. Review measured two defects:
 
-- **Unbounded drop while detached.** `dropRedrawDrain` was released only inside
-  `buildFrame`'s clear-signal block, which is unreachable with zero clients, and
-  `redrawSettleUntil` never disarms on that path either. So "an ED3 inside the
-  settle window" degenerated to "any ED3 after the last resize, while nobody is
-  watching", and every drained line was discarded for the whole detached period.
-  Measured: 200 lines of ordinary output printed while detached, ring length 0.
-  Worse, one of the tests I wrote PINNED that as intended behaviour.
-- **A retreating window base.** `flush_builder` computes
-  `base = committedBefore + len(scrollOut)` before the drop and never recomputes
-  it, so a dropped frame shipped a base ahead of `committed` and the next frame's
-  base went backwards. The client had also just set `erasedThrough` and
-  `pagingFloor` from the higher base, so the genuinely committed rows underneath
-  were refused by apply-line guard 2b and unfetchable.
+- **Unbounded suppression while detached.** The gate was released only on a frame
+  carrying the clear signal, which is unreachable with no client attached, and the
+  redraw hold never disarms on that path either. So it degenerated from "this
+  redraw" into "everything until someone attaches": 200 lines of ordinary output
+  printed while detached, all discarded. One of its own tests pinned that as
+  intended behaviour.
+- **A retreating window base.** The frame's `base` is computed before the drop and
+  never recomputed, so a suppressed frame shipped a base ahead of `committed` and
+  the next frame's base went backwards, with the client's erase watermark already
+  set from the higher value, leaving the committed rows underneath unfetchable.
 
-What a correct version needs: the drop bounded by a row budget captured at the ED3
-rather than a latch with no lifetime on the detached path, `base` recomputed after
-the drop so it never leads `committed`, and the settle hold evaluated in the
-zero-client branch. That is its own change-set with its own review, not a rider.
+Those are implementation defects and they are fixable. The reason not to retry is
+the one in `ed3-resize-artifact.md`: the engine's handling is already correct, the
+artifact is the application's incomplete erase, and a terminal that infers frame
+replacement from a redraw would apply that inference to every application it hosts.
 
 ## 10. Review record
 
@@ -275,7 +260,7 @@ raised the band concern that §6 records as refuted by the existing tests.
 
 Round two reviewed this diff and returned AMEND, WRONG, AMEND. Three blocking
 findings, all confirmed by execution before acting on them: the wedged floor (now
-healed, §5), and the two ED3 defects above (now reverted, §9). The floor wedge was
+healed, §5), and the two defects in the abandoned mitigation (§9). The floor wedge was
 the sharper lesson: measured at 99 while `highest` reached 297 and then 5223, it
 would have turned every attach into a maximal replay and persisted across reloads,
 which is the outcome the consumer wiring comment itself calls worse than the bug.

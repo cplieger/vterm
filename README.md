@@ -68,7 +68,7 @@ if (msg?.type === "screen") render.handleScreen(msg);
 
 ### TypeScript (`web/`, published as `@cplieger/web-terminal-engine` on NPM and JSR)
 
-- **`render`**: DOM renderer driven by `ScreenMessage` / `ScrollMessage` frames. `init`, `handleScreen`, `handleScroll`, `updateFontMetrics`, `computeSize`, `getCursorPx`, `setPredictedCursor`, `resetScreen`, `resetScrollback`, `getHighestIndex`, `noteResumeBounds`, `updateReverseVideo`.
+- **`render`**: DOM renderer driven by `ScreenMessage` / `ScrollMessage` frames. `init`, `handleScreen`, `handleScroll`, `updateFontMetrics`, `computeSize`, `getCursorPx`, `setPredictedCursor`, `resetScreen`, `resetScrollback`, `getHighestIndex`, `getReplayBoundary`, `noteResumeBounds`, `updateReverseVideo`.
 - **`keyboard`**: Translates `KeyboardEvent` to terminal byte sequences. `mapKeyboardEvent`, `bracketTextForPaste`, `prepareTextForTerminal`. Honors `applicationCursor`, `applicationKeypad`, `bracketedPaste`, and the kitty keyboard **disambiguate** flag (emits `CSI u` key events when the app enables the protocol).
 - **`toolbar`**: On-screen mobile keyboard toolbar wiring touch buttons to a send sink, with sticky-Ctrl state and ARIA painting. `bindMobileToolbar(opts)` returns a `MobileToolbarController`; `DEFAULT_TOOLBAR_IDS` names the default button ids. Reuses the `keyboard` encodings, so toolbar keys match physical keys byte for byte.
 - **`mouse`**: SGR 1006 mouse + focus reporting encoder. `init`, `encodeSGR`, `MouseInputHandler`.

@@ -109,7 +109,8 @@ CONTENT-SAFE by construction — within a boot epoch a COMMITTED absolute
 index (below the live window) is immutable, and every range a page
 request can target is committed by construction (strictly below the live
 tail's oldest line; window rows at their indices mutate legitimately via
-`applyScreen` until they commit, which is why the proof is scoped) — so
+`applyScreen` until they commit, which is why the proof is scoped, and why
+the resume claim excludes them — see §5.2's boundary) — so
 any frame that happens to satisfy the correlation window carries the same
 bytes the awaited reply would have carried. Correlation
 exists to drive client STATE, and the residual risk is bounded rather than
@@ -726,13 +727,20 @@ holes; that is new, scoped work), and healable (§5.4 fetches toward any
 gap edge the viewport approaches, until `pagingFloor` says otherwise).
 
 The resume contract is AMENDED in exactly one dimension: `haveThrough`
-(the highest held index) is always in the live tail — window rows live in
-the same map, `truncateBelowWindow` pins `highest` to the window bottom,
-and the window is never evictable — and the replay now covers the NEWEST
+is the replay BOUNDARY (`LineStore.replayBoundary`), the highest index the
+client will not ask to have re-sent, which is NOT the highest index held —
+window rows live in the same map and are only ever what the application
+DREW at those screen positions, so a client that claimed them would have
+the replay start above them and never learn what the server committed
+there (a frozen composer box parked in scrollback after a reattach was the
+measured symptom). It follows that `haveThrough` is no longer always in the
+live tail, and that the index it names may be one the store never held or
+has since evicted; the only guarantee is that it does not exceed
+`highestIndex()` — and the replay now covers the NEWEST
 `max(0, min(replayMax, committed − haveThrough − 1))` lines of
 `[haveThrough + 1, committed)` (half-open; `committed` is one past the
-newest, and `haveThrough` — an old window bottom — can legally sit AT or
-ABOVE it when little or nothing scrolled while disconnected, hence the
+newest, and `haveThrough` can legally sit AT or ABOVE it when little or
+nothing scrolled while disconnected AND nothing is provisional, hence the
 outer `max(0, …)` — §4.5's bounded replay: a server that declares paging
 clamps the START, never the end; an undeclared pairing replays in full).
 It still never re-sends the gaps. A REPLAY JUMP — the replay landing
@@ -747,14 +755,20 @@ live frame that slipped through before the drop rule existed — or any
 future re-ordering — would move `highest` and mask the jump, leaving the
 band tail-classified for `enforceCap` to eat; the sent values are what
 the server's reply is actually a function of. The stranded band —
-`[oldestHeld, sentHaveThrough]`, the OLD window rows included — moves
+`[oldestHeld, sentHaveThrough]` — moves
 into `browse` (no line deleted, `everEvictedThrough` untouched,
 the §5.6 TTL clock stamped), and the old window descriptor is RETIRED
 (`win` empties; the batch's own window frame re-establishes it at the
-new base — the jump band deliberately crosses the OLD `win.base` because
-those rows stop being window rows the moment the new frame lands; the
-cap flip's never-cross-`win.base` guard is about the LIVE window and is
-not violated). Retirement carries three stated consequences, all bounded
+new base). The band top stays `sentHaveThrough` and deliberately does NOT
+follow the boundary's exclusion down: the two answer different questions,
+the wire value asking what will not be requested and the band asking what
+the client claimed to hold before the server answered. Rows above the sent
+value arrived as committed content and must not be reclassified as
+disposable cache, and the provisional rows are covered by the replay
+itself. One residual follows and is accepted: when the replay start is
+CLAMPED above the boundary, the provisional rows are neither replayed nor
+banded, so they stay tail-classified and miss the §5.6 TTL sweep until cap
+eviction reaches them. Retirement carries three stated consequences, all bounded
 by the batch: the alt gate's frozen-base comparison is VACUOUS while the
 descriptor is empty (safe — on the alt-first batch order every replay
 line sits strictly below the incoming base, the accept condition §10 #8c
@@ -762,7 +776,11 @@ expresses, and `writeMu` keeps foreign writes out of the batch); no
 window-derived bound may be EVALUATED while retired
 (`truncateBelowWindow`'s bottom would read −1 and delete the store — its
 only call site runs after `updateWindow` re-establishes the descriptor,
-and that pairing is now a stated requirement, not an accident); and one
+and that pairing is now a stated requirement, not an accident; the one
+bound that may be read while retired is `replayBoundary()`, which is
+DEFINED to fall back to `highestIndex()` when no descriptor is held, and
+that fallback is the pre-existing behaviour rather than a wrong answer);
+and one
 renderer flush CAN land between the ack task and the window-frame task
 (the platform queues one task per message), drawing the cursor overlay
 from the retired descriptor for a single frame — a visual artifact, not
@@ -775,11 +793,14 @@ flipped cap, that pass would delete band lines and advance
 happen. After the jump step the live tail is again ONE contiguous run
 ending at the new `highest`, the stranded content stays readable as
 ordinary browse cache under the §4.5 budget pass, and the gap between
-renders markers and heals on approach like any other. (A pre-existing
-nuance, unchanged by this design: `haveThrough` is the old window
-BOTTOM, so a row that changed while disconnected and then scrolled into
-history is not re-sent by replay. Paging neither creates nor fixes that;
-noted so nobody attributes it here.)
+renders markers and heals on approach like any other. (The nuance this
+paragraph used to record as permanently open — `haveThrough` being the old
+window BOTTOM, so a row that changed while disconnected and then scrolled
+into history was never re-sent — is CLOSED: the resume claim is now the
+replay boundary, which stops below anything the client holds only
+provisionally, and the persisted floor carries that across a reload. See
+`resume-watermark.md`. One clamped-replay residual survives and is stated
+in §5.2.)
 
 Persistence: the browse cache is EXCLUDED from `snapshot()` BY
 CLASSIFICATION, not by contiguity — serialization walks down from

@@ -715,7 +715,32 @@ describe("LineStore persistence", () => {
     const snap = store.snapshot(1)!;
     // Only the documented keys. A future field must be added to StoreSnapshot
     // deliberately, with its own reasoning, rather than leaking in.
+    //
+    // `unconfirmedFrom` is here because this store has a live window, so its top
+    // rows are provisional and the floor is finite. It is the boundary a hydrated
+    // store needs in order not to claim rows it only ever saw the app draw. Note
+    // what is still absent: the window itself, which is geometry and load-bearing
+    // when stale, while this is one index with one meaning.
+    expect(Object.keys(snap).sort()).toEqual([
+      "highest",
+      "lines",
+      "oldest",
+      "serverEpoch",
+      "unconfirmedFrom",
+      "v",
+    ]);
+  });
+
+  it("omits the provisional floor when nothing held is provisional", () => {
+    // Absent and "all confirmed" are deliberately the same state, which is also
+    // what every snapshot written before the field existed looks like. A store fed
+    // only by durable scroll frames has no provisional rows, so the key must not
+    // appear at all rather than carrying a sentinel JSON cannot express.
+    const store = new LineStore();
+    store.applyScroll(scrollMsg(0, ["a", "b", "c"]));
+    const snap = store.snapshot(1)!;
     expect(Object.keys(snap).sort()).toEqual(["highest", "lines", "oldest", "serverEpoch", "v"]);
+    expect("unconfirmedFrom" in snap).toBe(false);
   });
 
   it("discards a snapshot of a different shape version", () => {

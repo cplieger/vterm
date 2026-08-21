@@ -1004,13 +1004,18 @@ The r1 review's open items, now decided:
   where the design budgets ~500.
 
   Two notes for whoever owns `paged-scrollback.md`. The band is
-  `[oldest, sentHaveThrough + 1)` and the real client sends its HIGHEST index
-  (`getHaveThrough` -> `render.getHighestIndex`), which is the window's bottom
-  row — so the band spans the old window rows, which is what makes a following
-  reader land inside it. A first attempt at this test used a `sentHaveThrough`
-  below the window base, the band then excluded the reader, and the test passed
-  against the bug. And §5.3's worked example ("keeping the newest 500") is
-  approximate: the viewport exemption keeps `prefetchThreshold` lines either side
+  `[oldest, sentHaveThrough + 1)`. The real client USED to send its highest index,
+  the window's bottom row, so the band spanned the old window rows and that is
+  what made a following reader land inside it. Since the resume claim became the
+  replay BOUNDARY (`getHaveThrough` -> `render.getReplayBoundary`), the sent value
+  stops below the provisional rows, so a following reader is no longer inside the
+  band by construction; the rows it is looking at are covered by the replay
+  instead, which now starts at the boundary plus one. A test written with a
+  `sentHaveThrough` below the window base was once wrong for excluding the reader
+  from the band, and it is now the production shape, so drive `following` as an
+  explicit input rather than inferring it from the band. And §5.3's worked example
+  ("keeping the newest 500") is approximate: the viewport exemption keeps
+  `prefetchThreshold` lines either side
   of the reader, so the honest ceiling is the `2 * prefetchThreshold + 1`
   invariant §5.3 already states, ~504 in practice.
 

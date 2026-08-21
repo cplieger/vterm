@@ -407,6 +407,18 @@ describe("DEVIATIONS from xterm spec (skipped — see report)", () => {
     expect(sent).toEqual([expectedSGR(0 + META, 3, 3, false)]);
   });
 
+  it.skip("DEVIATION: wheel with deltaY 0 (horizontal scroll) - spec: no report; got: b=65 (wheel-down)", () => {
+    // A horizontal trackpad or shift-wheel gesture delivers deltaY 0 with only
+    // deltaX set. The xterm.js reference encoder this file cross-checks against
+    // reports nothing when the vertical delta is zero; mouse.ts's
+    // `deltaY < 0 ? 64 : 65` has no zero case, so it falls to wheel-DOWN and a
+    // sideways gesture scrolls the TUI down. [bug]
+    enableSGR(1002);
+    const { term, sent } = setup();
+    term.dispatchEvent(makeWheel({ deltaY: 0 }));
+    expect(sent).toEqual([]);
+  });
+
   it.skip("DEVIATION: normal tracking (1000) without SGR - spec legacy 'CSI M CbCxCy', got nothing", () => {
     // With mode 1000 and no extended encoding, xterm sends the legacy report
     // CSI M Cb Cx Cy where each byte is value+32: Cb=0+32=0x20, Cx=3+32=0x23,

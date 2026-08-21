@@ -103,6 +103,17 @@ describe("nextBackoffDelay property", () => {
     );
   });
 
+  it("scales the jitter by JITTER_MS, so the spread is the documented 250ms", () => {
+    // The bound-checking properties above pass for any jitter smaller than
+    // JITTER_MS, including none at all — and jitter with no spread is what the
+    // per-attempt randomisation exists to prevent (every tab that lost the
+    // connection together would retry in the same instant). Hardcoded midpoint
+    // and endpoints, so the actual magnitude is pinned.
+    expect(nextBackoffDelay(500, () => 0.5).scheduledMs).toBe(625);
+    expect(nextBackoffDelay(500, () => 0.8).scheduledMs).toBe(700);
+    expect(nextBackoffDelay(8000, () => 0.5).scheduledMs).toBe(8125);
+  });
+
   it("INITIAL_DELAY_MS first call produces scheduledMs in [500, 750)", () => {
     fc.assert(
       fc.property(fc.double({ min: 0, max: 0.999, noNaN: true, noDefaultInfinity: true }), (r) => {

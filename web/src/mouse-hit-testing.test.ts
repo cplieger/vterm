@@ -290,6 +290,20 @@ describe("reported events suppress the browser's own handling", () => {
     expect(release.defaultPrevented).toBe(true);
     expect(wheel.defaultPrevented).toBe(true);
   });
+
+  it("swallows a gesture it reports nothing for, rather than letting the page scroll", () => {
+    // A horizontal gesture (deltaY 0) is not reportable — there is no sideways
+    // wheel button in SGR 1006 — but a terminal that is tracking the wheel owns
+    // the gesture: passing it through would scroll the page out from under the
+    // TUI. Guarding preventDefault along with the report would trade the wire
+    // bug for that one, so the two halves are asserted apart.
+    enableSGR(1002);
+    const { term, sent } = setup();
+    const sideways = wheelEvent({ deltaY: 0, deltaX: -40, clientX: 16, clientY: 32 });
+    term.dispatchEvent(sideways);
+    expect(sent).toEqual([]);
+    expect(sideways.defaultPrevented).toBe(true);
+  });
 });
 
 describe("the disposer detaches every listener it attached", () => {

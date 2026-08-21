@@ -73,6 +73,13 @@ describe("LineStore.absentEdgesNear: the nearness band", () => {
     expect(twoRuns().absentEdgesNear(5000, 500)).toEqual([]);
   });
 
+  it("leaves out a hole the reader is far BELOW", () => {
+    // The band is two-sided: a reader deep under the hole is no more about to
+    // scroll into it than one far above, and fetching for them costs a round
+    // trip per scroll event.
+    expect(twoRuns().absentEdgesNear(100, 500)).toEqual([]);
+  });
+
   it("includes a hole whose low edge is exactly one threshold away", () => {
     expect(twoRuns().absentEdgesNear(510, 500)).toEqual([{ lo: 1010, hi: 3000 }]);
   });
@@ -169,5 +176,19 @@ describe("LineStore: the in-flight request window", () => {
 
     expect(heldCount(s)).toBe(0);
     expect(s.browseCacheSize()).toBe(0);
+  });
+
+  it("stores a reply's surplus as TAIL, keeping only the intersection disposable", () => {
+    // The clip is a classification boundary, not a storage one. A surplus line
+    // nothing refuses has to land — it is real content — but as tail, because
+    // the cache budget may evict what it classifies and this reader never asked
+    // for those rows.
+    const s = new LineStore();
+    s.noteSolicited(5, 7);
+    s.applyHistoryScroll(scrollMsg(3, 4), 5); // spans 3..6
+    s.clearSolicited();
+
+    expect(heldCount(s)).toBe(4);
+    expect(s.browseCacheSize()).toBe(2);
   });
 });

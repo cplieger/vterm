@@ -482,8 +482,22 @@ func (s *Screen) resizeWidth(cols int) {
 // resizeSavedMain rebuilds the saved main-screen buffer to the new dimensions
 // while in alt-screen mode, so exiting alt-screen restores correctly at the new
 // size. rows and cols are the already-clamped target dimensions.
+//
+// A resize to the dimensions the saved buffer already has returns early. The
+// rebuild is one allocation per saved row plus one, and the alternate screen is
+// where a session sits for as long as a full-screen program runs, so without the
+// check a reconnect or a second viewer attaching at the current size copied the
+// whole saved screen to produce a byte-identical result: 25 allocations on a
+// 24-row screen, 101 on a 100-row one, against zero for the same no-op on the
+// main screen. Checking the SAVED buffer's own dimensions rather than s.Height
+// and s.Width is what makes the guard correct: the live screen has already been
+// resized by the time this runs, so comparing against it would skip the rebuild
+// exactly when it is needed.
 func (s *Screen) resizeSavedMain(rows, cols int) {
 	if s.savedMainCells == nil {
+		return
+	}
+	if len(s.savedMainCells) == rows && (rows == 0 || len(s.savedMainCells[0]) == cols) {
 		return
 	}
 	resized := make([][]Cell, rows)

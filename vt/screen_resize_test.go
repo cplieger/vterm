@@ -334,15 +334,22 @@ func TestResizeTo1ColMidCSI(t *testing.T) {
 //     measured rather than as zero, with the assertion written so that fixing it
 //     fails the test and says so.
 
-// TestResizeToTheSameSizeIsAllocationFreeOnTheMainScreen pins the no-op path. A
+// TestResizeToTheSameSizeIsAllocationFree pins the no-op path on BOTH screens. A
 // client that reconnects at the size it already had, and a second client
 // attaching at the same dimensions, both land here; Resize's own doc comment
 // contemplates exactly that case ("a no-op resize (e.g. client reconnect at the
 // same size)").
 //
+// The alternate screen is covered because it used to be the expensive half:
+// resizeSavedMain had no dimension check, so a no-op resize rebuilt every row of
+// the saved main buffer while a full-screen program was running, which is most of
+// a session's life in this engine. The retired test that recorded that cost said
+// to extend this contract once the guard landed, so both modes are driven from one
+// table and neither can regress silently.
+//
 // A single Resize call is the right thing to measure for once, because at the
 // same size it IS the steady state: every iteration does the same nothing.
-func TestResizeToTheSameSizeIsAllocationFreeOnTheMainScreen(t *testing.T) {
+func TestResizeToTheSameSizeIsAllocationFree(t *testing.T) {
 	sizes := map[string]struct{ rows, cols int }{
 		"small_4x40":      {4, 40},
 		"default_24x80":   {24, 80},
@@ -350,17 +357,35 @@ func TestResizeToTheSameSizeIsAllocationFreeOnTheMainScreen(t *testing.T) {
 		"single_row_1x80": {1, 80},
 	}
 	for name, sz := range sizes {
-		t.Run(name, func(t *testing.T) {
-			s := New(sz.rows, sz.cols)
-			s.Write([]byte("hello\r\nworld"))
-			got := testing.AllocsPerRun(200, func() {
-				s.Resize(sz.rows, sz.cols)
-			})
-			if got != 0 {
-				t.Errorf("Resize(%d, %d) on a %dx%d screen allocated %v times per run, want 0: a resize that changes no dimension must not rebuild the grid, or every reconnect at an unchanged size copies the whole screen",
-					sz.rows, sz.cols, sz.rows, sz.cols, got)
+		for _, alt := range []bool{false, true} {
+			mode := "main_screen"
+			if alt {
+				mode = "alt_screen"
 			}
-		})
+			t.Run(name+"/"+mode, func(t *testing.T) {
+				s := New(sz.rows, sz.cols)
+				s.Write([]byte("hello\r\nworld"))
+				if alt {
+					// 1049 saves the main buffer, so savedMainCells is populated and
+					// resizeSavedMain has something to rebuild. Without this the alt
+					// case would pass on the nil check and assert nothing.
+					s.Write([]byte("\x1b[?1049h"))
+					if !s.InAltScreen {
+						t.Fatalf("Screen.Write(CSI ?1049h) on a %dx%d screen left InAltScreen false: the fixture must be in the alternate screen", sz.rows, sz.cols)
+					}
+					if s.savedMainCells == nil {
+						t.Fatal("entering the alternate screen left savedMainCells nil: the fixture must have a saved buffer for the guard to skip")
+					}
+				}
+				got := testing.AllocsPerRun(200, func() {
+					s.Resize(sz.rows, sz.cols)
+				})
+				if got != 0 {
+					t.Errorf("Resize(%d, %d) on a %dx%d screen in the %s allocated %v times per run, want 0: a resize that changes no dimension must not rebuild the grid or the saved main buffer, or every reconnect at an unchanged size copies the whole screen",
+						sz.rows, sz.cols, sz.rows, sz.cols, mode, got)
+				}
+			})
+		}
 	}
 }
 
@@ -437,41 +462,8 @@ func TestResizeAllocationCostIsPerRowNotPerCell(t *testing.T) {
 	})
 }
 
-// TestResizeInAltScreenRebuildsSavedMainBufferEvenWhenNothingChanged records a
-// defect rather than a guarantee, which is why it asserts the cost it MEASURED
-// instead of the cost it wants.
-//
-// resizeSavedMain (screen.go) has no dimension check: whenever the alternate
-// screen is active it rebuilds every row of the saved main-screen buffer, so a
-// resize to the size the screen already has costs one allocation per saved row
-// plus one. The main-screen path is free in the same situation (the test above),
-// and the alt screen is where a session spends its time whenever a full-screen
-// program is running — which is the case this engine was built for. A reconnect
-// or a second viewer attaching at the current size therefore copies the entire
-// saved screen for nothing.
-//
-// The assertion is two-sided on purpose. An increase means the no-op got worse; a
-// DECREASE means someone gave resizeSavedMain the dimension check it is missing,
-// at which point this test should be deleted and the main-screen contract above
-// extended to cover the alt screen. Either way the number stops being silent.
-func TestResizeInAltScreenRebuildsSavedMainBufferEvenWhenNothingChanged(t *testing.T) {
-	for _, rows := range []int{4, 24, 100} {
-		for _, cols := range []int{40, 400} {
-			s := New(rows, cols)
-			s.Write([]byte("hello\r\nworld"))
-			s.Write([]byte("\x1b[?1049h"))
-			if !s.InAltScreen {
-				t.Fatalf("Screen.Write(CSI ?1049h) on a %dx%d screen left InAltScreen false: the fixture must be in the alternate screen", rows, cols)
-			}
-			got := testing.AllocsPerRun(100, func() {
-				s.Resize(rows, cols)
-			})
-			// One fresh row per saved row, plus the slice that holds them.
-			want := float64(rows) + 1
-			if got != want {
-				t.Errorf("Resize(%d, %d) on a %dx%d screen in the alternate screen allocated %v times per run, want %v (resizeSavedMain rebuilds every saved row with no dimension check): a higher count means the no-op resize got more expensive; a lower one means the missing check was added, in which case delete this test and extend TestResizeToTheSameSizeIsAllocationFreeOnTheMainScreen to the alternate screen",
-					rows, cols, rows, cols, got, want)
-			}
-		}
-	}
-}
+// The alt-screen no-op resize used to cost one allocation per saved row plus one,
+// because resizeSavedMain had no dimension check. A test lived here to record that
+// cost two-sidedly and to name its own deletion once the guard landed. The guard
+// landed (screen.go, resizeSavedMain), so the test is gone and the case moved into
+// TestResizeToTheSameSizeIsAllocationFree above, which now drives both screens.

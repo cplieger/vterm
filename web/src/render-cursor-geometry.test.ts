@@ -282,6 +282,17 @@ describe("the terminal's padding offsets the overlays", () => {
     expect(px.left).toBe(33); // 9 padding + 3 cells
     expect(px.cellH).toBe(17);
   });
+
+  it("answers the content origin while the cursor has no row at all", () => {
+    // The state a session wipe leaves behind (collapseContentSpaceOverlays): the
+    // cursor is at -1 and the row map is empty, and the consumer's IME view and
+    // hidden textarea are moved from this seam. There the content origin is the
+    // accurate answer, not a row offset — the grid arithmetic that serves every
+    // real row would put them a cell ABOVE the terminal's first line.
+    attach({ padding: "9px" });
+    render.updateFontMetrics();
+    expect(render.getCursorPx().top).toBe(9);
+  });
 });
 
 describe("the predicted-cursor overlay", () => {

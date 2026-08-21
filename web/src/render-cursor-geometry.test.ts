@@ -285,9 +285,12 @@ describe("the predicted-cursor overlay", () => {
   it("hides when the prediction has caught up with the real caret", () => {
     // Showing a prediction on top of the caret it predicted would paint two
     // cursors on one cell. It is suppressed only when BOTH coordinates match:
-    // the same row one column on is still a live prediction.
+    // the same row one column on, or the same column one row down (the echo of
+    // a newline), is still a live prediction.
     paint({ rows: [row("abcdef"), row("ghijkl")], cursor: [1, 5] });
     render.setPredictedCursor(1, 6, true);
+    expect(predicted().classList.contains("visible")).toBe(true);
+    render.setPredictedCursor(0, 5, true);
     expect(predicted().classList.contains("visible")).toBe(true);
     render.setPredictedCursor(1, 5, true);
     expect(predicted().classList.contains("visible")).toBe(false);

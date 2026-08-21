@@ -205,6 +205,18 @@ describe("color index 0 is black, not 'default'", () => {
     expect(spans[0]!.style.color).toBe("#000000");
     expect(spans[0]!.style.background).toBe("#000000");
   });
+
+  it("keeps the colors of an inverse run that already carries them", () => {
+    // The server performs the SGR 7 swap itself, so a run that arrives inverse
+    // with a color already selected has been swapped. The renderer's own
+    // theme-variable swap exists only for the case the server's is a no-op —
+    // both colors default — and applying it here would throw the application's
+    // chosen colors away.
+    const withFg = renderRow([run("M", { a: 8, f: 0xff0000 })]);
+    expect(withFg[0]!.style.color).toBe("#ff0000");
+    const withBg = renderRow([run("N", { a: 8, b: 0x00ff00 })]);
+    expect(withBg[0]!.style.background).toBe("#00ff00");
+  });
 });
 
 describe("an empty row still occupies a line", () => {

@@ -762,32 +762,54 @@ export class LineStore {
   }
 
   /**
-   * Raise the provisional floor past a range the server just committed, but only
-   * when that range REACHES the floor from at or below it.
+   * Raise the provisional floor past a range the server just committed, and heal
+   * it when the range proves the old floor is unreachable.
    *
-   * The reach test is the whole correctness argument. A chunk landing above the
-   * floor leaves rows between the floor and the chunk still provisional, so
-   * raising past it would claim exactly the rows this mechanism exists to
-   * exclude. Under the normal dispatch order the test always passes: a screen
-   * frame lowers the floor to its new base and the scroll chunks carrying the
-   * rows that just scrolled off start at or below that floor. When those chunks
-   * do NOT arrive — the server writes each payload as its own message and
-   * ignores write errors, so a socket that dies mid-dispatch is ordinary — the
-   * floor stays put and the next resume asks for the range again.
+   * The reach test is the correctness argument for the ordinary case. A chunk
+   * landing above the floor leaves rows between the floor and the chunk still
+   * provisional, so raising past it would claim exactly the rows this mechanism
+   * exists to exclude. Under the normal dispatch order the test passes: a screen
+   * frame lowers the floor to its new base and the scroll chunks carrying the rows
+   * that just scrolled off start at or below that floor. When those chunks do NOT
+   * arrive — the server writes each payload as its own message and ignores write
+   * errors, so a socket that dies mid-dispatch is ordinary — the floor stays put
+   * and the next resume asks for the range again.
+   *
+   * The HEAL is the second clause, and without it the floor wedges permanently.
+   * Three ordinary events deliver content far above the floor and leave nothing
+   * that can ever reach it: an ED3 (which drops every line below the new base,
+   * taking the floor's own neighbourhood with it), a clamped replay, and the ring
+   * eviction every server eventually performs. Measured before the heal existed: a
+   * store whose floor sat at 99 still reported 99 after fifteen healthy frames had
+   * carried `highest` to 297, and after a clamped replay took it to 5223. Every
+   * attach then asked for a maximal replay forever, and `snapshot()` persisted the
+   * wedge across reloads — strictly worse than the defect the floor exists to fix.
+   *
+   * So a range arriving entirely above `oldest` while the floor sits BELOW
+   * `oldest` heals it: nothing at or above the floor is held any more, so there is
+   * nothing left to protect, and holding the claim down protects only rows that no
+   * longer exist. This is safe in the one direction that matters — it never raises
+   * the floor over a row the store still holds provisionally, because such a row
+   * would be at or above `oldest` by definition.
    *
    * `applyHistoryScroll` deliberately does not call this. A demand-paged reply
-   * fetches history strictly below the resident tail, so it cannot reach a floor
-   * that sits at the live window's base; a call there would be mechanism with no
-   * reachable effect.
+   * fetches history strictly below the resident tail; it can neither reach the
+   * floor nor witness the floor being orphaned.
    */
   private confirmRange(firstIndex: number, count: number): void {
     if (!Number.isInteger(firstIndex) || firstIndex < 0 || count <= 0) {
       return;
     }
-    if (firstIndex > this.unconfirmedFrom) {
-      return; // a gap below stays provisional
-    }
     const end = firstIndex + count;
+    if (firstIndex > this.unconfirmedFrom) {
+      // The heal: the floor names an index the store no longer holds, so it is
+      // protecting nothing. Recorded through the same path as an ordinary raise so
+      // there is one writer, not two.
+      if (this.oldest >= 0 && this.unconfirmedFrom < this.oldest) {
+        this.unconfirmedFrom = Math.max(end, this.oldest);
+      }
+      return; // otherwise a gap below stays provisional
+    }
     if (end > this.unconfirmedFrom) {
       this.unconfirmedFrom = end;
     }
@@ -1301,7 +1323,19 @@ export class LineStore {
       predicted = Math.max(predicted, committed - sentReplayMax);
     }
     if (predicted <= base || this.oldest < 0 || sentHaveThrough < this.oldest) {
-      // No jump, or an empty/fresh store where the predicate fires vacuously.
+      // No jump, or nothing this socket claimed is still held, so the stranded
+      // band is empty and there is nothing to reclassify.
+      //
+      // The third clause used to mean only "an empty or fresh store", because the
+      // wire value was the highest held index and so never sat below `oldest`.
+      // The replay boundary can: a post-ED3 store has `oldest === win.base` and
+      // claims `win.base - 1`. That is still the right answer here, for the
+      // reason above rather than the original one — the band is `keys <=
+      // sentHaveThrough`, which is empty exactly when this fires, so both the
+      // reclassify and the budget pass it gates would be no-ops. The descriptor
+      // is then not retired either, which is equally harmless: retirement exists
+      // so a band containing old window rows survives the batch's own window
+      // frame, and there is no band.
       return false;
     }
     // The stranded band is every retained key at or below what this socket told
@@ -1750,6 +1784,15 @@ export class LineStore {
   private applyScrollbackCleared(base: number): void {
     this.solicitedPending = null;
     this.raisePagingFloor(base);
+    // The provisional floor moves up with the erase. Everything below `base` is
+    // about to be dropped, so a floor down there would name rows the store no
+    // longer holds and hold the resume claim below them forever: measured as a
+    // floor stuck at 99 while `highest` climbed to 297 over fifteen healthy
+    // frames, which turned every attach into a maximal replay. Never LOWERS the
+    // floor, so a floor already above the erase bound keeps protecting its rows.
+    if (base > this.unconfirmedFrom) {
+      this.unconfirmedFrom = base;
+    }
     if (this.oldest < 0 || this.oldest >= base) {
       return;
     }

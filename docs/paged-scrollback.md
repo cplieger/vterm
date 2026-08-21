@@ -768,7 +768,10 @@ disposable cache, and the provisional rows are covered by the replay
 itself. One residual follows and is accepted: when the replay start is
 CLAMPED above the boundary, the provisional rows are neither replayed nor
 banded, so they stay tail-classified and miss the §5.6 TTL sweep until cap
-eviction reaches them. Retirement carries three stated consequences, all bounded
+eviction reaches them. The floor itself does NOT wedge in that shape — a
+range arriving entirely above `oldest` while the floor sits below it heals
+the floor, because nothing it was protecting is held any more.
+Retirement carries three stated consequences, all bounded
 by the batch: the alt gate's frozen-base comparison is VACUOUS while the
 descriptor is empty (safe — on the alt-first batch order every replay
 line sits strictly below the incoming base, the accept condition §10 #8c
@@ -776,11 +779,9 @@ expresses, and `writeMu` keeps foreign writes out of the batch); no
 window-derived bound may be EVALUATED while retired
 (`truncateBelowWindow`'s bottom would read −1 and delete the store — its
 only call site runs after `updateWindow` re-establishes the descriptor,
-and that pairing is now a stated requirement, not an accident; the one
-bound that may be read while retired is `replayBoundary()`, which is
-DEFINED to fall back to `highestIndex()` when no descriptor is held, and
-that fallback is the pre-existing behaviour rather than a wrong answer);
-and one
+and that pairing is now a stated requirement, not an accident;
+`replayBoundary()` is exempt because it derives from a scalar floor rather
+than from the descriptor, so retirement cannot affect it at all); and one
 renderer flush CAN land between the ack task and the window-frame task
 (the platform queues one task per message), drawing the cursor overlay
 from the retired descriptor for a single frame — a visual artifact, not
@@ -799,8 +800,7 @@ window BOTTOM, so a row that changed while disconnected and then scrolled
 into history was never re-sent — is CLOSED: the resume claim is now the
 replay boundary, which stops below anything the client holds only
 provisionally, and the persisted floor carries that across a reload. See
-`resume-watermark.md`. One clamped-replay residual survives and is stated
-in §5.2.)
+`resume-watermark.md`.)
 
 Persistence: the browse cache is EXCLUDED from `snapshot()` BY
 CLASSIFICATION, not by contiguity — serialization walks down from

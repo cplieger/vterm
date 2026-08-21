@@ -698,3 +698,83 @@ func TestDiffStatusesWedgedHandlerDoesNotStallManager(t *testing.T) {
 		}
 	}
 }
+
+// TestReportsActivityAgreesAcrossReadPaths pins the activity flag on every
+// surface a client can read it from — the status diff the stream pushes, the
+// snapshot a fresh stream opens with, and the session list a reload GETs — and
+// pins the distinction the flag rests on: a CLEARED progress (OSC 9;4;0) is a
+// signal that arrived, while the absent value means none ever did. Only the
+// second is "no activity".
+//
+// The three surfaces have to agree because a client mixes them: it repaints the
+// tab dots from List on reload and from the snapshot on stream open, then
+// follows the diff. One surface reading the flag differently makes the dot
+// appear or disappear on reload rather than when something happened.
+func TestReportsActivityAgreesAcrossReadPaths(t *testing.T) {
+	m := NewSessionManager(catFactory)
+	t.Cleanup(func() { shutdownManager(t, m) })
+	// Drive the sweep by hand: the tracker List reads is created by the sweep,
+	// so a background tick would decide whether List sees one.
+	m.stopSweep()
+
+	id, err := m.Create()
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	diffReports := func() bool {
+		t.Helper()
+		for _, ev := range m.diffStatuses() {
+			if ev.ID == id {
+				return ev.ReportsActivity
+			}
+		}
+		t.Fatalf("status sweep emitted no event for session %s, so the flag it carries is unobservable", id)
+		return false
+	}
+	snapshotReports := func() bool {
+		t.Helper()
+		for _, ev := range m.snapshot() {
+			if ev.ID == id {
+				return ev.ReportsActivity
+			}
+		}
+		t.Fatalf("snapshot omitted session %s", id)
+		return false
+	}
+	listReports := func() bool {
+		t.Helper()
+		for _, info := range m.List() {
+			if info.ID == id {
+				return info.ReportsActivity
+			}
+		}
+		t.Fatalf("List omitted session %s", id)
+		return false
+	}
+
+	t.Run("a session that never emitted OSC 9;4 reports no activity", func(t *testing.T) {
+		if got := diffReports(); got {
+			t.Errorf("status event ReportsActivity = %v, want false: no OSC 9;4 has been seen", got)
+		}
+		if got := snapshotReports(); got {
+			t.Errorf("snapshot ReportsActivity = %v, want false: no OSC 9;4 has been seen", got)
+		}
+		if got := listReports(); got {
+			t.Errorf("List ReportsActivity = %v, want false: no OSC 9;4 has been seen", got)
+		}
+	})
+
+	t.Run("a cleared progress still reports activity", func(t *testing.T) {
+		handlerOf(t, m, id).handlePTYData([]byte("\x1b]9;4;0\x07")) // state 0: cleared, not absent
+		if got := diffReports(); !got {
+			t.Errorf("status event ReportsActivity = %v, want true: state 0 is a cleared signal, not an absent one", got)
+		}
+		if got := snapshotReports(); !got {
+			t.Errorf("snapshot ReportsActivity = %v, want true: state 0 is a cleared signal, not an absent one", got)
+		}
+		if got := listReports(); !got {
+			t.Errorf("List ReportsActivity = %v, want true: state 0 is a cleared signal, not an absent one", got)
+		}
+	})
+}

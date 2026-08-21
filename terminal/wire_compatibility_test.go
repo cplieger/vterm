@@ -1,7 +1,9 @@
 package terminal
 
 import (
+	"bytes"
 	"encoding/json"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -242,6 +244,12 @@ func TestLogID(t *testing.T) {
 		"exactly eight bytes pass through unmarked": {"12345678", "12345678"},
 		"short id passes through":                   {"abc", "abc"},
 		"empty stays empty":                         {"", ""},
+		// A client-supplied id need not be valid UTF-8 (a query parameter carries
+		// raw bytes). With no rune start anywhere in the prefix there is nothing
+		// safe to show, so the marker stands alone.
+		"an id with no rune boundary keeps nothing": {
+			"\x80\x80\x80\x80\x80\x80\x80\x80\x80", "\u2026",
+		},
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -343,5 +351,41 @@ func TestWirePairNamesTheBehindHalf(t *testing.T) {
 	// transposition and the field names have to.
 	if WirePairIncompatibility(behindGo) == "" || WirePairIncompatibility(behindTS) == "" {
 		t.Error("both pairs must be incompatible; the verdict is swap-invariant by construction")
+	}
+}
+
+// TestResumeControl_warnsOnlyAboveTheServerVersion pins which declared client
+// revision draws the "newer than server" warning. The hint on that line tells
+// the operator to upgrade the SERVER, so it has to fire only when the client
+// really is ahead: on a fleet where every client matches the server it would
+// otherwise appear on every single attach and permanently point at the wrong
+// component.
+func TestResumeControl_warnsOnlyAboveTheServerVersion(t *testing.T) {
+	const warning = "terminal: client wire-protocol version is newer than server"
+	tests := []struct {
+		name     string
+		version  int
+		wantWarn bool
+	}{
+		{name: "a client at the server's own revision", version: wireProtocolVersion, wantWarn: false},
+		{name: "a client one revision ahead", version: wireProtocolVersion + 1, wantWarn: true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			var buf bytes.Buffer
+			h := NewHandler([]string{"/bin/cat"},
+				WithLogger(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn}))))
+			defer h.Close()
+			ws, cleanup := serverSideConn(t)
+			defer cleanup()
+
+			payload := mustJSON(t, controlMsg{Type: ctlTypeResume, SessionID: "sid", ProtocolVersion: tc.version})
+			h.handleControl(ws, &clientState{}, payload, nil)
+
+			if got := strings.Contains(buf.String(), warning); got != tc.wantWarn {
+				t.Errorf("protocolVersion %d warned = %v, want %v (server is at %d); log: %s",
+					tc.version, got, tc.wantWarn, wireProtocolVersion, buf.String())
+			}
+		})
 	}
 }

@@ -309,21 +309,50 @@ func TestEncodeScreenMsgScrollbackClearedFlag(t *testing.T) {
 }
 
 // TestEncodeClipboardMsg verifies the OSC 52 clipboard frame layout:
-// [1B type=6][8B ack][2B len][text].
+// [1B type=6][8B ack][2B len][text]. Both a short payload and one longer than
+// the 11-byte header, which is the ordinary shape of a copied selection.
 func TestEncodeClipboardMsg(t *testing.T) {
-	buf := encodeClipboardMsg([]byte("hi"))
-	if buf[0] != wireMsgClipboard {
-		t.Fatalf("opcode = %d, want %d", buf[0], wireMsgClipboard)
+	cases := []struct {
+		name    string
+		text    string
+		wantLen int
+	}{
+		{name: "two bytes", text: "hi", wantLen: 13},                                            // 1 + 8 + 2 + 2
+		{name: "a copied line outgrows the header", text: "git log --oneline -20", wantLen: 32}, // 1 + 8 + 2 + 21
 	}
-	if len(buf) != 13 { // 1 + 8 + 2 + 2
-		t.Fatalf("len = %d, want 13", len(buf))
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			buf := encodeClipboardMsg([]byte(c.text))
+			if buf[0] != wireMsgClipboard {
+				t.Fatalf("opcode = %d, want %d", buf[0], wireMsgClipboard)
+			}
+			if len(buf) != c.wantLen {
+				t.Fatalf("encodeClipboardMsg(%q) frame len = %d, want %d", c.text, len(buf), c.wantLen)
+			}
+			textLen := binary.LittleEndian.Uint16(buf[9:11])
+			if int(textLen) != len(c.text) {
+				t.Errorf("text len field = %d, want %d", textLen, len(c.text))
+			}
+			if got := string(buf[11 : 11+textLen]); got != c.text {
+				t.Errorf("text = %q, want %q", got, c.text)
+			}
+		})
 	}
-	textLen := binary.LittleEndian.Uint16(buf[9:11])
-	if textLen != 2 {
-		t.Errorf("text len = %d, want 2", textLen)
+}
+
+// TestTruncateUTF8_atTheCapReturnsTheInputUnchanged pins the pass-through half
+// of the contract — a payload already within the cap is returned as it arrived —
+// against bytes that are not valid UTF-8. The encoder is a byte channel, not a
+// sanitizer: dropping a byte here would make the length field describe one
+// payload and the frame carry another, and the sanitizing rungs (the OSC caps,
+// the process-name cleaner) sit upstream where they can fall back to a rung.
+func TestTruncateUTF8_atTheCapReturnsTheInputUnchanged(t *testing.T) {
+	const s = "ab\xc3" // a truncated 2-byte sequence: 3 bytes, not valid UTF-8
+	if got := truncateUTF8(s, 3); got != s {
+		t.Errorf("truncateUTF8(%q, 3) = %q, want the input unchanged", s, got)
 	}
-	if got := string(buf[11 : 11+textLen]); got != "hi" {
-		t.Errorf("text = %q, want hi", got)
+	if got := truncateUTF8(s, 4); got != s {
+		t.Errorf("truncateUTF8(%q, 4) = %q, want the input unchanged", s, got)
 	}
 }
 

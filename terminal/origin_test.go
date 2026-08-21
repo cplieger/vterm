@@ -525,3 +525,20 @@ func TestLogSafeHeader(t *testing.T) {
 		}
 	})
 }
+
+// TestOriginPolicy_zeroValueIsInactive pins the zero value of an exported type a
+// consumer can construct directly. An "active" policy is what licenses
+// InsecureSkipVerify on the upgrade — justified only because Allows has already
+// made the stronger decision — so a policy that allows nothing beyond
+// same-origin must read as inactive and leave the library's own check in place.
+// The constructor collapses an empty allowlist to nil for exactly this reason;
+// the length test is what makes the hand-built shape agree with it.
+func TestOriginPolicy_zeroValueIsInactive(t *testing.T) {
+	t.Parallel()
+	if (&OriginPolicy{}).Active() {
+		t.Error("&OriginPolicy{}.Active() = true; a policy with no allowed origins widens nothing")
+	}
+	if (&OriginPolicy{}).acceptOptions() != nil {
+		t.Error("&OriginPolicy{}.acceptOptions() returned options; an inactive policy must leave the library's same-origin check as the gate")
+	}
+}

@@ -6,6 +6,7 @@ import (
 	"encoding/binary"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -1894,5 +1895,156 @@ func TestWireCompatibility_declaredClientVersionPolicy(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// TestHealSize_relaxesWhenOnlyOneDimensionDiffers pins that the heal compares
+// the two dimensions independently. A phone and a desktop routinely differ in
+// exactly one of them — same rows in a maximised window, different columns — and
+// the heal has to fire on that, or the survivor stays clamped to a departed
+// client's width with no later event to correct it (the timer has already run).
+func TestHealSize_relaxesWhenOnlyOneDimensionDiffers(t *testing.T) {
+	tests := []struct {
+		name                  string
+		survivorCols          int
+		survivorRows          int
+		wantWidth, wantHeight int
+	}{
+		{name: "columns differ, rows match", survivorCols: 120, survivorRows: 20, wantWidth: 120, wantHeight: 20},
+		{name: "rows differ, columns match", survivorCols: 40, survivorRows: 40, wantWidth: 40, wantHeight: 40},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			h := NewHandler([]string{"/bin/cat"}, WithLogger(nil))
+			defer h.Close()
+
+			// Real conns: the handler is started below, so its flush scheduler may
+			// dispatch to every registered conn at any moment.
+			leavingConn, _, cleanupLeaving := dualConn(t)
+			defer cleanupLeaving()
+			survivorConn, _, cleanupSurvivor := dualConn(t)
+			defer cleanupSurvivor()
+			leaving := h.registry.Add(leavingConn)
+			survivor := h.registry.Add(survivorConn)
+
+			// The departing client wrote last, so the shared screen holds ITS size.
+			h.handleResize(leaving, 40, 20)
+			h.registry.RecordSize(survivor, tc.survivorCols, tc.survivorRows)
+			h.mu.Lock()
+			w, ht := h.screen.Width, h.screen.Height
+			h.mu.Unlock()
+			if w != 40 || ht != 20 {
+				t.Fatalf("setup: screen = %dx%d, want 40x20 (the departing client wrote last)", w, ht)
+			}
+
+			h.registry.Remove(leavingConn)
+			h.healSize()
+
+			h.mu.Lock()
+			w, ht = h.screen.Width, h.screen.Height
+			h.mu.Unlock()
+			if w != tc.wantWidth || ht != tc.wantHeight {
+				t.Errorf("healSize left the screen at %dx%d, want %dx%d (the survivor's size)", w, ht, tc.wantWidth, tc.wantHeight)
+			}
+		})
+	}
+}
+
+// TestProcessExit_logsNoPanicOnACleanExit pins the deferred exit block's error
+// path against its own ordinary case. The recover there guards a CONSUMER
+// callback, and the line it writes is Error level — the level an operator is
+// expected to act on — so emitting it for every clean session exit would make
+// the one real occurrence unfindable.
+func TestProcessExit_logsNoPanicOnACleanExit(t *testing.T) {
+	var buf bytes.Buffer
+	h := NewHandler([]string{"/bin/true"},
+		WithLogger(slog.New(slog.NewTextHandler(&buf, nil))), WithWorkDir("/"))
+	if err := h.StartEager(); err != nil {
+		t.Fatalf("StartEager: %v", err)
+	}
+	// Shutdown waits for the monitor goroutine, so the deferred block whose log
+	// line is under test has run by the time this returns.
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	if err := h.Shutdown(ctx); err != nil {
+		t.Fatalf("Shutdown: %v", err)
+	}
+
+	if got := buf.String(); strings.Contains(got, "onProcessExit callback panicked") {
+		t.Errorf("a clean exit logged a callback panic; log: %s", got)
+	}
+}
+
+// TestDurableSubset_prependsTheClipboardToEveryScrollChunk pins the assembled
+// order and the whole set. The subset is what a resume-generation mismatch
+// delivers instead of the full frame, so a chunk dropped here is a permanent
+// hole in the client's history — and a sustained-output flush carries SEVERAL
+// chunks, not one.
+func TestDurableSubset_prependsTheClipboardToEveryScrollChunk(t *testing.T) {
+	clip := []byte("clip")
+	scroll := [][]byte{[]byte("chunk-1"), []byte("chunk-2"), []byte("chunk-3")}
+
+	got := durableSubset(clip, scroll)
+
+	want := [][]byte{clip, scroll[0], scroll[1], scroll[2]}
+	if len(got) != len(want) {
+		t.Fatalf("durableSubset returned %d payloads, want %d (clipboard plus every scroll chunk)", len(got), len(want))
+	}
+	for i := range want {
+		if !bytes.Equal(got[i], want[i]) {
+			t.Errorf("payload %d = %q, want %q", i, got[i], want[i])
+		}
+	}
+}
+
+// TestHandleResize_firstResizeRecordsTheClientSize pins the two things the
+// process-starting resize must still do after it starts the child. The size has
+// to be recorded against the socket, because the recorded size is the only input
+// MinLiveSize and the departure heal have; a first resize that started the child
+// and recorded nothing would leave the very client that dictated the screen
+// invisible to the heal.
+func TestHandleResize_firstResizeRecordsTheClientSize(t *testing.T) {
+	var buf bytes.Buffer
+	h := NewHandler([]string{"/bin/cat"}, WithLogger(slog.New(slog.NewTextHandler(&buf, nil))))
+	defer h.Close()
+	conn, _, cleanup := dualConn(t)
+	defer cleanup()
+	state := h.registry.Add(conn)
+
+	h.handleResize(state, 100, 30)
+
+	cols, rows, ok := h.registry.MinLiveSize()
+	if !ok || cols != 100 || rows != 30 {
+		t.Errorf("MinLiveSize() = (%d, %d, %v), want (100, 30, true) after the starting resize", cols, rows, ok)
+	}
+	if got := buf.String(); strings.Contains(got, "process start failed") {
+		t.Errorf("a successful start logged a failure; log: %s", got)
+	}
+}
+
+// TestHandleResume_carriesTheCurrentTitle pins the title in the resume batch. The
+// modes and title are resent inline ahead of the window frame so a reattaching
+// tab is correct before the user can type or read: without the title frame the
+// tab would keep whatever label the client last held until the program happened
+// to set one again, which for a long-lived shell may be never.
+func TestHandleResume_carriesTheCurrentTitle(t *testing.T) {
+	h := NewHandler([]string{"/bin/cat"}, WithLogger(nil))
+	defer h.Close()
+	h.handlePTYData([]byte("\x1b]2;my window title\x07"))
+
+	server, client, cleanup := dualConn(t)
+	defer cleanup()
+	h.handleResume(server, &clientState{}, "sid", -1, 0, nil)
+
+	var titles []string
+	for _, f := range readServerFrames(t, client, 400*time.Millisecond) {
+		if len(f) < 11 || f[0] != wireMsgTitle {
+			continue
+		}
+		n := binary.LittleEndian.Uint16(f[9:11])
+		titles = append(titles, string(f[11:11+n]))
+	}
+	if len(titles) != 1 || titles[0] != "my window title" {
+		t.Errorf("resume delivered titles %q, want exactly [\"my window title\"]", titles)
 	}
 }

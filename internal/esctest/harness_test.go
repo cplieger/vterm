@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"testing/iotest"
 	"time"
 
 	"github.com/cplieger/web-terminal-engine/v5/vt"
@@ -333,6 +334,37 @@ func TestEsctestArgs(t *testing.T) {
 	want := "/x/esctest.py --expected-terminal=xterm --max-vt-level=5 --xterm-checksum=0 --logfile=/tmp/e.log --no-print-logs --timeout=0.75 --v=2 --include=CUPTests --options xtermWinopsEnabled otherOpt"
 	if got != want {
 		t.Errorf("esctestArgs = %q, want %q", got, want)
+	}
+}
+
+// TestEsctestArgs_noOptionsOmitsTheFlag pins the other half of the --options
+// spelling. The flag takes nargs="+", so emitting it with nothing after it is not
+// a harmless empty list: argparse rejects the command line and the run fails
+// before a single escape sequence is sent.
+func TestEsctestArgs_noOptionsOmitsTheFlag(t *testing.T) {
+	o := &Options{Python: "python3", MaxVTLevel: 5, Timeout: 750 * time.Millisecond, Include: "CUPTests"}
+	got := strings.Join(esctestArgs("/x/esctest.py", "/tmp/e.log", o), " ")
+	want := "/x/esctest.py --expected-terminal=xterm --max-vt-level=5 --xterm-checksum=0 --logfile=/tmp/e.log --no-print-logs --timeout=0.75 --v=2 --include=CUPTests"
+	if got != want {
+		t.Errorf("esctestArgs with no options = %q, want %q", got, want)
+	}
+}
+
+// TestPump_answersAQuerySplitAcrossReads pins that pump keeps reading until the
+// stream ends rather than stopping at the first chunk. A PTY hands over whatever
+// has arrived, so an escape sequence routinely straddles two reads; a pump that
+// stopped early would leave the child waiting forever for an answer to a query it
+// had already finished sending.
+func TestPump_answersAQuerySplitAcrossReads(t *testing.T) {
+	screen := vt.New(25, 80)
+	// One byte per Read, so the query is only complete after the last of them.
+	r := iotest.OneByteReader(bytes.NewReader([]byte("\x1b[5n")))
+	var w bytes.Buffer
+
+	pump(r, &w, screen)
+
+	if got, want := w.String(), "\x1b[0n"; got != want {
+		t.Errorf("pump wrote %q, want the DSR answer %q: the query arrived one byte per read", got, want)
 	}
 }
 

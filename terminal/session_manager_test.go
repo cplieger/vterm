@@ -1,8 +1,10 @@
 package terminal
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -767,4 +769,141 @@ func TestSessionRESTNoStoreSetBeforeBody(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestNewSessionManager_logsThroughTheSuppliedLogger pins that a consumer's
+// logger is the one the manager writes its lifecycle lines to. These lines are
+// how an operator correlates a session id with everything else in the container's
+// log stream, so a manager that quietly kept its own sink would leave a consumer
+// with a correctly-configured logger and no session records in it.
+func TestNewSessionManager_logsThroughTheSuppliedLogger(t *testing.T) {
+	var buf bytes.Buffer
+	m := NewSessionManager(catFactory, WithManagerLogger(slog.New(slog.NewTextHandler(&buf, nil))))
+	t.Cleanup(func() { shutdownManager(t, m) })
+
+	id, err := m.Create()
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if got := buf.String(); !strings.Contains(got, "session: created") {
+		t.Errorf("the supplied logger received %q, want it to carry the session-created line for %s", got, LogID(id))
+	}
+}
+
+// TestClose_dropsTheFirstSessionFromTheDisplayOrder pins the eviction at
+// position zero. The display order is shared by every viewer and closing the
+// leftmost tab is the ordinary case: an id left behind there shifts every
+// surviving tab's position by one, and because the sweep only pushes a position
+// that CHANGED, the client that did not make the change would never be told.
+func TestClose_dropsTheFirstSessionFromTheDisplayOrder(t *testing.T) {
+	m := NewSessionManager(catFactory)
+	t.Cleanup(func() { shutdownManager(t, m) })
+	m.stopSweep() // drive the sweep by hand so the emitted order is deterministic
+
+	first, err := m.Create()
+	if err != nil {
+		t.Fatalf("Create first: %v", err)
+	}
+	second, err := m.Create()
+	if err != nil {
+		t.Fatalf("Create second: %v", err)
+	}
+
+	orderOf := func(id SessionID) (int, bool) {
+		t.Helper()
+		for _, ev := range m.diffStatuses() {
+			if ev.ID == id && ev.Order != nil {
+				return *ev.Order, true
+			}
+		}
+		return 0, false
+	}
+
+	// Baseline: the second session sits at position 1 behind the first.
+	if pos, ok := orderOf(second); !ok || pos != 1 {
+		t.Fatalf("baseline order for the second session = (%d, %v), want (1, true)", pos, ok)
+	}
+	if !m.Close(first) {
+		t.Fatalf("Close(%s) reported no such session", LogID(first))
+	}
+
+	if pos, ok := orderOf(second); !ok || pos != 0 {
+		t.Errorf("after closing the leftmost session the survivor's pushed order = (%d, %v), want (0, true)", pos, ok)
+	}
+	list := m.List()
+	if len(list) != 1 {
+		t.Fatalf("List() has %d sessions after closing one of two, want 1", len(list))
+	}
+	if list[0].ID != second || list[0].Order != 0 {
+		t.Errorf("List() = {%s, order %d}, want the survivor %s at order 0", LogID(list[0].ID), list[0].Order, LogID(second))
+	}
+}
+
+// TestSessionManagerReaper_tracksClientPresence pins the three ways the presence
+// count moves, because the count is the only thing standing between an idle
+// window and a live client's sessions. Attaching through the WebSocket handler
+// counts as present, the window restarts when the LAST client leaves (not at some
+// earlier instant), and one of several clients leaving is not the last one.
+func TestSessionManagerReaper_tracksClientPresence(t *testing.T) {
+	t.Run("a socket attached through the handler suppresses the reaper", func(t *testing.T) {
+		m := NewSessionManager(catFactory, WithIdleReaper(time.Hour))
+		t.Cleanup(func() { shutdownManager(t, m) })
+		id, err := m.Create()
+		if err != nil {
+			t.Fatalf("Create: %v", err)
+		}
+		srv := httptest.NewServer(m.WebSocketHandler())
+		t.Cleanup(srv.Close)
+
+		wsURL := "ws" + strings.TrimPrefix(srv.URL, "http") + "/ws?session=" + string(id)
+		ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+		defer cancel()
+		//nolint:bodyclose // coder/websocket Dial nils resp.Body on success
+		ws, _, err := websocket.Dial(ctx, wsURL, nil)
+		if err != nil {
+			t.Fatalf("ws dial: %v", err)
+		}
+		t.Cleanup(func() { _ = ws.Close(websocket.StatusNormalClosure, "") })
+
+		m.forceIdleSince(time.Now().Add(-2 * time.Hour))
+		m.maybeReap()
+		if got := len(m.List()); got != 1 {
+			t.Errorf("List() has %d sessions, want 1: the reaper ran while a socket was attached", got)
+		}
+	})
+
+	t.Run("the idle window restarts when the last client leaves", func(t *testing.T) {
+		m := NewSessionManager(catFactory, WithIdleReaper(time.Hour))
+		t.Cleanup(func() { shutdownManager(t, m) })
+		if _, err := m.Create(); err != nil {
+			t.Fatalf("Create: %v", err)
+		}
+
+		// An hours-old clock, then a client arrives and leaves again: the window
+		// measures from the departure, so nothing is eligible yet.
+		m.forceIdleSince(time.Now().Add(-2 * time.Hour))
+		m.clientConnected()
+		m.clientDisconnected()
+		m.maybeReap()
+		if got := len(m.List()); got != 1 {
+			t.Errorf("List() has %d sessions, want 1: the idle window must restart at the disconnect", got)
+		}
+	})
+
+	t.Run("one of two clients leaving is not the last one", func(t *testing.T) {
+		m := NewSessionManager(catFactory, WithIdleReaper(time.Hour))
+		t.Cleanup(func() { shutdownManager(t, m) })
+		if _, err := m.Create(); err != nil {
+			t.Fatalf("Create: %v", err)
+		}
+
+		m.clientConnected()
+		m.clientConnected()
+		m.clientDisconnected()
+		m.forceIdleSince(time.Now().Add(-2 * time.Hour))
+		m.maybeReap()
+		if got := len(m.List()); got != 1 {
+			t.Errorf("List() has %d sessions, want 1: a client is still connected", got)
+		}
+	})
 }

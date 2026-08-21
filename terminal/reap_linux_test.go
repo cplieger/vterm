@@ -459,6 +459,14 @@ func TestReapResidentReportsBytesForALiveTree(t *testing.T) {
 	if got := reapResident(nil); got != 0 {
 		t.Errorf("reapResident(nil) = %d, want 0", got)
 	}
+	// The unit is BYTES, which is what the resident_bytes field name promises and
+	// what makes the number comparable to a container's memory limit. procfs
+	// reports kB, so a missing conversion still yields a plausible-looking
+	// non-zero figure — off by three orders of magnitude. This process is a Go
+	// test binary, whose own resident set is far above a mebibyte.
+	if got := reapResident([]int{os.Getpid()}); got < 1<<20 {
+		t.Errorf("reapResident(self) = %d, want at least %d bytes: procfs reports kB and the field is bytes", got, 1<<20)
+	}
 }
 
 // The crash-then-close sequence calls teardown from more than one place, so the
@@ -504,4 +512,83 @@ func TestStatusFieldKB(t *testing.T) {
 	if _, ok := statusFieldKB("/proc/nonexistent-pid/status", "VmRSS:"); ok {
 		t.Error("an unreadable status file reported ok")
 	}
+}
+
+// TestReapTeardownWarnSplitsTermFromKill pins the two numbers the reclaim WARN
+// exists to separate. Without the split an operator cannot tell a runtime nobody
+// had signalled from one that ignored the signal, and those call for opposite
+// actions: wire up the runtime's own shutdown, or stop trusting it to have one.
+//
+// Both fixtures leave exactly ONE survivor, so the counts are exact rather than
+// dependent on how the shell forked.
+func TestReapTeardownWarnSplitsTermFromKill(t *testing.T) {
+	t.Run("a survivor that honours SIGTERM is reclaimed, not forced", func(t *testing.T) {
+		t.Parallel()
+		s, rec := newTestReap(t)
+		// The head forks one child and waits. Killing the head leaves that child
+		// behind (reaping a process does not reap its children), and it is the
+		// only survivor.
+		head := startMarked(t, s, "sleep 60 & wait")
+		waitForMembers(t, s, 2)
+		if err := head.Process.Kill(); err != nil {
+			t.Fatalf("kill head: %v", err)
+		}
+		if _, err := head.Process.Wait(); err != nil {
+			t.Fatalf("wait head: %v", err)
+		}
+
+		s.teardown()
+
+		if left := reapFindByMarker(s.marker); len(left) != 0 {
+			t.Fatalf("teardown left %d marked process(es) alive: %v", len(left), left)
+		}
+		attrs, ok := rec.find("terminal: session reap reclaimed escaped processes")
+		if !ok {
+			t.Fatal("no reclaim WARN logged for a session that had a survivor")
+		}
+		if got, _ := attrs["survivors"].(int64); got != 1 {
+			t.Errorf("survivors = %v, want 1", attrs["survivors"])
+		}
+		if got, _ := attrs["term_reclaimed"].(int64); got != 1 {
+			t.Errorf("term_reclaimed = %v, want 1: the survivor ended on SIGTERM", attrs["term_reclaimed"])
+		}
+		if got, _ := attrs["kill_forced"].(int64); got != 0 {
+			t.Errorf("kill_forced = %v, want 0: nothing had to be killed", attrs["kill_forced"])
+		}
+	})
+
+	t.Run("a survivor that ignores SIGTERM is forced, not reclaimed", func(t *testing.T) {
+		t.Parallel()
+		s, rec := newTestReap(t)
+		// `trap "" TERM` then `exec` leaves ONE process that ignores SIGTERM: an
+		// ignore disposition survives exec, so the sleep inherits it and the
+		// shell does not linger as a second member.
+		head := startMarked(t, s, `sh -c 'trap "" TERM; exec sleep 60' & wait`)
+		waitForMembers(t, s, 2)
+		if err := head.Process.Kill(); err != nil {
+			t.Fatalf("kill head: %v", err)
+		}
+		if _, err := head.Process.Wait(); err != nil {
+			t.Fatalf("wait head: %v", err)
+		}
+
+		s.teardown()
+
+		if left := reapFindByMarker(s.marker); len(left) != 0 {
+			t.Fatalf("a SIGTERM-ignoring tree survived teardown: %v", left)
+		}
+		attrs, ok := rec.find("terminal: session reap reclaimed escaped processes")
+		if !ok {
+			t.Fatal("no reclaim WARN logged for an escalated teardown")
+		}
+		if got, _ := attrs["survivors"].(int64); got != 1 {
+			t.Errorf("survivors = %v, want 1", attrs["survivors"])
+		}
+		if got, _ := attrs["term_reclaimed"].(int64); got != 0 {
+			t.Errorf("term_reclaimed = %v, want 0: the survivor discarded SIGTERM, so nothing was reclaimed by it", attrs["term_reclaimed"])
+		}
+		if got, _ := attrs["kill_forced"].(int64); got != 1 {
+			t.Errorf("kill_forced = %v, want 1: only SIGKILL could end it", attrs["kill_forced"])
+		}
+	})
 }

@@ -305,6 +305,9 @@ func TestParseReplayMax(t *testing.T) {
 		{"fractional is malformed", "3.5", 0, false},
 		{"string is malformed", `"1500"`, 0, false},
 		{"overflowing is malformed", "1e300", 0, false},
+		// One is the smallest bound a client can ask for, and asking for one line
+		// must not read as "no bound" — that would replay the whole ring.
+		{"the smallest bound is honored", "1", 1, true},
 		{"valid passes through", "1463", 1463, true},
 		{"at the clamp", fmt.Sprint(maxReplayLines), maxReplayLines, true},
 		{"above the clamp is clamped down", "9963", maxReplayLines, true},
@@ -531,6 +534,7 @@ func TestHistoryControl_servesIntersection(t *testing.T) {
 		wantLines int
 	}{
 		{"fully inside the retained range", 4000, 100, 4000, 100},
+		{"a single line is the smallest legal page", 4000, 1, 4000, 1},
 		{"clamped up to the retained edge", 2500, 1000, 3000, 500},
 		{"truncated at committed", 7950, 100, 7950, 50},
 		{"entirely below the retained range is empty", 0, 100, 0, 0},
@@ -756,5 +760,47 @@ func TestHandleControl_routesHistory(t *testing.T) {
 	}
 	if first, n := decodeScroll(t, frames[0]); first != 20 || n != 5 {
 		t.Errorf("reply = (first %d, %d lines), want (20, 5)", first, n)
+	}
+}
+
+// TestResumeControl_absentHaveThroughReplaysFromTheStart pins what an OMITTED
+// haveThrough means. A cold client (first load, or a store the browser evicted)
+// sends no such field, and that has to mean "I hold nothing" — index 0 onward.
+// Reading it as "I hold line 0" would silently withhold the oldest retained
+// lines from every cold attach, which is invisible until someone scrolls up.
+//
+// Driven through handleControl rather than handleResume so the default itself is
+// under test: handleResume takes the resolved int64, so it cannot see the field.
+func TestResumeControl_absentHaveThroughReplaysFromTheStart(t *testing.T) {
+	h := NewHandler([]string{"/bin/cat"}, WithScrollbackCapacity(100), WithLogger(nil))
+	defer h.Close()
+	h.screen = vt.New(3, 20)
+	fillRing(h, 5)
+
+	server, client, cleanup := dualConn(t)
+	defer cleanup()
+
+	payload := mustJSON(t, controlMsg{Type: ctlTypeResume, SessionID: "cold"}) // no haveThrough
+	h.handleControl(server, &clientState{}, payload, nil)
+
+	total, first, seen := 0, uint64(0), false
+	for _, f := range readServerFrames(t, client, 400*time.Millisecond) {
+		if len(f) == 0 || f[0] != wireMsgScroll {
+			continue
+		}
+		idx, n := decodeScroll(t, f)
+		if !seen {
+			first, seen = idx, true
+		}
+		total += n
+	}
+	if !seen {
+		t.Fatal("no scroll frame in the resume batch; a cold client received no history at all")
+	}
+	if first != 0 {
+		t.Errorf("replay started at index %d, want 0: an absent haveThrough means the client holds nothing", first)
+	}
+	if total != 5 {
+		t.Errorf("replayed %d lines, want all 5 retained", total)
 	}
 }

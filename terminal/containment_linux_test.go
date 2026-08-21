@@ -16,6 +16,8 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	"golang.org/x/sys/unix"
 )
 
 // recordingHandler collects slog records so a test can assert on the containment
@@ -578,4 +580,30 @@ func TestReadHelpers(t *testing.T) {
 	if got := readTrim(write("s", "  hello \n")); got != "hello" {
 		t.Errorf("readTrim = %q, want %q", got, "hello")
 	}
+}
+
+// TestReleaseFD_closesTheDescriptorOnce pins the fd handoff. The directory fd is
+// only needed at clone time, so holding it costs one descriptor per session for
+// as long as the session lives — an fd-exhaustion leak on a server whose whole
+// job is many sessions. The fixture opens a directory fd exactly as create()
+// does, so what is released here is the shape production releases.
+func TestReleaseFD_closesTheDescriptorOnce(t *testing.T) {
+	t.Parallel()
+	fd, err := unix.Open(t.TempDir(), unix.O_RDONLY|unix.O_CLOEXEC, 0)
+	if err != nil {
+		t.Fatalf("open a directory fd: %v", err)
+	}
+	sc := &sessionCgroup{fd: fd, log: slog.New(slog.DiscardHandler)}
+
+	sc.releaseFD()
+
+	var st unix.Stat_t
+	if err := unix.Fstat(fd, &st); !errors.Is(err, unix.EBADF) {
+		_ = unix.Close(fd)
+		t.Errorf("fstat on the released fd = %v, want EBADF: the descriptor was not closed", err)
+	}
+	if sc.fd != -1 {
+		t.Errorf("sc.fd = %d after release, want -1 so a second release is a no-op", sc.fd)
+	}
+	sc.releaseFD() // idempotent: must not close an unrelated descriptor
 }

@@ -587,12 +587,27 @@ function collapseContentSpaceOverlays(): void {
 }
 
 /**
- * Highest absolute line index the client holds, or -1 if empty. This is the
- * resume `haveThrough` value (it replaces the old DOM-row count). Exposed so
- * the connection layer can request only the lines the client is missing.
+ * Highest absolute line index the client holds, or -1 if empty. Exposed so a
+ * consumer can ask how far this store's content reaches; it is NOT the resume
+ * `haveThrough` (that is getReplayBoundary below, and the difference is a bug
+ * when the two are confused).
  */
 export function getHighestIndex(): number {
   return store.highestIndex();
+}
+
+/**
+ * The resume `haveThrough`: the highest index this client will not ask the
+ * server to re-send. Wire this to Callbacks.getHaveThrough, never
+ * getHighestIndex.
+ *
+ * The two differ by whatever the store holds provisionally — screen rows the
+ * application drew and the server has not committed at those indices — and
+ * claiming those on the wire is what leaves a stale copy of the last screen
+ * parked in scrollback after a reattach. See LineStore.replayBoundary.
+ */
+export function getReplayBoundary(): number {
+  return store.replayBoundary();
 }
 
 /**

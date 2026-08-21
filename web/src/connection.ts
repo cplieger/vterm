@@ -443,9 +443,16 @@ export interface Callbacks {
    *  it. */
   onWireIncompatible?(details: WireIncompatibility): void;
   computeSize(): { cols: number; rows: number };
-  /** Returns the highest absolute line index the client currently holds, or
-   *  -1 if it holds nothing. Sent as `haveThrough` on resume so the server
-   *  replays only the lines missed (e.g. printed while the device slept).
+  /** Returns the highest absolute line index the client will not ask the server
+   *  to re-send, or -1 to request a full retained replay. Sent as `haveThrough`
+   *  on resume so the server replays only the lines missed (e.g. printed while
+   *  the device slept).
+   *
+   *  NOT simply the highest index held. A client that holds a row PROVISIONALLY
+   *  — a screen row the application drew, which the server has not committed at
+   *  that absolute index — must not claim it, or the replay starts above it and
+   *  the provisional copy is never corrected. Wire this to
+   *  `render.getReplayBoundary`, which answers exactly that question.
    *  When absent, the client requests a full retained replay (-1). */
   getHaveThrough?(): number;
   /** Fired on resume with the server's retained-history bounds: `committed`

@@ -209,6 +209,13 @@ describe("LineStore paging invariants (property)", () => {
     if (s.highestIndex() !== wantHighest) {
       return `${label}: highestIndex() = ${s.highestIndex()}, but the maximum retained key is ${wantHighest}`;
     }
+    // 1b. The resume claim never exceeds what the store holds. This is the one
+    //     direction that is a correctness bug rather than a cost: claiming above
+    //     `highest` would tell the server to replay from past the end and skip
+    //     content this store never received. Below it is merely conservative.
+    if (s.replayBoundary() > s.highestIndex()) {
+      return `${label}: replayBoundary() = ${s.replayBoundary()} exceeds highestIndex() = ${s.highestIndex()}, so the resume would claim rows the store does not hold`;
+    }
     // 2. The TAIL budget is the memory bound the design rests on: the live tail
     //    stays inside its cap (or the window, when the window is larger).
     //    Browse cache is bounded separately and may legally overshoot around
@@ -336,7 +343,13 @@ describe("LineStore paging invariants (property)", () => {
               case "ack": {
                 // `jump` moves the server's oldest above what this socket says
                 // it has, which is the eviction-gap shape every server produces.
-                const haveThrough = s.highestIndex();
+                //
+                // Driven from `replayBoundary()`, not `highestIndex()`, because
+                // that is what the production wiring sends: on a store with a
+                // live window the two differ by the provisional rows, and an
+                // interleaving driven from the higher value would exercise a
+                // watermark no client emits.
+                const haveThrough = s.replayBoundary();
                 const serverOldest = haveThrough + 100;
                 s.applyResumeAck({
                   epochChanged: false,

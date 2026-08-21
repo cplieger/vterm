@@ -39,6 +39,15 @@ const MAX_LINES = COMPATIBILITY_TAIL_CAP;
  * anything that does not match, so an older snapshot is discarded rather than
  * misread. There is deliberately no migration path: a discarded snapshot costs
  * one full resume, which is exactly the behavior of not having persisted at all.
+ *
+ * One carve-out, because the rule above exists to prevent MISREADING and this
+ * cannot be misread: adding an OPTIONAL field whose absence is defined to mean
+ * exactly the pre-existing behaviour needs no bump. `fromSnapshot` reads fields
+ * individually off an `unknown` record and validates each, so an older entry
+ * simply lacks the key and takes the documented absent path. The test is whether
+ * a v-matching entry written by the previous release still hydrates to the same
+ * store it would have before; if it does not, bump. `unconfirmedFrom` is the
+ * first field added under this carve-out.
  */
 const SNAPSHOT_VERSION = 1;
 
@@ -91,6 +100,24 @@ export interface StoreSnapshot {
   oldest: number;
   /** Highest absolute index in `lines`. Write-side metadata; see `oldest`. */
   highest: number;
+  /**
+   * The saving store's provisional floor: the lowest index at or above which its
+   * content had not been confirmed as committed history by the server. ABSENT
+   * when everything it held was confirmed, and absent in every snapshot written
+   * before this field existed, which is the same state and takes the same path.
+   *
+   * Carried because the alternative is a reloaded page telling the server "no
+   * need to re-send" about screen rows it only ever saw the application draw.
+   * The window descriptor cannot serve here (see above: a stale one is
+   * load-bearing in two places), and this is not geometry — it is one index,
+   * meaningless to interpret as anything else.
+   *
+   * `fromSnapshot` treats a malformed value as absent rather than rejecting the
+   * snapshot. Being wrong in that direction costs a replayed screenful; rejecting
+   * would throw away a whole session's history over a field that is an
+   * optimisation of correctness, not a correctness precondition.
+   */
+  unconfirmedFrom?: number;
   /**
    * The retained lines as [absoluteIndex, runs] pairs, ascending. Pairs rather
    * than an object keyed by index, because object keys stringify and absolute
@@ -468,9 +495,66 @@ export class LineStore {
     return Math.max(this.effectiveTailCap, this.win.height);
   }
 
-  /** Highest absolute index held, or -1 if empty. Used as resume `haveThrough`. */
+  /** Highest absolute index held, or -1 if empty. */
   highestIndex(): number {
     return this.highest;
+  }
+
+  /**
+   * The lowest absolute index at or above which this store's content has NOT
+   * been confirmed as committed history by the server, or +Infinity when
+   * everything held is confirmed.
+   *
+   * The distinction this tracks is real and the map cannot express it. A row
+   * arriving in a SCREEN frame lands at `base + y`, which is a screen POSITION
+   * the application repaints in place, so the content held at that absolute
+   * index is what the app most recently drew there — provisional until the row
+   * scrolls off and the server commits it. A row arriving in a SCROLL or history
+   * frame is the opposite: the server has committed it, at that index, for good.
+   *
+   * One number rather than a per-row flag or a second key set. The rows above
+   * this floor are always a contiguous suffix of the store, because a screen
+   * frame's window is contiguous and lowers the floor to its base, while a
+   * durable frame that reaches the floor from below raises it past the range it
+   * delivered. `paged-scrollback.md` §5.3 records why a parallel structure over
+   * the same map is the shape to avoid: the one that was tried, a maintained
+   * companion count, was wrong at four mutation sites and reached -96.
+   *
+   * Movement is deliberately asymmetric. Lowering is unconditional, because a
+   * screen frame is proof its window is provisional. Raising happens only when a
+   * durable frame reaches the floor from at or below it, so a chunk landing
+   * above a still-unconfirmed gap leaves the floor where it is. That direction
+   * is the safe one to be wrong in: too low costs a few replayed rows, too high
+   * is the defect this exists to prevent.
+   */
+  private unconfirmedFrom = Number.POSITIVE_INFINITY;
+
+  /**
+   * The resume REPLAY-EXCLUSION BOUNDARY: the highest index this client will not
+   * ask the server to re-send. Send this as `haveThrough`, never `highestIndex()`.
+   *
+   * The two differ by whatever the store holds provisionally, and that
+   * difference is a correctness bug once it reaches the wire. While a store has
+   * no socket (a background tab) it observes no base advance, so its window rows
+   * keep the content the app drew there, and claiming down to the window's
+   * bottom row tells the server "no need to re-send those" about rows whose
+   * committed content this client has never seen. The server replays strictly
+   * above `haveThrough`, so the provisional copies are never corrected and
+   * surface as scrollback under the new window: measured as a frozen kiro-cli
+   * composer box parked above the live region after almost every tab switch.
+   *
+   * NOT a residency fact and NOT "the highest confirmed row": the index this
+   * returns may be one the store never held or has since evicted. The only
+   * guarantee is `replayBoundary() <= highestIndex()`, with equality whenever
+   * nothing held is provisional.
+   */
+  replayBoundary(): number {
+    if (this.highest < 0) {
+      return this.highest;
+    }
+    // unconfirmedFrom is +Infinity when nothing is provisional, so the min is
+    // `highest` and this is a no-op for a store fed only by durable frames.
+    return Math.min(this.highest, this.unconfirmedFrom - 1);
   }
 
   /** Lowest absolute index held, or -1 if empty. */
@@ -599,6 +683,12 @@ export class LineStore {
     }
     this.exitAltIfNeeded();
     this.updateWindow(msg);
+    // Every index in this window is provisional: the app repaints these screen
+    // positions in place, so what the store holds there is the last thing drawn,
+    // not what the server will commit at that absolute index. Unconditional and
+    // independent of `changed`, because an unchanged row still holds provisional
+    // content from an earlier frame.
+    this.markUnconfirmedFrom(msg.base);
     for (const y of msg.changed) {
       const row = msg.rows[y];
       if (row !== undefined) {
@@ -641,6 +731,11 @@ export class LineStore {
           this.applyLine(abs, row);
         }
       }
+      // Confirm only the prefix the alt gate actually ACCEPTED. The rows at or
+      // above the frozen base were dropped, so they are not committed history as
+      // far as this store is concerned and must not raise the floor over
+      // themselves.
+      this.confirmRange(msg.firstIndex, Math.min(msg.lines.length, base - msg.firstIndex));
       return;
     }
     for (let i = 0; i < msg.lines.length; i++) {
@@ -648,6 +743,53 @@ export class LineStore {
       if (row !== undefined) {
         this.applyLine(msg.firstIndex + i, row);
       }
+    }
+    this.confirmRange(msg.firstIndex, msg.lines.length);
+  }
+
+  /**
+   * Lower the provisional floor to `base`: everything from there up is content
+   * the application drew, not content the server committed. See
+   * `unconfirmedFrom` for why the floor moves in only one direction here.
+   */
+  private markUnconfirmedFrom(base: number): void {
+    if (!Number.isInteger(base) || base < 0) {
+      return; // a malformed frame must not move the floor
+    }
+    if (base < this.unconfirmedFrom) {
+      this.unconfirmedFrom = base;
+    }
+  }
+
+  /**
+   * Raise the provisional floor past a range the server just committed, but only
+   * when that range REACHES the floor from at or below it.
+   *
+   * The reach test is the whole correctness argument. A chunk landing above the
+   * floor leaves rows between the floor and the chunk still provisional, so
+   * raising past it would claim exactly the rows this mechanism exists to
+   * exclude. Under the normal dispatch order the test always passes: a screen
+   * frame lowers the floor to its new base and the scroll chunks carrying the
+   * rows that just scrolled off start at or below that floor. When those chunks
+   * do NOT arrive — the server writes each payload as its own message and
+   * ignores write errors, so a socket that dies mid-dispatch is ordinary — the
+   * floor stays put and the next resume asks for the range again.
+   *
+   * `applyHistoryScroll` deliberately does not call this. A demand-paged reply
+   * fetches history strictly below the resident tail, so it cannot reach a floor
+   * that sits at the live window's base; a call there would be mechanism with no
+   * reachable effect.
+   */
+  private confirmRange(firstIndex: number, count: number): void {
+    if (!Number.isInteger(firstIndex) || firstIndex < 0 || count <= 0) {
+      return;
+    }
+    if (firstIndex > this.unconfirmedFrom) {
+      return; // a gap below stays provisional
+    }
+    const end = firstIndex + count;
+    if (end > this.unconfirmedFrom) {
+      this.unconfirmedFrom = end;
     }
   }
 
@@ -1120,6 +1262,23 @@ export class LineStore {
    * descriptor, because the batch's own window frame re-establishes it at the
    * new base — those rows stop being window rows the moment it lands.
    *
+   * The band top is `sentHaveThrough` and deliberately does NOT follow the wire
+   * value down now that `replayBoundary()` supplies it. The two questions are
+   * different: the wire value asks "what will I not ask for", the band asks "what
+   * did I claim to hold before the server answered". Rows above the sent value
+   * arrived from the server as committed content, so they are real history and
+   * must not be reclassified as disposable cache; rows this store holds only
+   * provisionally sit at or above the boundary and are covered by the replay,
+   * which now starts at `boundary + 1` precisely because of it.
+   *
+   * One residual, deliberately not addressed here. When the replay start is
+   * CLAMPED above the boundary (`committed - replayMax`, reachable when a
+   * background tab printed more than roughly `tailCap` lines), the provisional
+   * rows are neither replayed nor banded, so they stay tail-classified and lose
+   * the browse budget's TTL sweep. Widening the band to cover them would change a
+   * pinned invariant that two existing cases assert, so it is recorded in
+   * docs/resume-watermark.md rather than changed in passing.
+   *
    * The retirement leaves the same transition's later steps reading a window of
    * height 0, so state precisely what that costs rather than forbidding it: the
    * only window-derived bound they touch is `enforceCap`'s, which loses the live
@@ -1251,6 +1410,7 @@ export class LineStore {
     this.highest = -1;
     this.everEvictedThrough = -1;
     this.erasedThrough = -1;
+    this.unconfirmedFrom = Number.POSITIVE_INFINITY;
     this.paging = false;
     this.serverOldest = -1;
     this.win = emptyWindow();
@@ -1351,6 +1511,11 @@ export class LineStore {
       oldest: first,
       highest: last,
       lines,
+      // OMITTED when nothing held is provisional, which is also what an older
+      // snapshot looks like, so absent and "all confirmed" are deliberately the
+      // same state on the way back in. JSON has no Infinity, so a sentinel value
+      // would have to be invented and then defended; absence needs neither.
+      ...(Number.isFinite(this.unconfirmedFrom) ? { unconfirmedFrom: this.unconfirmedFrom } : {}),
     };
   }
 
@@ -1447,6 +1612,15 @@ export class LineStore {
     store.highest = highest;
     // Everything below the tail is gone as far as this store is concerned.
     store.everEvictedThrough = oldest - 1;
+    // Restore the saving store's provisional floor. A malformed or absent value
+    // leaves it at +Infinity, which is the pre-existing behaviour: the whole
+    // hydrated tail reads as confirmed and the first resume claims all of it.
+    // Read off the unknown record like every other field, and clamped into the
+    // kept range because the tail may have been trimmed above the saved floor.
+    const savedFloor: unknown = rec["unconfirmedFrom"];
+    if (typeof savedFloor === "number" && Number.isInteger(savedFloor) && savedFloor >= 0) {
+      store.unconfirmedFrom = savedFloor;
+    }
     // The renderer must build every hydrated row: nothing is on screen yet.
     for (const abs of store.lines.keys()) {
       store.dirty.add(abs);

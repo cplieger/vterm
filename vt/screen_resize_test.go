@@ -297,3 +297,181 @@ func TestResizeTo1ColMidCSI(t *testing.T) {
 		t.Fatalf("row %d out of bounds after resize mid-CSI", row)
 	}
 }
+
+// --- Allocation contracts ---------------------------------------------------
+//
+// Resize is not the per-byte path, but it is not a startup-only path either: the
+// terminal handler calls it on every client resize message, a live resize
+// streams one per animation frame while a window edge is dragged, and when
+// several clients share a session the screen relaxes to the smallest remaining
+// client's size as each one disconnects. So the question is the same one the
+// write and wire contracts ask — which quantity does the cost track — and the
+// answer must be rows, not cells.
+//
+// The contract-writing mechanic that matters here is that Resize is IDEMPOTENT:
+// the second call at the same size does nothing. Measuring a single Resize in an
+// AllocsPerRun closure would therefore measure one real resize amortised over
+// hundreds of no-ops, which is a number that looks stable and means nothing. The
+// tests below measure a PAIR — resize away, resize back — which is genuinely
+// periodic, and they say so in each case.
+//
+// What the measurement found, including the one place the expected property does
+// not hold:
+//
+//   - A resize to the SAME size is free on the main screen. Nothing is
+//     reallocated, which is what a client reconnecting at its current size needs.
+//   - A width change costs exactly one allocation per ROW, at any width:
+//     resizeWidth rebuilds each row to the new column count and copies the old
+//     one in. 40 columns and 400 columns cost the same count.
+//   - A height change costs one allocation per ADDED row plus one, at any width,
+//     and shrinking is free (the row slice is truncated). Existing rows move as
+//     slice elements rather than being rebuilt.
+//   - A resize to the same size is NOT free while the alternate screen is
+//     active. resizeSavedMain rebuilds the whole saved main-screen buffer with no
+//     dimension check, so a no-op resize costs one allocation per saved row —
+//     measured 25 on a 24-row screen and 101 on a 100-row one. That is the
+//     reverse-direction defect this set was looking for, and it is pinned as
+//     measured rather than as zero, with the assertion written so that fixing it
+//     fails the test and says so.
+
+// TestResizeToTheSameSizeIsAllocationFreeOnTheMainScreen pins the no-op path. A
+// client that reconnects at the size it already had, and a second client
+// attaching at the same dimensions, both land here; Resize's own doc comment
+// contemplates exactly that case ("a no-op resize (e.g. client reconnect at the
+// same size)").
+//
+// A single Resize call is the right thing to measure for once, because at the
+// same size it IS the steady state: every iteration does the same nothing.
+func TestResizeToTheSameSizeIsAllocationFreeOnTheMainScreen(t *testing.T) {
+	sizes := map[string]struct{ rows, cols int }{
+		"small_4x40":      {4, 40},
+		"default_24x80":   {24, 80},
+		"large_100x400":   {100, 400},
+		"single_row_1x80": {1, 80},
+	}
+	for name, sz := range sizes {
+		t.Run(name, func(t *testing.T) {
+			s := New(sz.rows, sz.cols)
+			s.Write([]byte("hello\r\nworld"))
+			got := testing.AllocsPerRun(200, func() {
+				s.Resize(sz.rows, sz.cols)
+			})
+			if got != 0 {
+				t.Errorf("Resize(%d, %d) on a %dx%d screen allocated %v times per run, want 0: a resize that changes no dimension must not rebuild the grid, or every reconnect at an unchanged size copies the whole screen",
+					sz.rows, sz.cols, sz.rows, sz.cols, got)
+			}
+		})
+	}
+}
+
+// TestResizeAllocationCostIsPerRowNotPerCell pins the two real resize paths.
+//
+// Both are measured as a pair (away and back) because a single Resize is
+// idempotent, and both are compared across a tenfold width change, which is the
+// whole point: a 400-column screen must cost the same COUNT as a 40-column one.
+// More bytes, same number of allocations — that is what "per row, not per cell"
+// means, and a rewrite that assembled rows cell by cell would break it here while
+// leaving both tracked benchmarks untouched, since neither resizes at all.
+func TestResizeAllocationCostIsPerRowNotPerCell(t *testing.T) {
+	t.Run("width_change_costs_one_row_each", func(t *testing.T) {
+		// Each resize rebuilds every row, so the pair costs 2 per row. The +2
+		// tolerance covers the tab-stop array, which resizeWidth also rebuilds
+		// once a program has set an explicit stop.
+		for _, rows := range []int{4, 24, 100} {
+			counts := make(map[int]float64, 2)
+			for _, cols := range []int{40, 400} {
+				s := New(rows, cols)
+				s.Write([]byte("hello\r\nworld"))
+				for range 3 {
+					s.Resize(rows, cols+10)
+					s.Resize(rows, cols)
+				}
+				counts[cols] = testing.AllocsPerRun(100, func() {
+					s.Resize(rows, cols+10)
+					s.Resize(rows, cols)
+				})
+				if want := float64(2*rows) + 2; counts[cols] > want {
+					t.Errorf("Resize(%d, %d) then Resize(%d, %d) allocated %v times per run, want at most %v (one row per resize per row): a width change must rebuild rows and not cells",
+						rows, cols+10, rows, cols, counts[cols], want)
+				}
+			}
+			if counts[40] != counts[400] {
+				t.Errorf("a width-change pair on a %d-row screen allocated %v times per run at 40 columns and %v at 400, want the same count: resize cost must not track the column count",
+					rows, counts[40], counts[400])
+			}
+			t.Logf("width change on a %d-row screen: %v allocations per away-and-back pair at both 40 and 400 columns", rows, counts[40])
+		}
+	})
+
+	t.Run("height_change_costs_one_row_per_added_row", func(t *testing.T) {
+		// Growing by delta rows allocates delta rows plus the slice holding
+		// them; shrinking back truncates and allocates nothing. The pair is
+		// therefore delta+1, and it must not depend on the width at all.
+		const rows = 24
+		for _, delta := range []int{1, 10, 100} {
+			counts := make(map[int]float64, 2)
+			for _, cols := range []int{40, 400} {
+				s := New(rows, cols)
+				s.Write([]byte("hello\r\nworld"))
+				// Warm past the first grow: it also grows the row slice's
+				// capacity, which later grows reuse.
+				for range 3 {
+					s.Resize(rows+delta, cols)
+					s.Resize(rows, cols)
+				}
+				counts[cols] = testing.AllocsPerRun(100, func() {
+					s.Resize(rows+delta, cols)
+					s.Resize(rows, cols)
+				})
+				if want := float64(delta) + 2; counts[cols] > want {
+					t.Errorf("Resize(%d, %d) then Resize(%d, %d) allocated %v times per run, want at most %v (one row per added row, plus the slice): growing the height must not touch the rows that already exist",
+						rows+delta, cols, rows, cols, counts[cols], want)
+				}
+			}
+			if counts[40] != counts[400] {
+				t.Errorf("a height-change pair of +%d rows allocated %v times per run at 40 columns and %v at 400, want the same count: the cost of adding a row must not track its width",
+					delta, counts[40], counts[400])
+			}
+			t.Logf("height change of +%d rows: %v allocations per away-and-back pair at both 40 and 400 columns", delta, counts[40])
+		}
+	})
+}
+
+// TestResizeInAltScreenRebuildsSavedMainBufferEvenWhenNothingChanged records a
+// defect rather than a guarantee, which is why it asserts the cost it MEASURED
+// instead of the cost it wants.
+//
+// resizeSavedMain (screen.go) has no dimension check: whenever the alternate
+// screen is active it rebuilds every row of the saved main-screen buffer, so a
+// resize to the size the screen already has costs one allocation per saved row
+// plus one. The main-screen path is free in the same situation (the test above),
+// and the alt screen is where a session spends its time whenever a full-screen
+// program is running — which is the case this engine was built for. A reconnect
+// or a second viewer attaching at the current size therefore copies the entire
+// saved screen for nothing.
+//
+// The assertion is two-sided on purpose. An increase means the no-op got worse; a
+// DECREASE means someone gave resizeSavedMain the dimension check it is missing,
+// at which point this test should be deleted and the main-screen contract above
+// extended to cover the alt screen. Either way the number stops being silent.
+func TestResizeInAltScreenRebuildsSavedMainBufferEvenWhenNothingChanged(t *testing.T) {
+	for _, rows := range []int{4, 24, 100} {
+		for _, cols := range []int{40, 400} {
+			s := New(rows, cols)
+			s.Write([]byte("hello\r\nworld"))
+			s.Write([]byte("\x1b[?1049h"))
+			if !s.InAltScreen {
+				t.Fatalf("Screen.Write(CSI ?1049h) on a %dx%d screen left InAltScreen false: the fixture must be in the alternate screen", rows, cols)
+			}
+			got := testing.AllocsPerRun(100, func() {
+				s.Resize(rows, cols)
+			})
+			// One fresh row per saved row, plus the slice that holds them.
+			want := float64(rows) + 1
+			if got != want {
+				t.Errorf("Resize(%d, %d) on a %dx%d screen in the alternate screen allocated %v times per run, want %v (resizeSavedMain rebuilds every saved row with no dimension check): a higher count means the no-op resize got more expensive; a lower one means the missing check was added, in which case delete this test and extend TestResizeToTheSameSizeIsAllocationFreeOnTheMainScreen to the alternate screen",
+					rows, cols, rows, cols, got, want)
+			}
+		}
+	}
+}

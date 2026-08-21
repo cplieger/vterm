@@ -1,6 +1,7 @@
 package vt
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 )
@@ -332,4 +333,302 @@ func TestTrailingBlankTrimOnDrainedRows(t *testing.T) {
 	if got := wireRowText(w.Drained[0]); got != "foo       " {
 		t.Errorf("drained soft-wrapped row = %q, want %q", got, "foo       ")
 	}
+}
+
+// --- Allocation contracts ---------------------------------------------------
+//
+// RenderRowWire runs once per changed row per frame, so its cost is paid at
+// frame rate times screen height. It is the second of this repo's two tracked
+// benchmark series (592 B/op, 11 allocs/op) and, like the first, it is not at
+// zero, so the tracker's ratio alert cannot see a moderate regression in it;
+// screen_test.go's contract header has the arithmetic.
+//
+// Unlike Screen.Write this function cannot be allocation-free: each WireRun
+// carries its own text as a string, so a row's runs have to be built. The
+// contract is therefore about WHICH quantity the count is allowed to track. It
+// may track the number of RUNS, because a run is the unit the wire format is
+// made of. It must not track the number of COLUMNS, because that is the number a
+// client chooses by dragging a window edge, and a per-column allocation would
+// make a wide terminal quadratically more expensive to render than a narrow one.
+//
+// What the measurement found:
+//
+//   - A row that coalesces into a bounded number of runs costs a bounded number
+//     of allocations at any width: plain ASCII measured 10 at 40 columns and 15
+//     at 1000, a per-column rate of 0.005. The growth is strings.Builder
+//     doubling, not per-cell work.
+//   - A row whose every cell carries a different style produces one run per cell
+//     by definition, and costs about 1.01 allocations per run. That is the
+//     inherent price of the wire format, and pinning the RATE is what says the
+//     cost is charged per run and not per cell.
+//   - Combining marks never reach a cell: put() drops a width-0 rune (screen.go),
+//     so "e" + U+0301 occupies one cell holding "e". There is consequently no
+//     combining-mark content class at this layer — it collapses into plain ASCII,
+//     and the fixture below is kept only to record that.
+//   - The autolink path is the one class whose count is not exactly reproducible.
+//     It reaches regexp.FindAllStringIndex, whose machine state comes from a
+//     sync.Pool that every GC empties, and it measured 22 without the race
+//     detector against 25 with it, drifting by 1 between runs at 400 columns. Its
+//     bounds below therefore carry real headroom, and no equality is asserted on
+//     it anywhere.
+//
+// RenderRowWire is a pure read — it derives runs from the grid and never stores
+// into cells — so unlike the write contracts these need no fixed point or steady
+// state: the thousandth call sees exactly what the first did. The tests assert
+// that rather than assume it. No t.Parallel, for the reason given in
+// screen_test.go.
+
+// allocRowFill repeats seed until it yields exactly n runes, so a row fixture
+// can be built to an exact column budget and nothing wraps onto the row below.
+// Wrapping would matter: a soft-wrapped row joins its neighbour for the URL scan
+// and suppresses the trailing-blank trim, so a fixture that overflowed would
+// measure a different code path at some widths than at others.
+func allocRowFill(seed string, n int) string {
+	runes := []rune(seed)
+	out := make([]rune, 0, n)
+	for len(out) < n {
+		out = append(out, runes[len(out)%len(runes)])
+	}
+	return string(out)
+}
+
+// allocBoundedRunRows builds row text whose RUN count stays fixed as the row
+// widens, which is what makes each one a witness for width-independence: the
+// padding continues the last run's style rather than starting new runs. Each
+// builder fills exactly width columns (a wide rune counts two).
+var allocBoundedRunRows = map[string]func(width int) string{
+	"plain_ascii": func(width int) string {
+		return allocRowFill("abcdefgh", width)
+	},
+	"wide_cjk": func(width int) string {
+		return allocRowFill("日本語テスト", width/2)
+	},
+	"combining_marks": func(width int) string {
+		return strings.Repeat("e\u0301", width)
+	},
+	"three_colour_runs": func(width int) string {
+		return "\x1b[1;31mred \x1b[0;32mgreen \x1b[4;34m" + allocRowFill("blue text ", width-10)
+	},
+	"osc8_hyperlink": func(width int) string {
+		return "\x1b]8;;https://example.com/x\x07anchor\x1b]8;;\x07" + allocRowFill("plain text ", width-6)
+	},
+	"one_bare_url": func(width int) string {
+		return "see https://example.com/a/b/c " + allocRowFill("pad ", width-30)
+	},
+	"blank_row": func(int) string {
+		return ""
+	},
+}
+
+// allocRowScreen writes text into row 0 of a fresh screen of the given width and
+// returns the screen, so every fixture is built outside the measured closure.
+// Four rows rather than one because the autolink chain scan looks at the rows
+// below the one being rendered.
+func allocRowScreen(width int, text string) *Screen {
+	s := New(4, width)
+	s.Write([]byte(text))
+	return s
+}
+
+// TestRenderRowWireAllocationCountDoesNotScaleWithRowWidth is the core wire
+// contract: rendering a row must cost a bounded number of allocations regardless
+// of how wide the row is.
+//
+// Width is the axis a client controls, and it moves by an order of magnitude
+// between a phone in portrait and a maximised desktop window. An allocation
+// charged per column would make the wide case cost 25 times the narrow one here
+// while BenchmarkRenderRowWire, pinned at 80 columns, moved by nothing at all —
+// exactly the blind spot these contracts exist for.
+//
+// The assertion is a per-column RATE rather than an equality, because the count
+// does legitimately grow: strings.Builder doubles its buffer, so a wider row
+// costs a few more allocations than a narrow one. The bound separates that from
+// per-column work by three orders of magnitude — a per-column allocation would
+// measure a rate of 1.0 against a limit of 0.05.
+func TestRenderRowWireAllocationCountDoesNotScaleWithRowWidth(t *testing.T) {
+	// A per-column allocation rate this far below 1 cannot be per-column work.
+	// Measured worst case across these classes is 0.0083 (wide_cjk).
+	const maxAllocsPerColumn = 0.05
+
+	widths := []int{40, 80, 200, 400, 1000}
+
+	for name, build := range allocBoundedRunRows {
+		t.Run(name, func(t *testing.T) {
+			counts := make([]float64, len(widths))
+			runCounts := make([]int, len(widths))
+			for i, width := range widths {
+				s := allocRowScreen(width, build(width))
+				runs := s.RenderRowWire(0)
+				runCounts[i] = len(runs)
+				if len(s.wrapped) > 1 && s.wrapped[1] {
+					t.Fatalf("RenderRowWire(0) fixture %s at %d columns wrapped onto row 1: it must fit one row, or the widths measure different code paths",
+						name, width)
+				}
+				counts[i] = testing.AllocsPerRun(200, func() {
+					s.RenderRowWire(0)
+				})
+				if got := len(s.RenderRowWire(0)); got != runCounts[i] {
+					t.Fatalf("RenderRowWire(0) on fixture %s at %d columns returned %d runs before the measurement and %d after: the function must be a pure read of the grid",
+						name, width, runCounts[i], got)
+				}
+			}
+			// The run count has to be flat for the width sweep to be about
+			// width; a class whose runs grew with width is the next test's job.
+			for i, got := range runCounts {
+				if got != runCounts[0] {
+					t.Fatalf("RenderRowWire(0) on fixture %s produced %d runs at %d columns and %d at %d: this fixture must hold its run count flat to witness width-independence",
+						name, got, widths[i], runCounts[0], widths[0])
+				}
+			}
+
+			narrow, wide := counts[0], counts[len(counts)-1]
+			rate := (wide - narrow) / float64(widths[len(widths)-1]-widths[0])
+			if rate > maxAllocsPerColumn {
+				t.Errorf("RenderRowWire(0) on a %s row of %d runs allocated %v times per run at %d columns and %v at %d, a rate of %v per column, want at most %v: a cost that tracks the column count makes a wide client pay per cell on every frame",
+					name, runCounts[0], narrow, widths[0], wide, widths[len(widths)-1], rate, maxAllocsPerColumn)
+			}
+			t.Logf("%s (%d runs): %v allocations at %d columns rising to %v at %d, %v per column",
+				name, runCounts[0], narrow, widths[0], wide, widths[len(widths)-1], rate)
+		})
+	}
+}
+
+// TestRenderRowWireAllocationCountIsChargedPerRunNotPerColumn covers the classes
+// the test above excludes: a row whose every cell carries a different style
+// cannot coalesce, so it produces one run per column and its count MUST grow
+// with the width. Asserting flatness there would be asserting a bug.
+//
+// The property that still holds is the one worth gating, and it is the same shape
+// keyenc uses for its escaping path: the cost is bounded PER RUN. Measured as a
+// slope between two widths so the row's fixed cost cancels out, which is what
+// distinguishes "one allocation for each run the wire format contains" from "two
+// allocations for each run", the shape a stray per-run string conversion would
+// produce.
+//
+// These are real inputs, not contrivances: a syntax-highlighted diff, a
+// truecolour progress bar and an `ls` listing that hyperlinks every filename all
+// alternate style per cell or per word.
+func TestRenderRowWireAllocationCountIsChargedPerRunNotPerColumn(t *testing.T) {
+	// One allocation per run is the wire format's own cost (each WireRun carries
+	// its own string); 2 leaves room for a size-class step without tolerating a
+	// second per-run allocation.
+	const maxAllocsPerRun = 2.0
+
+	const (
+		narrowWidth = 40
+		wideWidth   = 400
+	)
+
+	perCellRows := map[string]func(width int) string{
+		"palette_colour_per_cell": func(width int) string {
+			var b strings.Builder
+			for i := range width {
+				fmt.Fprintf(&b, "\x1b[%dm%c", 31+i%7, 'a'+i%26)
+			}
+			return b.String()
+		},
+		"truecolour_per_cell": func(width int) string {
+			var b strings.Builder
+			for i := range width {
+				fmt.Fprintf(&b, "\x1b[38;2;%d;%d;%dm%c", i%256, (i*7)%256, (i*13)%256, 'a'+i%26)
+			}
+			return b.String()
+		},
+		"hyperlink_per_word": func(width int) string {
+			var b strings.Builder
+			for i := range width / 10 {
+				fmt.Fprintf(&b, "\x1b]8;;https://example.com/%d\x07file%d\x1b]8;;\x07 ", i, i)
+			}
+			return b.String()
+		},
+	}
+
+	for name, build := range perCellRows {
+		t.Run(name, func(t *testing.T) {
+			narrowScreen := allocRowScreen(narrowWidth, build(narrowWidth))
+			wideScreen := allocRowScreen(wideWidth, build(wideWidth))
+			narrowRuns := len(narrowScreen.RenderRowWire(0))
+			wideRuns := len(wideScreen.RenderRowWire(0))
+			if wideRuns <= narrowRuns {
+				t.Fatalf("RenderRowWire(0) on fixture %s produced %d runs at %d columns and %d at %d: this fixture must NOT coalesce, or the per-run slope below divides by nothing",
+					name, narrowRuns, narrowWidth, wideRuns, wideWidth)
+			}
+
+			narrow := testing.AllocsPerRun(200, func() {
+				narrowScreen.RenderRowWire(0)
+			})
+			wide := testing.AllocsPerRun(200, func() {
+				wideScreen.RenderRowWire(0)
+			})
+			rate := (wide - narrow) / float64(wideRuns-narrowRuns)
+			if rate > maxAllocsPerRun {
+				t.Errorf("RenderRowWire(0) on a %s row allocated %v times per run for %d runs at %d columns and %v for %d runs at %d, a rate of %v per additional run, want at most %v: a style-dense row must cost one allocation for each run the wire carries and no more",
+					name, narrow, narrowRuns, narrowWidth, wide, wideRuns, wideWidth, rate, maxAllocsPerRun)
+			}
+			t.Logf("%s: %v allocations per additional run (%v for %d runs, %v for %d runs)", name, rate, narrow, narrowRuns, wide, wideRuns)
+		})
+	}
+}
+
+// TestRenderRowWireAllocationCountByContentClass records what each content class
+// costs at the default 80 columns and holds each to its own bound, because the
+// classes differ by an order of magnitude and one number could not describe them:
+// a blank row costs 3 allocations, an ASCII row 11, and a row whose every cell
+// is separately coloured 90.
+//
+// This is the table a reader wants when the width and per-run contracts above
+// both pass and a chart still moved. Each bound is the measured count plus
+// headroom rather than an equality, for one measured reason: the autolink class
+// reaches a regexp whose machine comes from a sync.Pool, and it measured 22
+// without the race detector and 25 with it. A bound that tracked the measurement
+// exactly would be red on every -race run, so the whole table is bounded
+// consistently and the exact numbers are logged instead.
+func TestRenderRowWireAllocationCountByContentClass(t *testing.T) {
+	const width = 80
+
+	classes := map[string]struct {
+		text string
+		// max is the measured count plus 6 (plus 10 for the autolink class,
+		// whose regexp pool makes it the only irreproducible one).
+		max float64
+	}{
+		"blank_row":               {"", 9},
+		"plain_ascii":             {allocBoundedRunRows["plain_ascii"](width), 15},
+		"wide_cjk":                {allocBoundedRunRows["wide_cjk"](width), 18},
+		"combining_marks":         {allocBoundedRunRows["combining_marks"](width), 15},
+		"three_colour_runs":       {allocBoundedRunRows["three_colour_runs"](width), 19},
+		"osc8_hyperlink":          {allocBoundedRunRows["osc8_hyperlink"](width), 17},
+		"one_bare_url":            {allocBoundedRunRows["one_bare_url"](width), 30},
+		"every_sgr_attribute":     {"\x1b[1;2;3;4;5;7;8;9;21;53;58;5;99m" + allocRowFill("A", width), 15},
+		"palette_colour_per_cell": {allocRowScreenText(width, "palette"), 96},
+	}
+
+	for name, tc := range classes {
+		t.Run(name, func(t *testing.T) {
+			s := allocRowScreen(width, tc.text)
+			runs := s.RenderRowWire(0)
+			got := testing.AllocsPerRun(300, func() {
+				s.RenderRowWire(0)
+			})
+			if got > tc.max {
+				t.Errorf("RenderRowWire(0) on a %s row of %d columns and %d runs allocated %v times per run, want at most %v: this class costs more than it did when the bound was measured, and it is on the path of every rendered frame",
+					name, width, len(runs), got, tc.max)
+			}
+			t.Logf("%s: %d runs, %v allocations", name, len(runs), got)
+		})
+	}
+}
+
+// allocRowScreenText builds the per-cell-styled row text the class table above
+// shares with the per-run contract, so the two measure the same fixture.
+func allocRowScreenText(width int, kind string) string {
+	var b strings.Builder
+	for i := range width {
+		if kind == "palette" {
+			fmt.Fprintf(&b, "\x1b[%dm%c", 31+i%7, 'a'+i%26)
+			continue
+		}
+		fmt.Fprintf(&b, "\x1b[38;2;%d;%d;%dm%c", i%256, (i*7)%256, (i*13)%256, 'a'+i%26)
+	}
+	return b.String()
 }

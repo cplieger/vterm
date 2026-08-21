@@ -1262,10 +1262,12 @@ export class LineStore {
     const tailKeys = [...this.lines.keys()]
       .filter((k) => !this.browse.has(k))
       .sort((a, b) => a - b);
+    // `excess >= 1` here, so no guard: `tailCount` is `lines.size -
+    // browse.size` while `tailKeys.length` is `lines.size` minus the browse
+    // keys that are ACTUALLY in `lines`, so `tailKeys.length >= tailCount`
+    // unconditionally — and reaching this line means the gate above found
+    // `tailCount > keep`.
     const excess = tailKeys.length - keep;
-    if (excess <= 0) {
-      return false;
-    }
     const winFloor = this.win.height > 0 ? this.win.base : Number.POSITIVE_INFINITY;
     return this.classifyAsBrowse(tailKeys.slice(0, excess).filter((k) => k < winFloor)) > 0;
   }
@@ -1932,11 +1934,15 @@ export class LineStore {
         // keeps the classification consistent if one ever does.)
         this.everEvictedThrough = Math.max(this.everEvictedThrough, victim);
       }
-      if (this.lines.size === 0) {
-        this.oldest = -1;
-        this.highest = -1;
-        return;
-      }
+      // No empty-store arm: the walk cannot evict the last line. The loop
+      // guard's `cursor < this.highest` conjunct stops it once the cursor
+      // reaches the newest key, and with a protected window the sibling
+      // `cursor > winBottom` cannot hold there either. That is the ONLY thing
+      // holding when the target is 0, which `new LineStore(0)` produces
+      // (`evictionBatch(0)` is 1, so `target = 0 - 1 + 1`; the bare
+      // constructor accepts 0, unlike `render.init` and `fromSnapshot`, which
+      // both require a positive integer) — a reason to leave that conjunct
+      // alone.
       // Advance to the lowest remaining key above the victim. Contiguous
       // history (the common case: live scroll-off, resume replay, a
       // cat-bigfile burst) leaves victim + 1 present -- an O(1) probe. Only a

@@ -42,6 +42,32 @@ func TestOSC52ClipboardFrame(t *testing.T) {
 	}
 }
 
+// TestOSC52ClipboardSurvivesLaterOutput pins that a staged copy is held until a
+// frame carries it. Output keeps arriving between flushes, and each arrival
+// re-reads the screen's clipboard slot — which is empty by then, because the copy
+// was already taken. Letting that empty read overwrite the staged copy would drop
+// the user's clipboard whenever the program printed anything after the OSC 52.
+func TestOSC52ClipboardSurvivesLaterOutput(t *testing.T) {
+	h := NewHandler([]string{"/bin/true"})
+
+	h.registry.Add(&websocket.Conn{})
+	h.handlePTYData([]byte("\x1b]52;c;aGVsbG8=\x07")) // base64("hello")
+	h.handlePTYData([]byte("more output\r\n"))        // no copy in this chunk
+
+	if got := string(h.pendingClipboard); got != "hello" {
+		t.Fatalf("pendingClipboard = %q after later output, want hello", got)
+	}
+	frame, _ := h.buildFrame()
+	if frame == nil || frame.clipboardPayload == nil {
+		t.Fatal("no clipboard payload in the frame; the staged copy was lost")
+	}
+	p := frame.clipboardPayload
+	textLen := binary.LittleEndian.Uint16(p[9:11])
+	if got := string(p[11 : 11+textLen]); got != "hello" {
+		t.Errorf("payload text = %q, want hello", got)
+	}
+}
+
 // TestOSC4ForcesRepaintPending verifies an OSC 4 palette change raises the
 // handler's repaint-pending flag, which buildFrame consumes (calling
 // builder.Reset() so already-drawn cells re-resolve to the new palette).

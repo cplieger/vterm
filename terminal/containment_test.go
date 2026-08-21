@@ -1,10 +1,12 @@
 package terminal
 
 import (
+	"bytes"
 	"errors"
 	"log/slog"
 	"strings"
 	"testing"
+	"time"
 )
 
 // TestSanitizeCgroupName pins the whitelist. A sanitized id becomes a directory
@@ -113,5 +115,35 @@ func TestWithContainmentNilIsNoop(t *testing.T) {
 	h.contain.teardown()
 	if mem, pids := h.contain.peaks(); mem != 0 || pids != 0 {
 		t.Fatalf("nil peaks = (%d, %d), want (0, 0)", mem, pids)
+	}
+}
+
+// TestUncontainedSessionIsSilent pins that a consumer who never enabled
+// containment pays nothing for it — not a cgroup attempt, and not a periodic
+// cost line. Both halves are log contracts on purpose: containment is optional,
+// so its absence is the ORDINARY case, and a warning or a per-interval Info line
+// on the ordinary case is noise in every operator's log stream forever. The cost
+// line would also be reading a cgroup that does not exist, so its numbers would
+// be zeros presented as measurements.
+//
+// Not parallel: it asserts on a captured logger and waits out several sampler
+// intervals.
+func TestUncontainedSessionIsSilent(t *testing.T) {
+	var buf bytes.Buffer
+	h := NewHandler([]string{"/bin/cat"},
+		WithLogger(slog.New(slog.NewTextHandler(&buf, nil))),
+		WithContainmentSampleInterval(10*time.Millisecond))
+	defer h.Close()
+	if err := h.StartEager(); err != nil {
+		t.Fatalf("StartEager: %v", err)
+	}
+	// Long enough that a live sampler at 10ms would have logged many times.
+	time.Sleep(250 * time.Millisecond)
+
+	if got := buf.String(); strings.Contains(got, "containment unavailable for session") {
+		t.Errorf("an unconfigured handler reported containment unavailable; log: %s", got)
+	}
+	if got := buf.String(); strings.Contains(got, "terminal: session cost") {
+		t.Errorf("an uncontained session logged a cost line; log: %s", got)
 	}
 }

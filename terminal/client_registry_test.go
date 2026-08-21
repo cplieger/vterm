@@ -508,3 +508,65 @@ func TestPerSenderResumeKeysKeepIndependentLedgers(t *testing.T) {
 		t.Errorf("B's resume = (ack %d, created %v), want (50, false)", ack, created)
 	}
 }
+
+// TestMinLiveSize_skipsAClientMissingEitherDimension verifies each dimension is
+// screened on its own: a client whose cols or rows is still unknown is not a
+// sized client, so it must not enter the minimum. A single unscreened zero would
+// pull the shared screen to a zero width or height — the whole screen, for every
+// attached client, on one half-initialised socket.
+func TestMinLiveSize_skipsAClientMissingEitherDimension(t *testing.T) {
+	t.Run("rows reported without cols", func(t *testing.T) {
+		r := newClientRegistry(slog.Default())
+		r.clients[new(websocket.Conn)] = &clientState{cols: 80, rows: 24}
+		r.clients[new(websocket.Conn)] = &clientState{rows: 24} // cols never reported
+
+		cols, rows, ok := r.MinLiveSize()
+		if !ok || cols != 80 || rows != 24 {
+			t.Errorf("MinLiveSize() = (%d, %d, %v), want (80, 24, true): a client with no cols is not sized", cols, rows, ok)
+		}
+	})
+
+	t.Run("cols reported without rows", func(t *testing.T) {
+		r := newClientRegistry(slog.Default())
+		r.clients[new(websocket.Conn)] = &clientState{cols: 80, rows: 24}
+		r.clients[new(websocket.Conn)] = &clientState{cols: 80} // rows never reported
+
+		cols, rows, ok := r.MinLiveSize()
+		if !ok || cols != 80 || rows != 24 {
+			t.Errorf("MinLiveSize() = (%d, %d, %v), want (80, 24, true): a client with no rows is not sized", cols, rows, ok)
+		}
+	})
+}
+
+// TestResolveSession_retainsExactlyTheCap pins the other side of the cap
+// eviction: at maxResumeSessions the map is FULL, not over, so nothing is
+// evicted. The distinction is a retained ledger: evicting at the cap would drop
+// the oldest legitimate resume state one session before the cap is actually
+// reached, and the client that owned it reconnects to a ledger-lost banner.
+func TestResolveSession_retainsExactlyTheCap(t *testing.T) {
+	r := newClientRegistry(slog.Default())
+	now := time.Now()
+
+	// Distinctly the oldest, but well inside the 60-minute retention window so
+	// the idle GC is not the remover under test.
+	const oldestID = "oldest"
+	r.sessions[oldestID] = &sessionState{lastSeen: now.Add(-30 * time.Minute)}
+	// One short of the cap, so the newcomer below lands exactly ON it.
+	for i := 1; i < maxResumeSessions-1; i++ {
+		r.sessions[SessionID([]byte{byte(i), byte(i >> 8)})] = &sessionState{lastSeen: now.Add(-time.Minute)}
+	}
+	if len(r.sessions) != maxResumeSessions-1 {
+		t.Fatalf("setup: %d sessions, want maxResumeSessions-1 = %d", len(r.sessions), maxResumeSessions-1)
+	}
+
+	r.ResolveSession(&clientState{}, "newcomer")
+
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if got := len(r.sessions); got != maxResumeSessions {
+		t.Errorf("at the cap: %d sessions retained, want %d (the cap is full, not exceeded)", got, maxResumeSessions)
+	}
+	if _, ok := r.sessions[oldestID]; !ok {
+		t.Errorf("the oldest session was evicted at the cap; want it retained until the cap is exceeded")
+	}
+}

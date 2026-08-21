@@ -15,6 +15,7 @@ package terminal
 // the sweep is built out of.
 
 import (
+	"log/slog"
 	"os"
 	"os/exec"
 	"slices"
@@ -30,6 +31,25 @@ func registered(pid int) bool {
 	defer spawned.mu.RUnlock()
 	_, ok := spawned.m[pid]
 	return ok
+}
+
+// The registry is the reaper's only safety mechanism, so what it holds must be
+// pids and nothing else: a non-pid recorded as os/exec-owned is an entry nothing
+// ever forgets, since only a real spawn's completion calls spawnForget.
+func TestSpawnRegisterIgnoresANonPid(t *testing.T) {
+	t.Parallel()
+	spawnLock()
+	spawnRegister(0)
+	spawnRegister(-1)
+	spawnUnlock()
+	t.Cleanup(func() { spawnForget(0); spawnForget(-1) })
+
+	if registered(0) {
+		t.Error("spawnRegister(0) entered the os/exec-owned registry; only real pids belong there")
+	}
+	if registered(-1) {
+		t.Error("spawnRegister(-1) entered the os/exec-owned registry; only real pids belong there")
+	}
 }
 
 // The whole safety property of the feature: a pid whose status os/exec still owns
@@ -207,6 +227,9 @@ func TestStatStateAndPPIDParsesAHostileComm(t *testing.T) {
 		{"plain", "42 (sleep) Z 7 42 42 0 -1 0", 'Z', 7, true},
 		{"comm with spaces and parens", "42 (my (odd) proc) S 99 42 42", 'S', 99, true},
 		{"comm containing a close paren last", "42 (weird)name) R 5 42 42", 'R', 5, true},
+		// State and ppid are the only two fields this reader wants, so a line that
+		// stops right after them is complete for its purpose.
+		{"exactly the two fields the reader needs", "42 (sleep) Z 7", 'Z', 7, true},
 		{"no close paren", "42 sleep Z 7", 0, 0, false},
 		{"truncated after comm", "42 (sleep)", 0, 0, false},
 		{"non-numeric ppid", "42 (sleep) Z notapid", 0, 0, false},
@@ -254,9 +277,17 @@ func TestStartZombieReaperStopsCleanlyAndFloorsTheInterval(t *testing.T) {
 
 	// A long interval means the sweep goroutine parks on its ticker and never
 	// fires, so this exercises start/stop without collecting anything.
-	stop := StartZombieReaper(nil, time.Hour)
+	//
+	// The logger is captured to pin the quiet path: on a kernel that accepts the
+	// child-subreaper flag there is nothing to report, and a line claiming the
+	// flag was not set would send an operator hunting a reaper that is working.
+	rec := &recordingHandler{}
+	stop := StartZombieReaper(slog.New(rec), time.Hour)
 	if stop == nil {
 		t.Fatal("StartZombieReaper returned a nil stop function")
+	}
+	if _, logged := rec.find("terminal: child-subreaper flag not set"); logged {
+		t.Error("start logged that the child-subreaper flag was not set, on a kernel that accepted it")
 	}
 	done := make(chan struct{})
 	go func() { stop(); close(done) }()
@@ -266,4 +297,32 @@ func TestStartZombieReaperStopsCleanlyAndFloorsTheInterval(t *testing.T) {
 		t.Fatal("stop() did not return; the sweep goroutine is leaked")
 	}
 	stop() // idempotent enough not to panic on a second call
+}
+
+// TestSessionSpawnRegistersItsHeadPid closes the loop between the spawn path and
+// the reaper: the registry is only a safety mechanism if the spawn actually
+// records what it started. An unregistered head pid is a pid the sweep is free to
+// wait on, and the sweep winning that race makes cmd.Wait report "no child
+// processes" — so the session's real exit status, and every consumer contract
+// built on it, is replaced by an unknown one.
+func TestSessionSpawnRegistersItsHeadPid(t *testing.T) {
+	h := NewHandler([]string{"/bin/cat"}, WithLogger(nil))
+	t.Cleanup(h.Close)
+
+	// A resize is what starts the child on the lazy path.
+	h.handleControl(nil, &clientState{}, []byte(`{"type":"resize","cols":40,"rows":20}`), nil)
+
+	h.mu.Lock()
+	started := h.cmd != nil && h.cmd.Process != nil
+	var pid int
+	if started {
+		pid = h.cmd.Process.Pid
+	}
+	h.mu.Unlock()
+	if !started {
+		t.Fatal("the resize did not start a child, so there is no spawn to have registered")
+	}
+	if !registered(pid) {
+		t.Errorf("head pid %d is absent from the os/exec-owned registry; the zombie sweep may wait on it", pid)
+	}
 }

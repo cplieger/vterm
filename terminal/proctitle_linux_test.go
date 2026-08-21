@@ -8,6 +8,8 @@ package terminal
 // that mocked procfs would assert nothing about what the kernel actually reports.
 
 import (
+	"bytes"
+	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -185,6 +187,13 @@ func TestProbeForegroundRunningChild(t *testing.T) {
 			if p.pgid == pid {
 				t.Fatalf("probe reported the shell's own pgid %d while naming a child", p.pgid)
 			}
+			// A named foreground process outranks the cwd, so the readlink is
+			// skipped entirely rather than paid for 4x/s per session and
+			// discarded. An unexpected value here means the ladder is reading
+			// both rungs on every sweep.
+			if p.cwdBase != "" {
+				t.Errorf("probe named %q and also read cwdBase = %q; want the cwd left unread once a process is named", p.procName, p.cwdBase)
+			}
 			return // rung 1 reached
 		}
 		if time.Now().After(deadline) {
@@ -192,6 +201,121 @@ func TestProbeForegroundRunningChild(t *testing.T) {
 			t.Fatalf("foreground child never named; last probe: %+v", p)
 		}
 		time.Sleep(20 * time.Millisecond)
+	}
+}
+
+// TestProbeForeground_ioctlUnavailableStillRestsAtTheCwd pins the ladder's
+// degradation on a host where the foreground group cannot be read at all — a
+// non-tty handle here, a hidepid or procfs-less host in production. The cwd rung
+// answers on its own, so the sweep reports a usable label AND ok=true: the probe
+// learned something, and treating it as "no information" would freeze every
+// session's title at the command basename forever.
+func TestProbeForeground_ioctlUnavailableStillRestsAtTheCwd(t *testing.T) {
+	f, err := os.Open(os.DevNull)
+	if err != nil {
+		t.Fatalf("open %s: %v", os.DevNull, err)
+	}
+	t.Cleanup(func() { _ = f.Close() })
+
+	p := probeForeground(f, os.Getpid())
+
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("Getwd: %v", err)
+	}
+	if want := filepath.Base(wd); p.cwdBase != want {
+		t.Errorf("probe cwdBase = %q, want %q: the cwd rung answers without the ioctl", p.cwdBase, want)
+	}
+	if !p.ok {
+		t.Errorf("probe ok = false with a readable cwd; want true, or the confirmation window holds the seeded command name forever")
+	}
+	if p.err != nil {
+		t.Errorf("probe err = %v, want nil: the sweep learned a label, so there is nothing to report once", p.err)
+	}
+}
+
+// TestProbeForeground_exitedSessionReportsNothingRunning is the other side of
+// that distinction. When the session's process is gone the pty still answers the
+// ioctl (with no foreground group) and the cwd symlink is gone with the process,
+// so the probe learned BOTH answers and both are empty — which is "nothing is
+// running", not "this sweep learned nothing". Reporting the latter would hold a
+// stale process name on a tab whose program has exited.
+func TestProbeForeground_exitedSessionReportsNothingRunning(t *testing.T) {
+	cmd := exec.Command("/bin/cat")
+	ptmx, err := pty.StartWithSize(cmd, &pty.Winsize{Cols: 80, Rows: 24})
+	if err != nil {
+		t.Fatalf("pty.StartWithSize: %v", err)
+	}
+	t.Cleanup(func() { _ = ptmx.Close() })
+	pid := cmd.Process.Pid
+	if err := cmd.Process.Kill(); err != nil {
+		t.Fatalf("kill session process: %v", err)
+	}
+	if _, err := cmd.Process.Wait(); err != nil {
+		t.Fatalf("wait session process: %v", err)
+	}
+
+	p := probeForeground(ptmx, pid)
+
+	if !p.ok {
+		t.Errorf("probe ok = false for an exited session; want true (probed successfully, nothing running)")
+	}
+	if p.err != nil {
+		t.Errorf("probe err = %v, want nil: an exited session is an answer, not a failure to read one", p.err)
+	}
+	if p.procName != "" || p.cwdBase != "" {
+		t.Errorf("probe = {procName:%q cwdBase:%q}, want both empty for an exited session", p.procName, p.cwdBase)
+	}
+}
+
+// TestProcessName_prefersArgv0OverComm pins the two-rung name read and the bound
+// on it. argv[0] wins because the kernel truncates comm at 16 bytes (tmux reads
+// cmdline for the same reason), and comm is the fallback for a process whose
+// argv[0] the bounded read cannot deliver whole — a hostile argv longer than the
+// buffer, where half a path would be a worse label than the executable's name.
+func TestProcessName_prefersArgv0OverComm(t *testing.T) {
+	// Both children exec /bin/sleep, so comm is "sleep" for both and any
+	// difference in the result comes from argv[0] alone.
+	t.Run("argv0 outranks comm", func(t *testing.T) {
+		pid := startWithArgv0(t, "an-argv0-the-kernel-would-truncate-in-comm")
+		if got, want := processName(pid), "an-argv0-the-kernel-would-truncate-in-comm"; got != want {
+			t.Errorf("processName = %q, want %q (argv[0], not the 16-byte comm)", got, want)
+		}
+	})
+
+	t.Run("an argv0 past the bounded read falls back to comm", func(t *testing.T) {
+		pid := startWithArgv0(t, strings.Repeat("x", procNameMaxBytes+100))
+		if got, want := processName(pid), "sleep"; got != want {
+			t.Errorf("processName = %q, want %q (comm, because argv[0] has no terminator inside the bound)", got, want)
+		}
+	})
+}
+
+// startWithArgv0 runs /bin/sleep under a caller-chosen argv[0] and returns its
+// pid once procfs is serving that argv — the exec is asynchronous, so a read
+// taken too early sees the pre-exec image and would silently test the wrong
+// process. comm stays "sleep" whatever argv[0] says, which is what makes the two
+// name rungs distinguishable.
+func startWithArgv0(t *testing.T, argv0 string) int {
+	t.Helper()
+	cmd := exec.Command("/bin/sleep", "60") // #nosec G204 -- fixed test command
+	cmd.Args = []string{argv0, "60"}
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("start /bin/sleep as %.20q...: %v", argv0, err)
+	}
+	t.Cleanup(func() {
+		_ = cmd.Process.Kill()
+		_, _ = cmd.Process.Wait()
+	})
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		if raw, err := os.ReadFile(procPath(cmd.Process.Pid, "cmdline")); err == nil && bytes.Contains(raw, []byte{0}) {
+			return cmd.Process.Pid
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("child %d never published a NUL-terminated cmdline; the exec did not complete", cmd.Process.Pid)
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 }
 
@@ -270,6 +394,7 @@ func TestCleanProcName(t *testing.T) {
 		"plain":            {"vim", "vim"},
 		"controls dropped": {"vi\nm\x1b[31m", "vim[31m"},
 		"del dropped":      {"vi\x7fm", "vim"},
+		"space kept":       {"Google Chrome", "Google Chrome"},
 		"invalid utf8":     {"vim\xff\xfe", ""},
 		"empty":            {"", ""},
 		"bounded":          {long, strings.Repeat("n", procNameMaxRunes)},
@@ -315,5 +440,28 @@ func TestReadArgv0(t *testing.T) {
 	}
 	if got := readArgv0(filepath.Join(dir, "does-not-exist")); got != "" {
 		t.Errorf("readArgv0(missing) = %q, want empty", got)
+	}
+}
+
+// TestProbeAutoTitle_silentWhenTheProbeSucceeds pins the once-per-session notice
+// against its ordinary case. The line exists so an operator on a procfs-less or
+// hidepid-restricted host can tell "this platform cannot" from "this build is
+// broken" — both of which look like a tab named after the command. Emitting it on
+// a host where the probe works destroys exactly that signal.
+func TestProbeAutoTitle_silentWhenTheProbeSucceeds(t *testing.T) {
+	var buf bytes.Buffer
+	h := NewHandler([]string{"/bin/cat"},
+		WithLogger(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))))
+	defer h.Close()
+	if err := h.StartEager(); err != nil {
+		t.Fatalf("StartEager: %v", err)
+	}
+
+	p := h.probeAutoTitle()
+	if !p.ok || p.err != nil {
+		t.Fatalf("probe on a live session = {ok:%v err:%v}, want a successful probe", p.ok, p.err)
+	}
+	if got := buf.String(); strings.Contains(got, "automatic session title unavailable") {
+		t.Errorf("a successful probe logged the unavailable notice; log: %s", got)
 	}
 }

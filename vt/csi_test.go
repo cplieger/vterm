@@ -274,7 +274,8 @@ func TestInsertCharsShifts(t *testing.T) {
 }
 
 // TestInsertCharsAtLastCol verifies inserting more chars than fit at the last
-// column keeps the cursor in bounds.
+// column keeps the cursor in bounds and blanks every column from the cursor to
+// the right margin inclusive (the shifted-out tail is lost).
 func TestInsertCharsAtLastCol(t *testing.T) {
 	s := New(3, 5)
 	s.Write([]byte("ABCDE"))
@@ -286,6 +287,9 @@ func TestInsertCharsAtLastCol(t *testing.T) {
 	}
 	if row < 0 || row >= s.Height {
 		t.Fatalf("row %d out of bounds", row)
+	}
+	if got, want := s.RowString(0), "ABC"; got != want {
+		t.Errorf("RowString(0) after CSI 10 @ at col 3 = %q, want %q (cols 3..4 blanked)", got, want)
 	}
 }
 
@@ -671,5 +675,483 @@ func TestDECFRA_FillsRectangle(t *testing.T) {
 		if got := s.Cells[c.y][c.x].Ch; got != c.ch {
 			t.Errorf("DECFRA Cells[%d][%d].Ch = %q, want %q", c.y, c.x, got, c.ch)
 		}
+	}
+}
+
+// --- Erase selectivity: the '?' private marker is the only difference ---
+
+// TestEraseInDisplaySelectivity verifies the private marker is what makes an
+// erase selective. ED (CSI J) spares only ISO-guarded cells, so it clears a
+// DECSCA-protected cell; DECSED (CSI ? J) spares DECSCA cells. Swapping the two
+// would let a full-screen reset leave guarded content on the display.
+func TestEraseInDisplaySelectivity(t *testing.T) {
+	cases := []struct {
+		name string
+		seq  string
+		want string
+	}{
+		{"ED_clears_protected", "\x1b[2J", ""},
+		{"DECSED_spares_protected", "\x1b[?2J", "AB"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			s := New(2, 6)
+			s.Write([]byte("\x1b[1\"q")) // DECSCA: protect cells printed from here on
+			s.Write([]byte("AB"))
+			s.Write([]byte(tc.seq))
+			if got := s.RowString(0); got != tc.want {
+				t.Errorf("RowString(0) after %q over DECSCA-protected cells = %q, want %q", tc.seq, got, tc.want)
+			}
+		})
+	}
+}
+
+// --- Cursor motion bounds ---
+
+// TestHPRClampsAtLastColumn verifies HPR (CSI a) — a purely relative move with
+// no re-origin — lands on the last column when the requested offset runs past
+// the screen. HPR is the one motion whose only clamp is the shared cursor clamp.
+func TestHPRClampsAtLastColumn(t *testing.T) {
+	s := New(4, 10)
+	s.Write([]byte("\x1b[999a"))
+	if _, col := s.CursorPos(); col != 9 {
+		t.Errorf("col after CSI 999 a on a 10-column screen = %d, want 9", col)
+	}
+}
+
+// TestCursorUpStopsAtTopMargin verifies CUU from a cursor sitting exactly ON the
+// top margin stops there rather than travelling above the scroll region. xterm's
+// CursorUp takes the margin as its floor whenever the cursor starts at or below
+// it, so the boundary row is inside the region, not outside it.
+func TestCursorUpStopsAtTopMargin(t *testing.T) {
+	s := New(8, 10)
+	s.Write([]byte("\x1b[3;6r")) // scroll region rows 3..6 (0-based 2..5)
+	s.Write([]byte("\x1b[3;1H")) // cursor onto the top margin itself
+	s.Write([]byte("\x1b[1A"))
+	if row, _ := s.CursorPos(); row != 2 {
+		t.Errorf("row after CUU from the top margin = %d, want 2 (the margin is the floor)", row)
+	}
+}
+
+// TestCursorDownStopsAtBottomMargin verifies CUD from a cursor sitting exactly ON
+// the bottom margin stops there rather than travelling below the scroll region,
+// mirroring xterm's CursorDown ceiling.
+func TestCursorDownStopsAtBottomMargin(t *testing.T) {
+	s := New(8, 10)
+	s.Write([]byte("\x1b[3;6r")) // scroll region rows 3..6 (0-based 2..5)
+	s.Write([]byte("\x1b[6;1H")) // cursor onto the bottom margin itself
+	s.Write([]byte("\x1b[1B"))
+	if row, _ := s.CursorPos(); row != 5 {
+		t.Errorf("row after CUD from the bottom margin = %d, want 5 (the margin is the ceiling)", row)
+	}
+}
+
+// TestOriginModeColumnRelativeToLeftMargin verifies that under DECOM a column
+// parameter is measured FROM the left margin: with the margin at column 2,
+// CHA 3 lands on absolute column 4, not column 2.
+func TestOriginModeColumnRelativeToLeftMargin(t *testing.T) {
+	s := New(4, 10)
+	s.Write([]byte("\x1b[?69h")) // DECLRMM — enable left/right margins
+	s.Write([]byte("\x1b[3;8s")) // DECSLRM — margins at 0-based cols 2..7
+	s.Write([]byte("\x1b[?6h"))  // DECOM — origin mode
+	s.Write([]byte("\x1b[3G"))   // CHA to the third column of the box
+	if _, col := s.CursorPos(); col != 4 {
+		t.Errorf("col after CHA 3 under origin mode with the left margin at 2 = %d, want 4", col)
+	}
+}
+
+// --- DECFRA rectangle resolution ---
+
+// TestDECFRAOmittedBottomRightFillsToScreenEdge verifies an omitted Pb/Pr
+// defaults to the screen's last row/column: DEC treats a missing rectangle
+// coordinate as the page edge, and the resolved bound must stay inside the grid.
+func TestDECFRAOmittedBottomRightFillsToScreenEdge(t *testing.T) {
+	s := New(3, 5)
+	s.Write([]byte("\x1b[88;1;1$x")) // DECFRA 'X' from row 1, col 1, no Pb/Pr
+	for y := range 3 {
+		if got, want := s.RowString(y), "XXXXX"; got != want {
+			t.Errorf("RowString(%d) after DECFRA with Pb/Pr omitted = %q, want %q", y, got, want)
+		}
+	}
+}
+
+// TestDECFRAHonorsExplicitTopRow verifies an explicit Pt above 1 is used as
+// given rather than collapsed to the first row: DECFRA 2;1;2;3 must leave row 1
+// untouched.
+func TestDECFRAHonorsExplicitTopRow(t *testing.T) {
+	s := New(3, 5)
+	s.Write([]byte("\x1b[88;2;1;2;3$x"))
+	if got, want := s.RowString(0), ""; got != want {
+		t.Errorf("RowString(0) after DECFRA with Pt=2 = %q, want %q (the rectangle starts below row 1)", got, want)
+	}
+	if got, want := s.RowString(1), "XXX"; got != want {
+		t.Errorf("RowString(1) after DECFRA with Pt=2 = %q, want %q", got, want)
+	}
+}
+
+// TestDECFRAOriginModeRowOffset verifies a DECFRA rectangle is origin-mode
+// relative on the vertical axis: with the top margin on row 2 (0-based 1), rows
+// 3..3 of the region resolve to absolute row 3, so neither the top of the region
+// nor anything above it is touched.
+func TestDECFRAOriginModeRowOffset(t *testing.T) {
+	s := New(8, 6)
+	s.Write([]byte("\x1b[2;6r")) // scroll region rows 2..6 (0-based 1..5)
+	s.Write([]byte("\x1b[?6h"))  // DECOM
+	s.Write([]byte("\x1b[88;3;1;3;3$x"))
+	if got, want := s.RowString(3), "XXX"; got != want {
+		t.Errorf("RowString(3) after origin-mode DECFRA rows 3..3 = %q, want %q", got, want)
+	}
+	for _, y := range []int{0, 1, 2, 4, 5, 6, 7} {
+		if got := s.RowString(y); got != "" {
+			t.Errorf("RowString(%d) after origin-mode DECFRA rows 3..3 = %q, want %q", y, got, "")
+		}
+	}
+}
+
+// TestDECFRAOriginModeColumnOffset verifies the same on the horizontal axis:
+// with the left margin at column 2, columns 5..6 of the box resolve to absolute
+// columns 6..7.
+func TestDECFRAOriginModeColumnOffset(t *testing.T) {
+	s := New(4, 10)
+	s.Write([]byte("\x1b[?69h")) // DECLRMM
+	s.Write([]byte("\x1b[3;8s")) // DECSLRM — margins at 0-based cols 2..7
+	s.Write([]byte("\x1b[?6h"))  // DECOM
+	s.Write([]byte("\x1b[88;1;5;1;6$x"))
+	if got, want := s.RowString(0), "      XX"; got != want {
+		t.Errorf("RowString(0) after origin-mode DECFRA cols 5..6 = %q, want %q", got, want)
+	}
+}
+
+// --- DECSLRM parameter range ---
+
+// TestDECSLRMMarginRange verifies how DECSLRM resolves its two parameters, read
+// back through the DECRQSS "s" status string (1-based, so a full-width 20-column
+// screen reports 1;20). A valid range is applied as given; a degenerate range
+// (left == right) is rejected, matching xterm's requirement that the left margin
+// be strictly left of the right one; and a right parameter past the screen is
+// clamped to the last column.
+func TestDECSLRMMarginRange(t *testing.T) {
+	cases := []struct {
+		name string
+		seq  string
+		want string
+	}{
+		{"valid_range_applied", "\x1b[3;8s", "\x1bP1$r3;8s\x1b\\"},
+		{"degenerate_range_rejected", "\x1b[5;5s", "\x1bP1$r1;20s\x1b\\"},
+		{"right_clamped_to_screen", "\x1b[1;999s", "\x1bP1$r1;20s\x1b\\"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			s := New(8, 20)
+			s.Write([]byte("\x1b[?69h")) // DECLRMM — DECSLRM is inert without it
+			s.Write([]byte(tc.seq))
+			s.response = nil
+			s.Write([]byte("\x1bP$qs\x1b\\")) // DECRQSS DECSLRM
+			if got := string(s.response); got != tc.want {
+				t.Errorf("DECRQSS \"s\" after %q = %q, want %q", tc.seq, got, tc.want)
+			}
+		})
+	}
+}
+
+// --- DECSLPP / XTWINOPS parameter split ---
+
+// TestDECSLPPTracksLinesFrom24Up verifies XTWINOPS splits at 24: Ps>=24 is
+// DECSLPP (set lines per page) and is tracked for the DECRQSS "t" report, while
+// a smaller unhandled Ps is not a page-length request and must leave the
+// tracked value alone (the report then falls back to the screen height).
+func TestDECSLPPTracksLinesFrom24Up(t *testing.T) {
+	cases := []struct {
+		name string
+		seq  string
+		want string
+	}{
+		{"lowest_page_length_tracked", "\x1b[24t", "\x1bP1$r24t\x1b\\"},
+		{"below_range_not_tracked", "\x1b[1t", "\x1bP1$r8t\x1b\\"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			s := New(8, 20)
+			s.Write([]byte(tc.seq))
+			s.response = nil
+			s.Write([]byte("\x1bP$qt\x1b\\")) // DECRQSS DECSLPP
+			if got := string(s.response); got != tc.want {
+				t.Errorf("DECRQSS \"t\" after %q = %q, want %q", tc.seq, got, tc.want)
+			}
+		})
+	}
+}
+
+// --- Conformance-level gates ---
+
+// TestDECLRMMRequiresLevel4 verifies DECLRMM (?69) is honored at DECSCL level 4
+// and above and refused below it, matching xterm's gating of a VT level-4
+// feature. The report is DECRQSS "s": margins take effect only when DECLRMM did.
+func TestDECLRMMRequiresLevel4(t *testing.T) {
+	cases := []struct {
+		name  string
+		level string
+		want  string
+	}{
+		{"default_level_5", "", "\x1bP1$r3;8s\x1b\\"},
+		{"level_4_lowest_honored", "\x1b[64\"p", "\x1bP1$r3;8s\x1b\\"},
+		{"level_3_refused", "\x1b[63\"p", "\x1bP1$r1;20s\x1b\\"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			s := New(8, 20)
+			s.Write([]byte(tc.level))
+			s.Write([]byte("\x1b[?69h\x1b[3;8s"))
+			s.response = nil
+			s.Write([]byte("\x1bP$qs\x1b\\"))
+			if got := string(s.response); got != tc.want {
+				t.Errorf("DECRQSS \"s\" after DECSCL %q + DECLRMM + DECSLRM 3;8 = %q, want %q", tc.level, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestDECRQMAnsweredAtLevel3 verifies DECRQM — a VT level-3 feature — is
+// answered at DECSCL level 3 and silently ignored at level 2, where a real
+// terminal would not recognize the sequence.
+func TestDECRQMAnsweredAtLevel3(t *testing.T) {
+	cases := []struct {
+		name  string
+		level string
+		want  string
+	}{
+		{"level_3_lowest_answered", "\x1b[63\"p", "\x1b[?7;1$y"},
+		{"level_2_ignored", "\x1b[62\"p", ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			s := New(8, 20)
+			s.Write([]byte(tc.level))
+			s.response = nil
+			s.Write([]byte("\x1b[?7$p")) // DECRQM for DECAWM
+			if got := string(s.response); got != tc.want {
+				t.Errorf("DECRQM ?7 at DECSCL %q = %q, want %q", tc.level, got, tc.want)
+			}
+		})
+	}
+}
+
+// --- XTSAVE / XTRESTORE ---
+
+// TestXTRestoreReappliesSavedMode verifies XTRESTORE re-applies the state
+// XTSAVE recorded: a mode saved while SET comes back set, even after being
+// reset in between.
+func TestXTRestoreReappliesSavedMode(t *testing.T) {
+	s := New(4, 10)
+	s.Write([]byte("\x1b[?7h")) // DECAWM on
+	s.Write([]byte("\x1b[?7s")) // XTSAVE
+	s.Write([]byte("\x1b[?7l")) // DECAWM off
+	s.Write([]byte("\x1b[?7r")) // XTRESTORE
+	if !s.AutoWrap {
+		t.Errorf("AutoWrap after XTSAVE(set) / reset / XTRESTORE = %v, want true", s.AutoWrap)
+	}
+}
+
+// --- DECCOLM and DECSTR margin reset ---
+
+// TestDECCOLMResetsRegionAndMarginsToFullScreen verifies a column-mode change
+// restores the scroll region and the left/right margins to the whole screen, and
+// that the restored values are the screen's own bounds: re-enabling DECLRMM
+// afterwards without a fresh DECSLRM must describe a full-width box.
+func TestDECCOLMResetsRegionAndMarginsToFullScreen(t *testing.T) {
+	s := New(8, 20)
+	s.Write([]byte("\x1b[?69h\x1b[3;8s")) // a narrow margin box
+	s.Write([]byte("\x1b[2;6r"))          // and a partial scroll region
+	s.Write([]byte("\x1b[?3h"))           // DECCOLM
+	s.response = nil
+	s.Write([]byte("\x1bP$qr\x1b\\")) // DECRQSS DECSTBM
+	if got, want := string(s.response), "\x1bP1$r1;8r\x1b\\"; got != want {
+		t.Errorf("DECRQSS \"r\" after DECCOLM = %q, want %q (region back to the full screen)", got, want)
+	}
+	s.Write([]byte("\x1b[?69h")) // DECLRMM again, no DECSLRM
+	s.response = nil
+	s.Write([]byte("\x1bP$qs\x1b\\"))
+	if got, want := string(s.response), "\x1bP1$r1;20s\x1b\\"; got != want {
+		t.Errorf("DECRQSS \"s\" after DECCOLM then DECLRMM = %q, want %q (margins back to the full width)", got, want)
+	}
+}
+
+// TestSoftResetRestoresFullWidthMargins verifies DECSTR returns the left/right
+// margins to the screen's own bounds, so re-enabling DECLRMM after a soft reset
+// describes a full-width box rather than one running past the last column.
+func TestSoftResetRestoresFullWidthMargins(t *testing.T) {
+	s := New(8, 20)
+	s.Write([]byte("\x1b[?69h\x1b[3;8s")) // a narrow margin box
+	s.Write([]byte("\x1b[!p"))            // DECSTR
+	s.Write([]byte("\x1b[?69h"))          // DECLRMM again, no DECSLRM
+	s.response = nil
+	s.Write([]byte("\x1bP$qs\x1b\\"))
+	if got, want := string(s.response), "\x1bP1$r1;20s\x1b\\"; got != want {
+		t.Errorf("DECRQSS \"s\" after DECSTR then DECLRMM = %q, want %q", got, want)
+	}
+}
+
+// --- DCH cell shifting ---
+
+// TestDeleteCharsShiftsAndBlanksTail verifies DCH pulls every cell up to the
+// right margin leftward by n and blanks exactly the n vacated cells at the
+// margin, so the last column ends up blank rather than a duplicate.
+func TestDeleteCharsShiftsAndBlanksTail(t *testing.T) {
+	cases := []struct {
+		name string
+		seq  string
+		want string
+	}{
+		{"delete_one", "\x1b[1P", "BCDEFGHIJ"},
+		{"delete_two", "\x1b[2P", "CDEFGHIJ"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			s := New(1, 10)
+			s.Write([]byte("ABCDEFGHIJ"))
+			s.Write([]byte("\x1b[1;1H"))
+			s.Write([]byte(tc.seq))
+			if got := s.RowString(0); got != tc.want {
+				t.Errorf("RowString(0) after %q at col 0 = %q, want %q", tc.seq, got, tc.want)
+			}
+		})
+	}
+}
+
+// --- DECIC / DECDC ---
+
+// TestDECICInsertsAndClampsCount verifies DECIC shifts the row right by n and
+// clamps n to the columns between the cursor and the right margin: a count at or
+// past that span blanks the rest of the row and nothing outside it.
+func TestDECICInsertsAndClampsCount(t *testing.T) {
+	cases := []struct {
+		name string
+		seq  string
+		want string
+	}{
+		{"insert_two_at_left", "\x1b[1;1H\x1b[2'}", "  ABCDEFGH"},
+		{"count_equal_to_span", "\x1b[1;1H\x1b[10'}", ""},
+		{"count_past_span_mid_row", "\x1b[1;4H\x1b[65535'}", "ABC"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			s := New(1, 10)
+			s.Write([]byte("ABCDEFGHIJ"))
+			s.Write([]byte(tc.seq))
+			if got := s.RowString(0); got != tc.want {
+				t.Errorf("RowString(0) after DECIC %q = %q, want %q", tc.seq, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestDECDCDeletesAndClampsCount verifies DECDC shifts the row left by n,
+// blanks the n vacated cells at the right margin, and clamps n to the columns
+// between the cursor and that margin.
+func TestDECDCDeletesAndClampsCount(t *testing.T) {
+	cases := []struct {
+		name string
+		seq  string
+		want string
+	}{
+		{"delete_two_at_left", "\x1b[1;1H\x1b[2'~", "CDEFGHIJ"},
+		{"count_equal_to_span", "\x1b[1;1H\x1b[10'~", ""},
+		{"count_past_span_mid_row", "\x1b[1;4H\x1b[65535'~", "ABC"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			s := New(1, 10)
+			s.Write([]byte("ABCDEFGHIJ"))
+			s.Write([]byte(tc.seq))
+			if got := s.RowString(0); got != tc.want {
+				t.Errorf("RowString(0) after DECDC %q = %q, want %q", tc.seq, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestDECICAppliesToEveryRegionRow verifies DECIC is a column operation over the
+// whole vertical scroll region, not just the cursor's row: the region's last row
+// shifts whether the cursor sits on it or on the first row.
+func TestDECICAppliesToEveryRegionRow(t *testing.T) {
+	cases := []struct {
+		name   string
+		cursor string
+	}{
+		{"cursor_on_first_region_row", "\x1b[1;1H"},
+		{"cursor_on_last_region_row", "\x1b[3;1H"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			s := New(3, 10)
+			s.Write([]byte("\x1b[3;1HABCDEFGHIJ")) // content on the region's last row
+			s.Write([]byte(tc.cursor))
+			s.Write([]byte("\x1b[2'}"))
+			if got, want := s.RowString(2), "  ABCDEFGH"; got != want {
+				t.Errorf("RowString(2) after DECIC 2 with the cursor at %q = %q, want %q", tc.cursor, got, want)
+			}
+		})
+	}
+}
+
+// TestDECDCAppliesToEveryRegionRow is TestDECICAppliesToEveryRegionRow's mirror
+// for DECDC.
+func TestDECDCAppliesToEveryRegionRow(t *testing.T) {
+	cases := []struct {
+		name   string
+		cursor string
+	}{
+		{"cursor_on_first_region_row", "\x1b[1;1H"},
+		{"cursor_on_last_region_row", "\x1b[3;1H"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			s := New(3, 10)
+			s.Write([]byte("\x1b[3;1HABCDEFGHIJ"))
+			s.Write([]byte(tc.cursor))
+			s.Write([]byte("\x1b[2'~"))
+			if got, want := s.RowString(2), "CDEFGHIJ"; got != want {
+				t.Errorf("RowString(2) after DECDC 2 with the cursor at %q = %q, want %q", tc.cursor, got, want)
+			}
+		})
+	}
+}
+
+// --- Row identity through the full-width line shifts ---
+
+// TestInsertLinesCarriesSoftWrapFlag verifies a full-width IL moves whole rows,
+// so a row's soft-wrap continuation flag travels with its content. The flag is
+// observable through the wire encoding: a row that wrapped onto the row below
+// keeps its trailing blanks, because there they are mid-line content rather than
+// padding. A shift that moved cell contents but left the flags behind would ship
+// the wrong row as the continuation.
+func TestInsertLinesCarriesSoftWrapFlag(t *testing.T) {
+	s := New(4, 10)
+	s.Write([]byte("foo       bar")) // fills row 0 exactly, wraps "bar" onto row 1
+	if got, want := wireRowText(s.RenderRowWire(0)), "foo       "; got != want {
+		t.Fatalf("fixture: RenderRowWire(0) = %q, want %q (row 0 must soft-wrap onto row 1)", got, want)
+	}
+	s.Write([]byte("\x1b[1;1H\x1b[1L")) // IL 1 at the top: the pair moves down one row
+	if got, want := s.RowString(1), "foo"; got != want {
+		t.Fatalf("RowString(1) after IL 1 = %q, want %q", got, want)
+	}
+	if got, want := wireRowText(s.RenderRowWire(1)), "foo       "; got != want {
+		t.Errorf("RenderRowWire(1) after IL 1 = %q, want %q (the wrap flag must move with the row)", got, want)
+	}
+}
+
+// TestScrollDownCarriesSoftWrapFlag verifies the same for a full-width SD.
+func TestScrollDownCarriesSoftWrapFlag(t *testing.T) {
+	s := New(4, 10)
+	s.Write([]byte("foo       bar"))
+	if got, want := wireRowText(s.RenderRowWire(0)), "foo       "; got != want {
+		t.Fatalf("fixture: RenderRowWire(0) = %q, want %q (row 0 must soft-wrap onto row 1)", got, want)
+	}
+	s.Write([]byte("\x1b[1T")) // SD 1
+	if got, want := s.RowString(1), "foo"; got != want {
+		t.Fatalf("RowString(1) after SD 1 = %q, want %q", got, want)
+	}
+	if got, want := wireRowText(s.RenderRowWire(1)), "foo       "; got != want {
+		t.Errorf("RenderRowWire(1) after SD 1 = %q, want %q (the wrap flag must move with the row)", got, want)
 	}
 }

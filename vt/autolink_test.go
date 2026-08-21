@@ -82,6 +82,168 @@ func collectFirst(runs []WireRun) []WireRun {
 	return out
 }
 
+// TestAutolinkStampsEveryURLInARow: a row carrying two bare URLs gets an anchor
+// for each, with its own href — a shell printing two links on one line is
+// ordinary output, and stamping only the first would leave the second plain.
+func TestAutolinkStampsEveryURLInARow(t *testing.T) {
+	const (
+		first  = "https://a.example/1"
+		second = "https://b.example/2"
+	)
+	s := New(3, 60)
+	if _, err := s.Write([]byte(first + " and " + second)); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	stamped, joined := collectLinks(s.RenderRowWire(0))
+	if joined != first+second {
+		t.Errorf("stamped text = %q, want both URLs %q", joined, first+second)
+	}
+	if len(stamped) == 0 {
+		t.Fatalf("RenderRowWire(0) stamped nothing on a row with two URLs")
+	}
+	if got := stamped[0].U; got != first {
+		t.Errorf("first anchor href = %q, want %q", got, first)
+	}
+	if got := stamped[len(stamped)-1].U; got != second {
+		t.Errorf("last anchor href = %q, want %q", got, second)
+	}
+}
+
+// TestAutolinkAnchorStopsAtTheURLInsideAStyledRow: a URL that begins partway
+// into a run must be anchored exactly, with the styled text before it and the
+// plain text after it left alone. The run has to be split in three, and each
+// piece keeps the run's own colors — a red "ERROR:" prefix stays red.
+func TestAutolinkAnchorStopsAtTheURLInsideAStyledRow(t *testing.T) {
+	const url = "https://ex.co"
+	s := New(3, 60)
+	if _, err := s.Write([]byte("\x1b[31mERROR: connection refused\x1b[0m " + url + " and retry")); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	runs := s.RenderRowWire(0)
+	stamped, joined := collectLinks(runs)
+	if joined != url {
+		t.Errorf("stamped text = %q, want exactly the URL %q", joined, url)
+	}
+	for _, r := range stamped {
+		if r.U != url {
+			t.Errorf("anchor href = %q, want %q", r.U, url)
+		}
+	}
+	if len(runs) == 0 {
+		t.Fatalf("RenderRowWire(0) = no runs")
+	}
+	// The styled prefix is a separate run and keeps its color.
+	if got := runs[0].T; got != "ERROR: connection refused" {
+		t.Errorf("run[0].T = %q, want %q", got, "ERROR: connection refused")
+	}
+	if got := runs[0].F; got != 0xcc0403 {
+		t.Errorf("run[0].F = 0x%06x, want 0xcc0403 (the prefix stays red)", got)
+	}
+	if runs[0].A&AttrAutolink != 0 {
+		t.Errorf("run[0] %q gained the autolink bit; only the URL is an anchor", runs[0].T)
+	}
+	if got := runs[len(runs)-1].T; got != " and retry" {
+		t.Errorf("last run.T = %q, want %q (the text after the URL is not part of the anchor)", got, " and retry")
+	}
+}
+
+// TestAutolinkAnchorStopsAtTheURLOnAWrappedRow is the same boundary on the far
+// side of a soft wrap: the continuation row's anchor covers the rest of the URL
+// and nothing beyond it, even though the match's offsets are measured in the
+// joined chain rather than in the row.
+func TestAutolinkAnchorStopsAtTheURLOnAWrappedRow(t *testing.T) {
+	const url = "https://ex.com/aaaaaaaaaa" // 25 chars: wraps at 20 cols
+	s := New(4, 20)
+	if _, err := s.Write([]byte(url + " tail")); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	if !s.wrapped[1] {
+		t.Fatalf("fixture: row 1 is not a soft-wrap continuation, so the case under test did not arise")
+	}
+	_, joined0 := collectLinks(s.RenderRowWire(0))
+	if joined0 != url[:20] {
+		t.Errorf("row 0 stamped %q, want %q", joined0, url[:20])
+	}
+	stamped1, joined1 := collectLinks(s.RenderRowWire(1))
+	if joined1 != url[20:] {
+		t.Errorf("row 1 stamped %q, want %q (the anchor stops where the URL does)", joined1, url[20:])
+	}
+	for _, r := range stamped1 {
+		if r.U != url {
+			t.Errorf("row 1 anchor href = %q, want the FULL url %q", r.U, url)
+		}
+	}
+	runs := s.RenderRowWire(1)
+	if len(runs) == 0 {
+		t.Fatalf("RenderRowWire(1) = no runs")
+	}
+	if got := runs[len(runs)-1].T; got != " tail" {
+		t.Errorf("last run.T = %q, want %q (text after the URL is not part of the anchor)", got, " tail")
+	}
+}
+
+// TestAutolinkScanWindowFollowsTheRenderedRow pins the bound on the URL scan: at
+// most maxAutolinkRows rows of a wrap chain are joined, and the window is the
+// rows NEAREST the one being rendered, so on a chain longer than the window
+// different rows see different amounts of the URL. The fixture is a chain of
+// five 20-column rows — a prefix line that wraps, then a 65-char URL across the
+// remaining four — so the early rows' window still holds the prefix and stops
+// short of the URL's tail, while the later rows' window has slid off the prefix
+// and holds the whole URL. The bound is what keeps per-row rendering work
+// constant; four rows cover any real URL at phone widths.
+func TestAutolinkScanWindowFollowsTheRenderedRow(t *testing.T) {
+	const (
+		prefix = "look at this link:  " // exactly 20 columns, so it soft-wraps
+		url    = "https://ex.com/aaaaaaaaaa/bbbbbbbbbb/cccccccccc/dddddddddd/eeeeee"
+	)
+	if len(prefix) != 20 || len(url) != 65 {
+		t.Fatalf("fixture: prefix is %d columns and url is %d chars, want 20 and 65", len(prefix), len(url))
+	}
+	s := New(7, 20)
+	// An unrelated first line, then one logical line wrapping across rows 1..5.
+	if _, err := s.Write([]byte("x\r\n" + prefix + url)); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	if s.wrapped[1] || !s.wrapped[5] {
+		t.Fatalf("fixture: wrap flags are %v, want row 1 opening the chain and row 5 continuing it", s.wrapped)
+	}
+
+	cases := []struct {
+		name    string
+		row     int
+		want    string // stamped text on that row
+		wantURL string // href on that row, "" when the row must carry no anchor
+	}{
+		{name: "prefix_row", row: 1, want: "", wantURL: ""},
+		{name: "url_starts_here", row: 2, want: url[:20], wantURL: url[:60]},
+		{name: "window_still_holds_the_prefix", row: 3, want: url[20:40], wantURL: url[:60]},
+		{name: "window_has_slid_off_the_prefix", row: 4, want: url[40:60], wantURL: url},
+		{name: "chain_end", row: 5, want: url[60:], wantURL: url},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			stamped, joined := collectLinks(s.RenderRowWire(tc.row))
+			if joined != tc.want {
+				t.Errorf("RenderRowWire(%d) stamped %q, want %q", tc.row, joined, tc.want)
+			}
+			if tc.wantURL == "" {
+				if len(stamped) != 0 {
+					t.Errorf("RenderRowWire(%d) stamped %d run(s), want none", tc.row, len(stamped))
+				}
+				return
+			}
+			if len(stamped) == 0 {
+				t.Fatalf("RenderRowWire(%d) stamped nothing, want href %q", tc.row, tc.wantURL)
+			}
+			for _, r := range stamped {
+				if r.U != tc.wantURL {
+					t.Errorf("RenderRowWire(%d) anchor href = %q, want %q", tc.row, r.U, tc.wantURL)
+				}
+			}
+		})
+	}
+}
+
 // TestAutolinkHardNewlineDoesNotJoin: a hard newline is not a wrap; two
 // adjacent rows must not be joined even when row texts abut URL-ishly.
 func TestAutolinkHardNewlineDoesNotJoin(t *testing.T) {
@@ -328,6 +490,13 @@ func TestAutolinkHardWrapRejects(t *testing.T) {
 			first:  "https://ex.com/aaaaaaaaaaaaaaaaaaaaaaaaaa", // 41, exactly full
 			second: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
 			want:   "https://ex.com/aaaaaaaaaaaaaaaaaaaaaaaaaa",
+		},
+		// Nothing follows on the next row at all: an all-blank row shares no
+		// indent with the line above, so it continues nothing.
+		"next row blank": {
+			first:  "        https://ex.com/aaaaaaaaaaaaaaaaaa", // 8 + 33 = 41, exactly full
+			second: "",
+			want:   "https://ex.com/aaaaaaaaaaaaaaaaaa",
 		},
 	}
 	for name, tc := range cases {

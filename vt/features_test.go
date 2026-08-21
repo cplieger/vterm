@@ -69,6 +69,34 @@ func TestOSC52ClipboardSet(t *testing.T) {
 	}
 }
 
+// TestOSC52ClearQueuesNoClipboardPush: a payload that is neither base64 data
+// nor "?" clears the session selection (xterm's rule), and clearing must NOT
+// queue a clipboard push — the consumer forwards whatever is queued to the
+// system clipboard, so an empty push would wipe what the user had copied.
+func TestOSC52ClearQueuesNoClipboardPush(t *testing.T) {
+	s := New(2, 10)
+	if _, err := s.Write([]byte("\x1b]52;c;aGVsbG8=\x07")); err != nil { // base64("hello")
+		t.Fatalf("write set: %v", err)
+	}
+	if got := string(s.TakeClipboard()); got != "hello" {
+		t.Fatalf("fixture: TakeClipboard() after set = %q, want hello", got)
+	}
+	if _, err := s.Write([]byte("\x1b]52;c;\x07")); err != nil { // empty payload: a clear
+		t.Fatalf("write clear: %v", err)
+	}
+	if got := s.TakeClipboard(); got != nil {
+		t.Errorf("TakeClipboard() after an OSC 52 clear = %q, want nothing queued", got)
+	}
+	// The selection itself is gone: an enabled read-back reports empty data.
+	s.AllowScreenReport = true
+	if _, err := s.Write([]byte("\x1b]52;c;?\x07")); err != nil {
+		t.Fatalf("write query: %v", err)
+	}
+	if got, want := string(s.TakeResponse()), "\x1b]52;c;\x1b\\"; got != want {
+		t.Errorf("OSC 52 query after a clear = %q, want %q", got, want)
+	}
+}
+
 // OSC 52 GET ("?") is denied by default (AllowScreenReport off): no clipboard
 // event, no response. The read-back is gated behind AllowScreenReport (the
 // DECRQCRA inject-vector precedent); see TestOSC52QueryRoundTrip for the
@@ -485,6 +513,35 @@ func TestTitleReportStripsControlRunes(t *testing.T) {
 			setSeq: "\x1b]1;69007fc29b6e\x07", // hex "i" NUL DEL U+009B "n"
 			report: "\x1b[20t",
 			want:   "\x1b]Lin\x1b\\",
+		},
+		{
+			// The C1 block's low end. Stripping starts at U+0080, not after it.
+			name:   "C1 block start U+0080 stripped (WINOP 21)",
+			setSeq: "\x1b]2;61c28062\x07", // hex "a" U+0080 "b"
+			report: "\x1b[21t",
+			want:   "\x1b]lab\x1b\\",
+		},
+		{
+			// The C1 block's high end. Stripping still covers U+009F.
+			name:   "C1 block end U+009F stripped (WINOP 21)",
+			setSeq: "\x1b]2;61c29f62\x07", // hex "a" U+009F "b"
+			report: "\x1b[21t",
+			want:   "\x1b]lab\x1b\\",
+		},
+		{
+			// One past the C1 block: NBSP is ordinary text and survives.
+			name:   "U+00A0 above the C1 block is kept (WINOP 21)",
+			setSeq: "\x1b]2;61c2a062\x07", // hex "a" U+00A0 "b"
+			report: "\x1b[21t",
+			want:   "\x1b]la\u00a0b\x1b\\",
+		},
+		{
+			// A space is printable, not a control: a multi-word title must
+			// report back with its spaces intact.
+			name:   "a space in the title is kept (WINOP 21)",
+			setSeq: "\x1b]2;612062\x07", // hex "a" SP "b"
+			report: "\x1b[21t",
+			want:   "\x1b]la b\x1b\\",
 		},
 	}
 	for _, tc := range cases {

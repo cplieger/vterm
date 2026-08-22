@@ -77,6 +77,36 @@ func TestSGRParamsStringUnderlineColor(t *testing.T) {
 	}
 }
 
+// TestSGRParamsStringPaletteColors pins how a 16-color palette slot is
+// re-emitted, which is what a DECRQSS "m" query reports back to the application.
+// ECMA-48 assigns the first eight slots 30-37 (foreground) and 40-47
+// (background); the bright half has no ECMA-48 codes and rides xterm's 90-97 /
+// 100-107 instead. Emitting base+Val for a bright slot would produce 38 or 48,
+// which a reader parses as the opening of an extended-color sequence rather than
+// as a color at all.
+func TestSGRParamsStringPaletteColors(t *testing.T) {
+	cases := []struct {
+		name string
+		st   Style
+		want string
+	}{
+		{"first normal foreground", Style{FG: Color{Type: 1, Val: 0}}, "0;30"},
+		{"last normal foreground", Style{FG: Color{Type: 1, Val: 7}}, "0;37"},
+		{"first bright foreground", Style{FG: Color{Type: 1, Val: 8}}, "0;90"},
+		{"last bright foreground", Style{FG: Color{Type: 1, Val: 15}}, "0;97"},
+		{"last normal background", Style{BG: Color{Type: 1, Val: 7}}, "0;47"},
+		{"first bright background", Style{BG: Color{Type: 1, Val: 8}}, "0;100"},
+		{"last bright background", Style{BG: Color{Type: 1, Val: 15}}, "0;107"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := sgrParamsString(tc.st); got != tc.want {
+				t.Errorf("sgrParamsString(%+v) = %q, want %q", tc.st, got, tc.want)
+			}
+		})
+	}
+}
+
 // TestParseExtColorMissingFollowingGroup verifies that SGR 38 with no following
 // mode group leaves the color unset and returns the same index (no advance).
 func TestParseExtColorMissingFollowingGroup(t *testing.T) {

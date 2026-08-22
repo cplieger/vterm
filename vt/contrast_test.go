@@ -115,6 +115,79 @@ func TestEnsureContrastLiftIsMinimal(t *testing.T) {
 	}
 }
 
+// TestEnsureContrastTreatsTheFloorAsInclusive covers the three places a color is
+// compared against the requested ratio. WCAG states every threshold as "at
+// least" a ratio, so a color sitting exactly ON the floor passes and nothing
+// above it has to move.
+//
+// Each case asks for the ratio one specific color already achieves against the
+// background, which is why the floors are derived here instead of written as
+// decimals: the boundary is only reached when the requested ratio and the
+// measured one are bit-identical, and no decimal literal expresses that.
+func TestEnsureContrastTreatsTheFloorAsInclusive(t *testing.T) {
+	const midGrey = int32(0x808080)
+	cases := []struct {
+		name   string
+		fg, bg int32
+		ratio  float64
+		want   int32
+	}{
+		{
+			// Pure red measures 1.0124:1 against mid grey. Asked for exactly
+			// that, the pair already complies and the color is handed back
+			// untouched rather than nudged one step toward black.
+			name: "a pair already at the floor is untouched",
+			fg:   0xff0000, bg: midGrey,
+			ratio: contrastRatio(0xff0000, midGrey),
+			want:  0xff0000,
+		},
+		{
+			// White is the best the lightening direction can do here, 3.9494:1.
+			// A floor exactly at that ceiling is still reachable, so the lift
+			// keeps its direction instead of abandoning it and darkening.
+			name: "an extreme exactly at the floor is still reachable",
+			fg:   0xc0c0c0, bg: midGrey,
+			ratio: contrastRatio(0xffffff, midGrey),
+			want:  0xffffff,
+		},
+		{
+			// 0xe0e0e0 measures 2.9918:1 against mid grey. Asked for exactly
+			// that, the search settles on it instead of blending further and
+			// washing out more of the color than legibility needs.
+			name: "the lift stops at the blend that exactly meets the floor",
+			fg:   0xc0c0c0, bg: midGrey,
+			ratio: contrastRatio(0xe0e0e0, midGrey),
+			want:  0xe0e0e0,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := ensureContrast(tc.fg, tc.bg, tc.ratio); got != tc.want {
+				t.Errorf("ensureContrast(%#06x, %#06x, %.4f) = %#06x, want %#06x",
+					tc.fg, tc.bg, tc.ratio, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestEnsureContrastLightensOnALuminanceTie pins the documented tie rule. When
+// the text and its background sit at the same luminance there is no "away from
+// the background" direction to pick, and the function lightens. Grey on grey is
+// that case: it fails any floor above 1:1, and both extremes can reach a modest
+// one, so the tie is what decides which way the color moves.
+func TestEnsureContrastLightensOnALuminanceTie(t *testing.T) {
+	const midGrey = int32(0x808080)
+	got := ensureContrast(midGrey, midGrey, 3)
+	if relLuminance(got) <= relLuminance(midGrey) {
+		t.Errorf("ensureContrast(%#06x, %#06x, 3) = %#06x at luminance %.4f, want lighter than %.4f",
+			midGrey, midGrey, got, relLuminance(got), relLuminance(midGrey))
+	}
+	if r := contrastRatio(got, midGrey); r < 3 {
+		t.Errorf("ensureContrast(%#06x, %#06x, 3) = %#06x at %.2f:1, below the floor",
+			midGrey, midGrey, got, r)
+	}
+}
+
 // TestEnsureContrastImpossibleFloorPicksTheBestExtreme covers the mid-luminance
 // background where NEITHER white nor black reaches the requested ratio. The
 // function cannot satisfy the caller, so it must return the closest it can get

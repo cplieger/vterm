@@ -121,7 +121,7 @@ func TestSessionPidIsRegisteredWhileExecOwnsItAndReleasedAfter(t *testing.T) {
 
 	// The monitor releases the pid immediately after cmd.Wait, so by the time the
 	// callback has fired it must be gone from the registry.
-	deadline := time.Now().Add(2 * time.Second)
+	deadline := time.Now().Add(waitPatience)
 	for registered(pid) {
 		if time.Now().After(deadline) {
 			t.Fatalf("pid %d is still registered after its session exited; the sweep would skip it forever", pid)
@@ -160,7 +160,7 @@ func TestReapIfUnownedCollectsAnOrphanZombie(t *testing.T) {
 		t.Fatalf("parse orphan pid from %q: %v", out, err)
 	}
 
-	deadline := time.Now().Add(10 * time.Second)
+	deadline := time.Now().Add(waitPatience)
 	for !slices.Contains(findOrphanZombies(), orphan) {
 		if time.Now().After(deadline) {
 			t.Fatalf("orphan pid %d never appeared as a zombie parented on this process", orphan)

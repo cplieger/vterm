@@ -497,10 +497,12 @@ func dialOwnHandler(t *testing.T, cmd []string) (*Handler, *websocket.Conn, func
 // and returns its state.
 func soleClientState(t *testing.T, h *Handler) *clientState {
 	t.Helper()
-	deadline := time.Now().Add(2 * time.Second)
+	deadline := time.Now().Add(waitPatience)
+	var seen int
 	for time.Now().Before(deadline) {
 		h.registry.mu.Lock()
-		if len(h.registry.clients) == 1 {
+		seen = len(h.registry.clients)
+		if seen == 1 {
 			for _, st := range h.registry.clients {
 				h.registry.mu.Unlock()
 				return st
@@ -509,7 +511,7 @@ func soleClientState(t *testing.T, h *Handler) *clientState {
 		h.registry.mu.Unlock()
 		time.Sleep(10 * time.Millisecond)
 	}
-	t.Fatal("client never registered")
+	t.Fatalf("registry never held exactly one client within %v (last count %d)", waitPatience, seen)
 	return nil
 }
 
@@ -834,13 +836,13 @@ func TestResumeBatch_DeterministicBlockAdvanceRelease(t *testing.T) {
 		fmt.Fprintf(&burst, "SCROLLMARK-%d\r\n", i)
 	}
 	h.handlePTYData(burst.Bytes())
-	commitDeadline := time.Now().Add(5 * time.Second)
+	commitDeadline := time.Now().Add(waitPatience)
 	for {
 		if committed, _ := h.ScrollbackBounds(); committed > preCommitted {
 			break
 		}
 		if time.Now().After(commitDeadline) {
-			t.Fatal("no flush pass committed the injected lines during the hold; harness broken")
+			t.Fatalf("no flush pass committed the injected lines within %v (committed still %d); harness broken", waitPatience, preCommitted)
 		}
 		time.Sleep(10 * time.Millisecond)
 	}

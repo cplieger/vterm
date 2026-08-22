@@ -132,7 +132,9 @@ func alive(pid int) bool {
 	return afterComm[1] != 'Z'
 }
 
-// waitGone polls until pid is gone or the deadline passes.
+// waitGone polls until pid is gone or the deadline passes. Callers pass
+// waitPatience: teardown has already returned by then, so a still-live pid means
+// the ladder failed rather than that it is slow.
 func waitGone(pid int, d time.Duration) bool {
 	deadline := time.Now().Add(d)
 	for time.Now().Before(deadline) {
@@ -201,7 +203,7 @@ func TestContainmentReclaimsSetsidEscapee(t *testing.T) {
 
 	sc.teardown()
 
-	if !waitGone(escapee.Process.Pid, 3*time.Second) {
+	if !waitGone(escapee.Process.Pid, waitPatience) {
 		t.Fatalf("escapee pid %d survived teardown", escapee.Process.Pid)
 	}
 	if _, err := os.Stat(sc.dir); !errors.Is(err, os.ErrNotExist) {
@@ -258,7 +260,7 @@ func TestContainmentEscalation(t *testing.T) {
 		sc.releaseFD()
 		sc.teardown()
 
-		if !waitGone(victim.Process.Pid, 3*time.Second) {
+		if !waitGone(victim.Process.Pid, waitPatience) {
 			t.Fatalf("victim %d survived teardown", victim.Process.Pid)
 		}
 		attrs, ok := rec.find("terminal: containment reclaimed escaped processes")
@@ -283,7 +285,7 @@ func TestContainmentEscalation(t *testing.T) {
 		time.Sleep(200 * time.Millisecond) // let the trap install
 		sc.teardown()
 
-		if !waitGone(victim.Process.Pid, 3*time.Second) {
+		if !waitGone(victim.Process.Pid, waitPatience) {
 			t.Fatalf("SIGTERM-ignoring victim %d survived teardown; the cgroup.kill backstop did not fire", victim.Process.Pid)
 		}
 	})
@@ -302,7 +304,7 @@ func TestContainmentAccountsPeak(t *testing.T) {
 	startInCgroup(t, sc, "sh", "-c", `a=$(head -c 4000000 /dev/zero | tr "\0" "x"); sleep 3; echo "${#a}" >/dev/null`)
 	sc.releaseFD()
 
-	deadline := time.Now().Add(3 * time.Second)
+	deadline := time.Now().Add(waitPatience)
 	var mem uint64
 	for time.Now().Before(deadline) {
 		if mem, _, _ = sc.current(); mem > 1<<20 {
@@ -393,7 +395,7 @@ func TestContainmentReclaimsSubCgroup(t *testing.T) {
 
 	sc.teardown()
 
-	if !waitGone(victim.Process.Pid, 3*time.Second) {
+	if !waitGone(victim.Process.Pid, waitPatience) {
 		t.Errorf("victim %d in a sub-cgroup survived teardown", victim.Process.Pid)
 	}
 	if _, err := os.Stat(sc.dir); !errors.Is(err, os.ErrNotExist) {

@@ -229,7 +229,20 @@ func TestNewHandler_EmptyCommand(t *testing.T) {
 // COLORTERM, and TERM_PROGRAM(+_VERSION) — is injected into the spawned process
 // environment at spawn time (not stored in cfg.env). TERM_PROGRAM=iTerm.app
 // (>= 3.6.6) is the identity that unlocks OSC 9;4 progress for kiro-cli + Claude
-// Code and DEC 2026 synchronized output; see ensureStarted.
+// Code and DEC 2026 synchronized output; see childEnv.
+//
+// The version is pinned to the exact string, not merely to the key's presence.
+// 3.6.6 is a floor Claude Code gates OSC 9;4 progress on, so a regression to any
+// lower version silently loses progress reporting while a presence-only check
+// stays green.
+//
+// The last assertion closes the other half of that claim. childEnv's doc comment
+// justifies advertising this identity by stating the engine implements the
+// capabilities it unlocks, but nothing joins the advertisement to the
+// implementation except that sentence — a vt change that dropped DEC 2026 support
+// would leave terminal advertising it with every test still passing. Asserting the
+// mechanism here ties the two together, the way the repo's other parity tests tie
+// a library copy to its source.
 func TestNewHandler_ENVInjection(t *testing.T) {
 	h := NewHandler([]string{"/bin/sh", "-c", "true"}, WithWorkDir("/"))
 	if err := h.ensureStarted(80, 24); err != nil {
@@ -237,7 +250,7 @@ func TestNewHandler_ENVInjection(t *testing.T) {
 	}
 	defer h.Close()
 
-	var hasTerm, hasColorterm, hasTermProgram, hasTermProgramVersion bool
+	var hasTerm, hasColorterm, hasTermProgram, hasTermProgramVersion366 bool
 	for _, e := range h.cmd.Env {
 		switch {
 		case strings.HasPrefix(e, "TERM=xterm-256color"):
@@ -246,8 +259,8 @@ func TestNewHandler_ENVInjection(t *testing.T) {
 			hasColorterm = true
 		case strings.HasPrefix(e, "TERM_PROGRAM=iTerm.app"):
 			hasTermProgram = true
-		case strings.HasPrefix(e, "TERM_PROGRAM_VERSION="):
-			hasTermProgramVersion = true
+		case e == "TERM_PROGRAM_VERSION=3.6.6":
+			hasTermProgramVersion366 = true
 		}
 	}
 	if !hasTerm {
@@ -259,8 +272,29 @@ func TestNewHandler_ENVInjection(t *testing.T) {
 	if !hasTermProgram {
 		t.Fatal("TERM_PROGRAM=iTerm.app not found in cmd.Env")
 	}
-	if !hasTermProgramVersion {
-		t.Fatal("TERM_PROGRAM_VERSION not found in cmd.Env")
+	if !hasTermProgramVersion366 {
+		var got string
+		for _, e := range h.cmd.Env {
+			if strings.HasPrefix(e, "TERM_PROGRAM_VERSION=") {
+				got = e
+			}
+		}
+		t.Errorf("TERM_PROGRAM_VERSION = %q, want exactly TERM_PROGRAM_VERSION=3.6.6: "+
+			"Claude Code gates OSC 9;4 progress on iTerm.app >= 3.6.6, so anything below "+
+			"that floor loses progress reporting silently", got)
+	}
+
+	// Claim parity: the identity asserted above advertises DEC 2026 synchronized
+	// output, so the engine has to actually honour CSI ?2026h. vt holds the flush
+	// for a second, which is why an immediate read is not a timing race.
+	screen := vt.New(10, 40)
+	if _, err := screen.Write([]byte("\x1b[?2026h")); err != nil {
+		t.Fatalf("screen.Write(CSI ?2026h): %v", err)
+	}
+	if !screen.IsFlushHeld() {
+		t.Error("vt.Screen.IsFlushHeld() = false after CSI ?2026h, want true: childEnv " +
+			"advertises TERM_PROGRAM=iTerm.app to unlock DEC 2026 synchronized output, so " +
+			"dropping the implementation makes that advertisement a false claim")
 	}
 }
 

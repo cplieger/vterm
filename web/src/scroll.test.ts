@@ -223,27 +223,16 @@ describe("scroll controller (brick 4)", () => {
 // These use the CLAMPING fixture, because a clamp is the whole subject: a
 // container that stores whatever offset it is handed cannot produce one.
 describe("noteContentShrink (announced clamps)", () => {
-  it("an announced shrink of any magnitude preserves follow", () => {
-    const f = makeClampingScrollEl(10000, 300);
-    scroll.init({ scrollEl: f.el });
-    f.userScrollTo(9700); // at the bottom, following
-    expect(scroll.isUserScrolledUp()).toBe(false);
-
-    // A big shrink: the reader is 9700 above the new maximum, so this is nothing
-    // like a within-epsilon clamp and the epsilon rule alone would disengage.
-    const before = f.el.scrollTop;
-    f.setScrollHeight(400); // fires the clamp's scroll event
-    scroll.noteContentShrink(before);
-    // The clamp event already fired above; re-derive with a second event the way
-    // a real frame does (CSSOM coalesces to at most one per frame).
-    f.el.dispatchEvent(new Event("scroll"));
-    expect(scroll.isUserScrolledUp()).toBe(false);
-  });
-
   it("an UNannounced upward move of the same magnitude still disengages", () => {
-    // The other half of the pair, and the mutant that matters: deleting the
-    // announcement must fail the test above, and deleting the direction rule must
-    // fail this one.
+    // Deleting the direction rule must fail this one.
+    //
+    // Its former sibling, "an announced shrink of any magnitude preserves
+    // follow", was deleted 2026-08-21: makeClampingScrollEl.setScrollHeight
+    // dispatches the clamp's scroll event from inside itself, so `wasShrink` was
+    // already consumed before noteContentShrink could arm it and the test passed
+    // with `if (wasShrink)` made unreachable. scroll-arming.test.ts covers that
+    // branch on the ordering a browser really produces, with a fixture that does
+    // not dispatch, and it does fail on that mutant.
     const f = makeClampingScrollEl(10000, 300);
     scroll.init({ scrollEl: f.el });
     f.userScrollTo(9700);

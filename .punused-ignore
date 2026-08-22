@@ -68,15 +68,12 @@ constant StatusDone
 #   (pinned by web-terminal-kiro/session_keep_unfocused_test.go:41).
 # WithCommandLogValue: web-terminal-kiro/routes.go:281 ("[redacted]", CWE-532).
 # WithEnv: web-terminal-kiro/routes.go:289 (kiro-cli version dir first on PATH).
-# WithInputTitle: web-terminal-kiro/routes.go:299; deliberately NOT set by
-#   web-terminal-server (its main.go:469 says so in a comment).
 # WithOnProcessExit: web-terminal-kiro/routes.go:313.
 function WithWorkDir
 function WithScrollbackCapacity
 function WithKeepUnfocused
 function WithCommandLogValue
 function WithEnv
-function WithInputTitle
 function WithOnProcessExit
 
 # --- Per-session process containment: published API, consumer
@@ -202,15 +199,6 @@ function WithTheme
 # one is live, called from NewHandler.
 function WithMinimumContrast
 
-# (*Handler).Title (terminal/terminal.go:424) -- the engine's own session
-# manager does not use it: List() reads titles through the unexported
-# h.titles() instead (terminal/session_manager.go:328; the doc comment at :293
-# still names "Title" but the code does not call it). Covered in-repo by
-# TestHandlerTitle (terminal/title_test.go:5). The one consumer hit for `Title`
-# is web-terminal-kiro/routes_test.go:639 reading the `title` JSON field off
-# SessionInfo, not calling this method.
-method (*Handler).Title
-
 # (*Handler).LastActivity (terminal/terminal.go:445),
 # (*Handler).Notification (terminal/terminal.go:457) and
 # (*Handler).ProgressValue (terminal/terminal.go:483) -- public read accessors
@@ -266,12 +254,9 @@ method (*Handler).ScrollbackBounds
 # composition root calls StartZombieReaper). The calls live in another MODULE,
 # invisible to punused.
 #
-# WithoutSessionReap has NO consumer by design and is expected to keep none:
-# reaping is ON by default because an unreaped tree holds its memory for the
-# container's lifetime, so the option exists for the one consumer whose users
-# deliberately start work meant to outlive a tab. It is a published escape hatch,
-# not a pending wiring task.
-function WithoutSessionReap
+# WithoutSessionReap is gone rather than adjudicated: reaping became
+# unconditional at v5 (terminal/reap.go states why), and the option had no
+# caller anywhere in the fleet.
 function StartZombieReaper
 
 

@@ -87,6 +87,44 @@
 // follow and a lingering arm cannot swallow a later real gesture. It is also
 // cleared unconditionally by the first event that arrives, so it cannot outlive
 // one frame even if that guarantee were ever broken.
+
+// A shrink asks TWO independent questions, and for years this module asked only
+// the first.
+//
+//   1. Did the offset MOVE? That identifies the clamp's scroll event, so the
+//      follow state survives it (shrinkArmed, above).
+//   2. Is the offset still OUT OF RANGE? That says the container has not
+//      reconciled it at all, and the viewport is parked past the end of the
+//      content (rangeCorrectionOwed, below).
+//
+// distanceFromBottom() has three arithmetic states and only two were consumed:
+// positive means content below (pin down), zero means the tail (nothing to do),
+// and NEGATIVE means the offset is beyond the content's end. The third was a
+// gap: `stickToBottom`'s `> 0` test is false for it, so the one invariant that
+// could rescue the view declined to act, and nothing else writes the offset.
+// The reader then sees the container's background with the content above the
+// visible region, until either the growing content reaches the parked offset or
+// they scroll and the container reconciles.
+//
+// The negative state is reachable because "the offset is clamped when the
+// content shrinks" is an implementation behaviour, not a specified one. CSSOM
+// View clamps a programmatic scroll at write time; neither it nor CSS Overflow 3
+// says WHEN a UA must reconcile an offset already established when the
+// scrollable overflow rectangle shrinks under it. Blink and Gecko reconcile
+// during layout, so the read that follows a row removal already reports the new
+// maximum. WebKit does not hold the offset inside the range at all: this repo
+// separately records that Safari "updates scrollTop PAST the maximum during an
+// overscroll bounce" (render.ts, the removedRowsThisPass comment), and iOS
+// Safari has been reported leaving an offset outside the valid range until a
+// manual scroll nudges the browser into fixing it
+// (stackoverflow.com/q/79752870, September 2025 — that report is about a
+// programmatic scroll during momentum rather than a shrink, so it corroborates
+// the state rather than proving this path into it).
+//
+// So the arithmetic is treated as authoritative and the browser is not:
+// reconcileScrollRange writes the offset the geometry says is the maximum. The
+// correction is gated on a caller's announced row removal, which is what keeps
+// an overscroll bounce (out of range with no content change) out of it.
 const BOTTOM_TOLERANCE_PX = 24;
 // An upward move only disengages follow when a real gap is left below it.
 // Bigger than 0 to absorb fractional-layout rounding in the shrink-clamp case
@@ -106,6 +144,12 @@ let preserveFollowOnce = false;
 // position: the next event is that clamp, not a gesture. Consumed (and in all
 // cases cleared) by the first event to arrive.
 let shrinkArmed = false;
+// Armed by noteContentShrink when a caller's own row removal left the offset
+// PAST the end of the content, i.e. the container did not reconcile it.
+// Consumed by reconcileScrollRange in the same pass. Independent of shrinkArmed:
+// one says the offset moved, this one says it did not move far enough, and a
+// partial reconciliation sets both.
+let rangeCorrectionOwed = false;
 let onFollowChange: ((scrolledUp: boolean) => void) | null = null;
 let onPosition: (() => void) | null = null;
 let scrollHandler: (() => void) | null = null;
@@ -115,6 +159,27 @@ function distanceFromBottom(): number {
     return 0;
   }
   return scrollEl.scrollHeight - scrollEl.scrollTop - scrollEl.clientHeight;
+}
+
+/**
+ * The largest offset the container can hold: the zero point of
+ * distanceFromBottom, written out. Every write that means "the bottom" targets
+ * this rather than `scrollHeight`.
+ *
+ * The over-scroll write it replaces (`scrollTop = scrollHeight`, an extra
+ * clientHeight past the end) delegated the arithmetic to the container's own
+ * clamp. That is the one thing this module can no longer assume: the container
+ * this UI runs on is reported to leave an offset outside the valid range, and a
+ * write is not obviously exempt from that (the report behind
+ * rangeCorrectionOwed is about a programmatic scroll). Writing the maximum
+ * needs no clamp to be correct, is identical on a conforming container, and
+ * keeps one definition of "the bottom" for the reads and the writes both.
+ */
+function bottomOffset(): number {
+  if (!scrollEl) {
+    return 0;
+  }
+  return Math.max(0, scrollEl.scrollHeight - scrollEl.clientHeight);
 }
 
 function atBottom(): boolean {
@@ -157,6 +222,7 @@ export function init(opts: {
   lastScrollTop = scrollEl.scrollTop;
   preserveFollowOnce = false;
   shrinkArmed = false;
+  rangeCorrectionOwed = false;
   scrollHandler = () => {
     if (!scrollEl) {
       return;
@@ -281,6 +347,12 @@ function writePreservingFollow(next: number): void {
  * this; that is correct rather than incidental, since it is likewise the
  * library's own mutation moving the viewport and not the user.
  *
+ * It answers a SECOND question at the same time, and the two are independent
+ * (see the header): whether the offset is still out of range after the removal.
+ * If it is, the container has not reconciled it and reconcileScrollRange owes a
+ * write. A partial reconciliation arms both, which is why neither test returns
+ * early on the other.
+ *
  * @param scrollTopBefore  The container's offset read before the mutation.
  */
 export function noteContentShrink(scrollTopBefore: number): void {
@@ -290,19 +362,77 @@ export function noteContentShrink(scrollTopBefore: number): void {
   if (scrollEl.scrollTop < scrollTopBefore) {
     shrinkArmed = true;
   }
+  // The epsilon keeps its original job here too: scrollHeight and clientHeight
+  // are integer-rounded while scrollTop is fractional, so a correctly
+  // reconciled offset can read a fraction of a pixel past the end. Correcting
+  // that would write on every shrink pass for no visible gain.
+  if (distanceFromBottom() < -CLAMP_EPSILON_PX) {
+    rangeCorrectionOwed = true;
+  }
+}
+
+/**
+ * Move the offset back inside the container's range when a caller's own row
+ * removal left it past the end of the content. A no-op unless noteContentShrink
+ * armed it in this pass, so it is safe to call after every removal.
+ *
+ * A RENDERER SEAM. It is public because the whole scroll namespace is
+ * re-exported, not because a consumer has a reason to call it; an out-of-band
+ * call finds nothing armed and does nothing.
+ *
+ * Call it in the same pass as noteContentShrink and BEFORE the position
+ * invariants (the view restore, the read anchor, the bottom pin), so those
+ * measure a geometry the container agrees with. Deliberately NOT folded into
+ * either neighbour: `stickToBottom` is follow-gated by contract and a HOLDING
+ * reader whose history was discarded is stranded over empty space just the same
+ * (the read anchor stands down for a discard, so the pin cannot own this), and
+ * `noteContentShrink` is named for a read and the flush tail's own ordering
+ * comment depends on it not writing.
+ *
+ * The destination is the maximum offset, which for a reader who was HOLDING is
+ * the tail with follow still off. That is this design's ratified degradation for
+ * a reading position whose lines no longer exist (docs/scroll-position-fidelity.md
+ * §3.4, §5), not a new decision.
+ *
+ * The write goes through writePreservingFollow, so the scroll event it produces
+ * cannot re-derive the state: a following reader stays following, and a holding
+ * reader stays holding at the bottom.
+ *
+ * One accepted overlap, recorded so it is not read as an oversight. On a
+ * container that reports an offset past the maximum during an overscroll bounce,
+ * a bounce that coincides with a row-removing pass (cap eviction under heavy
+ * streaming) satisfies the gate, and this write then cuts the bounce short at
+ * the offset it was settling towards anyway. Refusing the correction whenever
+ * the offset was ALREADY out of range before the mutation would avoid that, at
+ * the price of skipping the repair for the whole rest of the session whenever
+ * the two coincide. A cut animation lasts one frame; a stranded viewport lasts
+ * until the user scrolls. The bounce loses.
+ */
+export function reconcileScrollRange(): void {
+  if (!scrollEl || !rangeCorrectionOwed) {
+    return;
+  }
+  rangeCorrectionOwed = false;
+  writePreservingFollow(bottomOffset());
 }
 
 /**
  * Pin the viewport to the bottom iff the user is following. Called by the
  * renderer after each flush. A no-op when holding (scrolled up) or already at
  * the bottom, so it never fights the user and never scrolls redundantly.
+ *
+ * Only the positive branch of distanceFromBottom is this function's business: an
+ * offset PAST the end of the content is a geometry error rather than a following
+ * reader who fell behind, and reconcileScrollRange owns it (see the header).
+ * Correcting it here instead would fight an overscroll bounce, which presents
+ * the same arithmetic with nothing wrong.
  */
 export function stickToBottom(): void {
   if (!scrollEl || !following) {
     return;
   }
   if (distanceFromBottom() > 0) {
-    scrollEl.scrollTop = scrollEl.scrollHeight;
+    scrollEl.scrollTop = bottomOffset();
   }
 }
 
@@ -314,7 +444,7 @@ export function scrollToBottom(): void {
   if (!scrollEl) {
     return;
   }
-  scrollEl.scrollTop = scrollEl.scrollHeight;
+  scrollEl.scrollTop = bottomOffset();
   setFollowing(true);
 }
 

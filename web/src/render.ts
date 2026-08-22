@@ -1393,6 +1393,12 @@ function flushRender(): void {
   // silently switching auto-follow off (scroll.ts's header; §1.3).
   if (removedRowsThisPass) {
     scroll.noteContentShrink(scrollTopBefore);
+    // And correct the offset when the container left it past the end of the
+    // shrunken content instead of reconciling it (scroll.ts's header: the third
+    // arithmetic state). Before the three invariants below, so they measure a
+    // geometry the container agrees with rather than one it is still holding an
+    // impossible offset into.
+    scroll.reconcileScrollRange();
   }
   // Three position invariants, applied after every DOM mutation and in this
   // order. An armed view restore goes first because it OWNS the position while
@@ -1497,6 +1503,16 @@ function flushRenderInner(): void {
     }
     gapMarkerEls.clear();
     cursorAbs = -1;
+    // The rows are not the only thing in content space, and this wipe is as
+    // total as rebuild()'s. Collapse the four overlays with them HERE rather
+    // than relying on the tail's positionCursorOverlay/onCursorMove, so the
+    // shrink this pass announces is the real one: while an overlay still holds
+    // the container's scrollable overflow at its old offset, both the
+    // announcement and the range correction measure a phantom height and read
+    // "already at the bottom" over zero rows of content. See
+    // collapseContentSpaceOverlays for the measurement, and note that the tail
+    // is exactly what does not run on the three paths listed there.
+    collapseContentSpaceOverlays();
   } else {
     for (const abs of ch.evictedLines) {
       const el = rowEls.get(abs);
@@ -2056,6 +2072,19 @@ function renderAlt(rows: readonly (readonly WireRun[])[]): void {
       div.replaceChildren(...buildRowSpans(runs));
       els.push(div);
     }
+    // This replaceChildren REMOVES rows, and on the first alt frame it removes
+    // the entire main-buffer scrollback in favour of one screen of grid: the
+    // largest shrink in this module after rebuild()'s wipe. The alt branch in
+    // flushRenderInner returns before the shared bookkeeping, so the flag is set
+    // here or not at all, and without it the pass reached neither
+    // noteContentShrink (leaving the clamp to be inferred from its lossy
+    // arithmetic signature, which can silently switch auto-follow off) nor
+    // reconcileScrollRange (leaving the viewport parked past the grid).
+    //
+    // Over-announcing is harmless by mechanism: the resize and desynced-DOM
+    // cases reach this branch too, and both seams are position-gated, so a
+    // rebuild that moves nothing and strands nothing announces nothing.
+    removedRowsThisPass = true;
     output.replaceChildren(...els);
     altPrevRows = rows.slice();
     return;

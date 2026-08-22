@@ -434,6 +434,103 @@ Showing the jump-to-bottom button while the viewport is visually at the
 bottom stays as-is: with follow off, an affordance that resumes follow is
 correct, and it is the only cue the state has.
 
+### 4.2 Fix 2b — the shrink the container never reconciled (landed 2026-08-22)
+
+§4 assumed the clamp. Every word of it is about what to do with the scroll
+event the clamp produces, and it never asked whether the clamp happens: the
+API is named `noteContentShrink`, its whole body is
+`if (scrollEl.scrollTop < scrollTopBefore) shrinkArmed = true`, and its
+doc reasons at length about removals that "cannot clamp" while treating a
+removal that SHOULD clamp as certain to. That assumption is an
+implementation behaviour, not a specified one, and it is false on the
+browser this UI mostly runs on.
+
+**Reported symptom** (web-terminal-kiro, iOS 26 Safari, 2026-08-22):
+kiro-cli clears the screen, every line vanishes off the top of the visible
+area, and only a scroll brings it back down.
+
+**Mechanism.** `distanceFromBottom()` has three arithmetic states and the
+library consumed two. `stickToBottom` tests `> 0` (content below: pin) and
+treats `== 0` as the tail (nothing to do). NEGATIVE means the offset is
+past the end of the content, and nothing consumed it, so nothing wrote the
+offset again: `render.ts` never assigns `scrollTop`, the read anchor stands
+down for a discard (§5), and the consumer's 350ms viewport settle calls the
+same guarded pin. The reader is left over empty space with the content
+above, until the growing content reaches the parked offset or WebKit
+reconciles on their next scroll.
+
+An ED3 makes the gap maximal: 5000 retained lines at 17px is ~85000px of
+range collapsing to one screen, so the offset is stranded by the whole
+history.
+
+**Why the negative state is reachable.** CSSOM View clamps a programmatic
+scroll at write time. Neither it nor CSS Overflow 3 says WHEN a UA must
+reconcile an offset already established when the scrollable overflow
+rectangle shrinks under it. Blink and Gecko reconcile during layout, so the
+read that follows a row removal already reports the new maximum. WebKit
+does not keep the offset inside the range at all: `render.ts`'s
+`removedRowsThisPass` comment separately records that Safari "updates
+scrollTop PAST the maximum during an overscroll bounce", and iOS Safari is
+reported leaving an offset outside the valid range until a manual scroll
+(stackoverflow.com/q/79752870, September 2025 — about a programmatic scroll
+during momentum rather than a shrink, so it corroborates the state rather
+than proving this path into it).
+
+**The fix.** `noteContentShrink` answers two independent questions instead
+of one: did the offset MOVE (arms the pass-through, as before), and is it
+still OUT OF RANGE by more than `CLAMP_EPSILON_PX` (arms a correction). A
+partial reconciliation arms both, which is why neither test returns early
+on the other. `reconcileScrollRange()` then writes the maximum through
+`writePreservingFollow`, and `flushRender` calls it right after the
+announcement, before the three position invariants, so those measure a
+geometry the container agrees with.
+
+Four decisions worth not re-deriving:
+
+- **Not folded into `stickToBottom`.** That function is follow-gated by
+  contract, and a HOLDING reader whose history was discarded is stranded
+  over empty space just the same. §5's stand-down is exactly why the anchor
+  cannot own it either.
+- **Gated on an announced removal, never on the arithmetic alone.** An
+  offset past the maximum with no content change is the overscroll bounce,
+  and correcting that cuts the user's own gesture. One overlap is accepted
+  deliberately: a bounce during a row-removing pass snaps to the offset the
+  bounce was settling towards anyway, because the alternative (refuse
+  whenever the offset was already out of range) skips the repair for the
+  rest of the session whenever the two coincide.
+- **The destination is the maximum**, which for a holding reader is the
+  tail with follow still off. That is §3.4 and §5's ratified degradation
+  for a reading position whose lines no longer exist, not a new decision.
+- **Every write that means "the bottom" now targets the maximum** rather
+  than `scrollTop = scrollHeight`. The over-scroll write delegated the
+  arithmetic to the container's clamp, which is the one thing this section
+  says cannot be assumed.
+
+**Two adjacent gaps closed with it.** `renderAlt`'s full rebuild swaps the
+entire main-buffer scrollback for one screen of grid, and the alt branch
+returns before the shared bookkeeping, so it set no `removedRowsThisPass`
+and reached neither seam. And the full-reset branch now collapses the
+content-space overlays with the rows instead of leaving that to the flush
+tail, which is what does not run on the three paths
+`collapseContentSpaceOverlays` lists; while an overlay holds the height,
+both seams measure a phantom geometry and correctly decline to act.
+
+**Why no test could fail for this.** Every scroll fixture reconciled
+synchronously, and `installRowGeometry` clamped in the `scrollTop` GETTER,
+so a negative `distanceFromBottom()` was unrepresentable. The fixture's own
+comment stated the assumption as fact. `makeDeferredClampScrollEl` and
+`installRowGeometry({ reconcile: "deferred" })` are the WebKit shape, and
+any future position invariant is worth testing against both.
+
+**Open, and it does not gate the fix.** Whether WebKit's non-reconciliation
+is what the field report hit was not measured: the negative branch is
+unhandled on every engine and correcting it is right regardless. The
+discriminator, if the symptom recurs, is a keystroke rather than a scroll:
+`sendBytes` calls the unguarded `scrollToBottom`, so a keypress that
+restores the view confirms a stranded offset, and one that does not points
+at the overlay-held phantom height instead, which this correction cannot
+see.
+
 ## 5. Fix 3 — the anchor stands down on a region discard, renderer-side
 
 The r2 draft added `StoreChanges.discardedRanges`. That is WITHDRAWN, for

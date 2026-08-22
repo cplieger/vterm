@@ -1,6 +1,7 @@
 package vt
 
 import (
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -102,6 +103,36 @@ func TestKittyStackBounded(t *testing.T) {
 	}
 	if got := queryKbd(s); got != "\x1b[?0u" {
 		t.Errorf("after drain query = %q, want CSI ?0u", got)
+	}
+}
+
+// Eviction is not silent: the cap means the value saved by the FIRST of
+// maxKbdStack+1 pushes is dropped, so a pop that deep finds the stack already
+// empty and resets to 0 instead of restoring it. Without the cap the same pop
+// would hand the application back a mode it set before the flood.
+func TestKittyPushEvictsTheOldestSavedFlags(t *testing.T) {
+	s := New(5, 20)
+	s.Write([]byte("\x1b[=1;1u")) // current = 1, the value the first push saves
+	for range maxKbdStack + 1 {
+		s.Write([]byte("\x1b[>0u")) // push: save current, current = 0
+	}
+	s.Write([]byte("\x1b[<" + strconv.Itoa(maxKbdStack+1) + "u")) // pop every push
+	if got := queryKbd(s); got != "\x1b[?0u" {
+		t.Errorf("after %d pushes and a %d-deep pop, query = %q, want CSI ?0u (the oldest saved 1 was evicted)",
+			maxKbdStack+1, maxKbdStack+1, got)
+	}
+}
+
+// CSI < n u pops n entries, not one: a two-deep pop unwinds both levels and
+// restores the flags that were current before the FIRST of two pushes.
+func TestKittyPopUnwindsEveryRequestedLevel(t *testing.T) {
+	s := New(5, 20)
+	s.Write([]byte("\x1b[=1;1u")) // current = 1
+	s.Write([]byte("\x1b[>0u"))   // push: save 1, current = 0
+	s.Write([]byte("\x1b[>0u"))   // push: save 0, current = 0
+	s.Write([]byte("\x1b[<2u"))   // pop both levels
+	if got := queryKbd(s); got != "\x1b[?1u" {
+		t.Errorf("after two pushes and CSI <2u, query = %q, want CSI ?1u (both levels unwound)", got)
 	}
 }
 

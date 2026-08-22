@@ -36,6 +36,14 @@ func TestRuneWidth(t *testing.T) {
 		// the toolchain's Unicode version, with SOFT HYPHEN carved back to 1.
 		{"Soft hyphen is width 1 (Cf carve-out)", 0x00AD, 1},
 		{"Post-Unicode-5.0 combining mark U+1AB0", 0x1AB0, 0},
+		// Hangul conjoining jamo: the leading consonants end at U+115F and are
+		// Wide, while the medials and finals (U+1160-U+11FF) combine onto them
+		// and take no cell of their own. Both ends of that second band are
+		// listed, with the neighbour on either side of it.
+		{"Hangul choseong filler is wide", 0x115F, 2},
+		{"Hangul jungseong filler is zero-width", 0x1160, 0},
+		{"last Hangul jongseong is zero-width", 0x11FF, 0},
+		{"just above the jamo band is width 1", 0x1200, 1},
 		// Single-codepoint emoji with default emoji presentation are Wide (2),
 		// matching go-runewidth and modern terminals. Text-presentation symbols
 		// and regional-indicator flags stay width 1 (clustering is out of scope).

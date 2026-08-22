@@ -880,9 +880,10 @@ func (s *Screen) altCellsFit() bool {
 }
 
 // exitAltScreen restores the saved main-screen state. Mode governs the alt
-// buffer's fate and whether the cursor is restored (see enterAltScreen): 1047
-// and 1049 clear the alt buffer on exit, 47 keeps it; only 1049 restores the
-// saved cursor (47/1047 leave the cursor shared with the alt session).
+// buffer's fate and whether the cursor and SGR pen are restored (see
+// enterAltScreen): 1047 and 1049 clear the alt buffer on exit, 47 keeps it;
+// only 1049 restores the saved cursor and pen (47/1047 leave both shared with
+// the alt session).
 func (s *Screen) exitAltScreen(mode int) {
 	if !s.InAltScreen || s.savedMainCells == nil {
 		return
@@ -917,12 +918,17 @@ func (s *Screen) exitAltScreen(mode int) {
 	copy(restoredWrapped, s.savedMainWrapped)
 	s.wrapped = restoredWrapped
 	s.savedMainWrapped = nil
-	s.style = s.savedMainStyle
 	s.scrollTop = s.savedMainScrollTop
 	s.scrollBottom = s.savedMainScrollBottom
 	if mode == 1049 {
+		// Only 1049 is "restore cursor as in DECRC", and DECRC restores the SGR
+		// pen alongside the position (see restoreCursor). 47 and 1047 carry no
+		// restore clause, so SGR set inside such a session stays shared with the
+		// main screen — matching the enter side, which resets the pen only for
+		// 1049.
 		s.curY = s.savedMainCurY
 		s.curX = s.savedMainCurX
+		s.style = s.savedMainStyle
 	}
 	if s.curY >= s.Height {
 		s.curY = s.Height - 1

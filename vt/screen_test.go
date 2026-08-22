@@ -300,6 +300,65 @@ func TestAltScreenEnterExitPreservesMain(t *testing.T) {
 	}
 }
 
+// TestExitAltScreen1049RestoresPen verifies CSI ?1049l restores the main
+// screen's SGR pen, so an attribute set inside the alt session cannot leak into
+// the rendition the parent shell draws with. DECRESET 1049 is "Use Normal Screen
+// Buffer and restore cursor as in DECRC" (xterm ctlseqs), and DECRC restores
+// character attributes alongside the position (see restoreCursor), so the pen
+// travels with the cursor.
+//
+// This is the property that makes the engine immune to the class of bug kiro-cli
+// 2.19.1 fixed by writing SGR 0 after ?1049l: nothing here needs that trailing
+// reset. Underline is the attribute that bug stranded, so it is the one used.
+//
+// A DECSET mode flag is deliberately NOT in the restore set, and the second
+// assertion pins that asymmetry as intentional rather than a second leak: only
+// the cursor's own DECRC state is saved and restored here, while a mode flag is
+// session state the application owns and turns off itself.
+func TestExitAltScreen1049RestoresPen(t *testing.T) {
+	s := New(5, 10)
+	s.Write([]byte("\x1b[1m"))     // main-screen pen: bold
+	s.Write([]byte("\x1b[?1049h")) // 1049 resets the pen in the cleared alt buffer
+	if s.style != (Style{}) {
+		t.Errorf("enter 1049: pen = %+v, want zero (1049 resets SGR on entry)", s.style)
+	}
+	s.Write([]byte("\x1b[4m"))     // underline, the attribute the upstream bug stranded
+	s.Write([]byte("\x1b[?2004h")) // a mode flag turned on inside the alt session
+	s.Write([]byte("\x1b[?1049l"))
+	if want := (Style{Bold: true}); s.style != want {
+		t.Errorf("exit 1049: pen = %+v, want %+v (underline set in alt must not leak out)", s.style, want)
+	}
+	if !s.BracketedPaste {
+		t.Error("exit 1049: BracketedPaste = false, want true (a DECSET mode flag is not part of the alt-screen restore set)")
+	}
+}
+
+// TestExitAltScreen47SharesPen verifies modes 47 and 1047 share the SGR pen with
+// the main screen in BOTH directions: not reset on entry, and not restored on
+// exit. Neither DECRESET 47 nor DECRESET 1047 carries a "restore cursor as in
+// DECRC" clause in xterm ctlseqs — only 1048 and 1049 do — so an attribute set
+// inside a mode-47 session stays set after the switch back.
+//
+// Guards the mode gate on the pen restore in exitAltScreen. Without it the
+// restore ran for every mode, and bold+underline came back as bold alone.
+func TestExitAltScreen47SharesPen(t *testing.T) {
+	for _, mode := range []int{47, 1047} {
+		t.Run(fmt.Sprintf("mode%d", mode), func(t *testing.T) {
+			s := New(5, 10)
+			s.Write([]byte("\x1b[1m")) // main-screen pen: bold
+			s.Write(fmt.Appendf(nil, "\x1b[?%dh", mode))
+			if want := (Style{Bold: true}); s.style != want {
+				t.Errorf("enter %d: pen = %+v, want %+v (47/1047 do not reset SGR)", mode, s.style, want)
+			}
+			s.Write([]byte("\x1b[4m"))
+			s.Write(fmt.Appendf(nil, "\x1b[?%dl", mode))
+			if want := (Style{Bold: true, Underline: true}); s.style != want {
+				t.Errorf("exit %d: pen = %+v, want %+v (SGR is shared with the main screen, not restored)", mode, s.style, want)
+			}
+		})
+	}
+}
+
 // --- Allocation contracts ---------------------------------------------------
 //
 // Screen.Write is on the path of every byte a session's program produces, and

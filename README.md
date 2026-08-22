@@ -224,6 +224,29 @@ one: the palette keeps the lift rare, and the floor covers what a palette cannot
 (a program's own OSC 4 overrides, the dark corners of the 256-color cube, and
 truecolor a program picked blind).
 
+## Bare-URL autolinking
+
+A bare `http(s)://…` URL in a program's output arrives at the client already
+linked: `vt` detects it server-side while rendering a row and stamps the covered
+runs with the **full** URL plus the `AttrAutolink` bit (1024), so a URL the
+terminal soft-wrapped — or one the program wrapped itself, re-emitting its own
+indent — is one anchor carrying one href rather than a fragment per row. A link the
+program set itself with OSC 8 is authoritative and is never overwritten, and the
+client underlines the two differently (an autolink hugs exactly the matched text,
+so it underlines persistently; an OSC 8 link underlines on hover).
+
+The scan window is **bounded to four rows** of a wrap chain, the four nearest the
+row being rendered, which is what keeps per-row render work constant. Four rows
+cover any real URL down to ~40 columns. A URL that outgrows the window links
+imperfectly rather than not at all: rows near its start carry an href truncated at
+the window edge, and a row far enough past the start carries no anchor, because the
+URL's scheme has left the window. Measured at 20 columns on a 100-character URL,
+the first three rows link to the URL's first 80 characters and the last two are not
+clickable. Reaching that needs about five wrapped rows — a long URL on a narrow
+phone viewport — and it is no worse than the per-row client-side regex it replaced,
+which truncated the first row's href and left every later row unlinked. Widening
+the window would be paid on every row of every render, so the cap stands.
+
 ## Wire Protocol
 
 The Go server and TypeScript client communicate over WebSocket frames rather than shared code. The authoritative byte-level definition is the code itself: the Go encoder (`terminal/wire_binary.go`), the Go `WireRun` types (`vt/wire.go`), and the TS decoder (`web/src/wire-binary.ts`). Round-trip fuzz tests and the `wire-golden/*.bin` fixtures keep those implementations aligned.

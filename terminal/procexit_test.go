@@ -21,7 +21,8 @@ import (
 // client saw nothing renderable — the wedge behind the "stuck loading screen
 // with an endlessly flashing reconnect" report.
 func TestExitedAttachServesReplayBefore4001(t *testing.T) {
-	h := NewHandler([]string{"/bin/sh", "-c", "echo deadwords; exit 1"}, WithWorkDir("/"))
+	const marker = "deadwords"
+	h := NewHandler([]string{"/bin/sh", "-c", "echo " + marker + "; exit 1"}, WithWorkDir("/"))
 	defer h.Close()
 	if err := h.StartEager(); err != nil {
 		t.Fatalf("StartEager: %v", err)
@@ -32,10 +33,11 @@ func TestExitedAttachServesReplayBefore4001(t *testing.T) {
 	// parser has applied them — so waiting on Exited() alone raced the replay
 	// assertion below and failed it intermittently with an empty screen.
 	// Waiting on the screen makes the precondition the thing the test needs.
-	deadline := time.Now().Add(5 * time.Second)
-	for !screenContains(h, "deadwords") {
+	deadline := time.Now().Add(waitPatience)
+	for !screenContains(h, marker) {
 		if time.Now().After(deadline) {
-			t.Fatalf("child output never reached the screen within 5s (exited=%v)", h.Exited())
+			t.Fatalf("child output %q never reached the screen within %v (exited=%v); screen holds %q",
+				marker, waitPatience, h.Exited(), screenText(h))
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
@@ -84,8 +86,8 @@ func TestExitedAttachServesReplayBefore4001(t *testing.T) {
 	if frames == 0 {
 		t.Fatal("no frames before the 4001 close; the resume exchange must be served to an attach-to-exited client")
 	}
-	if !strings.Contains(string(all), "deadwords") {
-		t.Errorf("final screen replay missing the child's last output; got %d frames, %d bytes", frames, len(all))
+	if !strings.Contains(string(all), marker) {
+		t.Errorf("final screen replay missing the child's last output %q; got %d frames, %d bytes", marker, frames, len(all))
 	}
 }
 
@@ -128,16 +130,33 @@ func TestProcessExitClosesWith4001(t *testing.T) {
 // "the child has exited" — the two are not the same instant, and assuming they
 // were is what made the replay assertion above flaky.
 func screenContains(h *Handler, want string) bool {
+	return strings.Contains(screenText(h), want)
+}
+
+// screenText returns the parsed screen's text, one line per row with each row's
+// trailing padding and the trailing blank rows dropped, so a poll that gives up
+// can report what the screen held instead of only that it lacked the text: an
+// empty screen means the runner was slow, and a shell diagnostic means the
+// fixture is broken. Every cell grid pads to the full width, so an untrimmed dump
+// is thousands of spaces around the one line that matters.
+func screenText(h *Handler) string {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	var b strings.Builder
+	rows := make([]string, 0, len(h.screen.Cells))
 	for _, row := range h.screen.Cells {
+		var b strings.Builder
 		for _, c := range row {
 			if c.Ch != 0 {
 				b.WriteRune(c.Ch)
 			}
 		}
-		b.WriteByte('\n')
+		rows = append(rows, strings.TrimRight(b.String(), " "))
 	}
-	return strings.Contains(b.String(), want)
+	for len(rows) > 0 && rows[len(rows)-1] == "" {
+		rows = rows[:len(rows)-1]
+	}
+	if len(rows) == 0 {
+		return ""
+	}
+	return strings.Join(rows, "\n") + "\n"
 }

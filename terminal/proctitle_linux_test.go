@@ -157,7 +157,12 @@ func jobControlWorks(t *testing.T) bool {
 	if _, err := ptmx.WriteString("set -m\nsleep 30\n"); err != nil {
 		t.Fatalf("write to pty: %v", err)
 	}
-	deadline := time.Now().Add(3 * time.Second)
+	// waitPatience rather than a tight bound because a timeout here is a SKIP,
+	// not a failure: a loaded runner that starved the shell's startup would
+	// otherwise retire the two tests below silently, which is the outcome this
+	// probe exists to prevent. A host that genuinely lacks job control pays the
+	// full bound once per calling test before skipping.
+	deadline := time.Now().Add(waitPatience)
 	for time.Now().Before(deadline) {
 		if p := probeForeground(ptmx, pid); p.pgid > 0 && p.pgid != pid {
 			return true
@@ -180,7 +185,7 @@ func TestProbeForegroundRunningChild(t *testing.T) {
 		t.Fatalf("write to pty: %v", err)
 	}
 
-	deadline := time.Now().Add(3 * time.Second)
+	deadline := time.Now().Add(waitPatience)
 	for {
 		p := probeForeground(ptmx, pid)
 		if p.procName == "sleep" {
@@ -307,7 +312,7 @@ func startWithArgv0(t *testing.T, argv0 string) int {
 		_ = cmd.Process.Kill()
 		_, _ = cmd.Process.Wait()
 	})
-	deadline := time.Now().Add(3 * time.Second)
+	deadline := time.Now().Add(waitPatience)
 	for {
 		if raw, err := os.ReadFile(procPath(cmd.Process.Pid, "cmdline")); err == nil && bytes.Contains(raw, []byte{0}) {
 			return cmd.Process.Pid
@@ -348,7 +353,7 @@ func TestAutoTitleLadderThroughManager(t *testing.T) {
 	}
 	awaitTitle := func(t *testing.T, want string) {
 		t.Helper()
-		deadline := time.Now().Add(5 * time.Second)
+		deadline := time.Now().Add(waitPatience)
 		for time.Now().Before(deadline) {
 			if titleOf() == want {
 				return

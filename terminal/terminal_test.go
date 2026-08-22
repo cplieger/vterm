@@ -19,6 +19,18 @@ import (
 	"github.com/cplieger/web-terminal-engine/v5/vt"
 )
 
+// waitPatience bounds every test-owned poll in this package: how long a test
+// waits for an asynchronous effect to become observable before it calls the
+// subject hung. Deliberately generous against the real ceilings (cmd.WaitDelay
+// bounds a child's reap at 5s, and the containment and marker teardown ladders
+// each spend up to three containGrace windows), and the same budget
+// shutdownManager allows teardown, so an expiry means the subject genuinely hung
+// rather than that the runner was loaded. No poll using it asserts promptness —
+// that is what makes it test-owned patience rather than a production budget, and
+// why widening it cannot hide a defect. A poll must still fail closed with a
+// diagnostic naming what it waited for; a bare sleep is never the fix.
+const waitPatience = 20 * time.Second
+
 // dialHandler stands up the handler on an httptest server and opens
 // a WebSocket client against it. Returns the open connection and a
 // cleanup func. Uses /bin/cat so tests don't depend on dtach being
@@ -1664,7 +1676,7 @@ func TestTypedFraming_latchSequence(t *testing.T) {
 	// session (IncrementReceived runs only on the input path, with the whole
 	// frame). The resize/upgrade controls contribute nothing.
 	want := uint64(len(payload))
-	deadline := time.Now().Add(2 * time.Second)
+	deadline := time.Now().Add(waitPatience)
 	for {
 		h.registry.mu.Lock()
 		sess := h.registry.sessions["sid-latch"]
@@ -1819,7 +1831,7 @@ func TestParseFallback_countsBytes(t *testing.T) {
 	}
 	readUntil(t, ws, []byte("A"), 2*time.Second) // input observed at the PTY
 
-	deadline := time.Now().Add(2 * time.Second)
+	deadline := time.Now().Add(waitPatience)
 	for {
 		h.registry.mu.Lock()
 		sess := h.registry.sessions["sid-count"]

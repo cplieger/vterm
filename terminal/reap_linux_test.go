@@ -92,13 +92,14 @@ func startMarked(t *testing.T, s *sessionReap, script string) *exec.Cmd {
 // the shell's own forking.
 func waitForMembers(t *testing.T, s *sessionReap, n int) []int {
 	t.Helper()
-	deadline := time.Now().Add(10 * time.Second)
+	deadline := time.Now().Add(waitPatience)
 	for {
-		if members := reapFindByMarker(s.marker); len(members) >= n {
+		members := reapFindByMarker(s.marker)
+		if len(members) >= n {
 			return members
 		}
 		if time.Now().After(deadline) {
-			t.Fatalf("fewer than %d marked processes ever appeared", n)
+			t.Fatalf("only %d marked processes appeared within %v, want at least %d", len(members), waitPatience, n)
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
@@ -143,7 +144,7 @@ func sessionAndGroupOf(pid int) (sid, pgid int, ok bool) {
 // which is exactly the race this replaces.
 func waitForEscapee(t *testing.T, s *sessionReap) []int {
 	t.Helper()
-	deadline := time.Now().Add(15 * time.Second)
+	deadline := time.Now().Add(waitPatience)
 	for {
 		members := reapFindByMarker(s.marker)
 		sessions := map[int]bool{}

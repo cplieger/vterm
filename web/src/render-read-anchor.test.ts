@@ -201,7 +201,10 @@ describe("render: the reading position holds when history is evicted above it", 
 
     // Following is unchanged by the anchor work: the pin still owns the position.
     expect(scroll.isUserScrolledUp()).toBe(false);
-    expect(termWrap.scrollTop).toBe(termWrap.scrollHeight);
+    // The bottom is scrollHeight - clientHeight. This fixture stores whatever
+    // offset it is handed, so it is one of the few that can tell that apart from
+    // the pin writing scrollHeight and leaving the clamp to the container.
+    expect(termWrap.scrollTop).toBe(termWrap.scrollHeight - termWrap.clientHeight);
   });
 
   it("leaves the position alone when nothing above it changed", async () => {

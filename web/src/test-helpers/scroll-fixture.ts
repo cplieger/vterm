@@ -14,6 +14,12 @@
 // Both helpers clamp. Use makeClampingScrollEl for a standalone container with
 // a settable height, and installRowGeometry when rows in a real DOM tree must
 // report offsets and the container must derive its height from them.
+//
+// makeDeferredClampScrollEl is the third, and the odd one: a container that
+// clamps a WRITE but does not reconcile an offset the content shrank out from
+// under. That is the WebKit shape, it is the state reconcileScrollRange exists
+// for, and neither clamping fixture can express it. A position invariant is
+// worth testing against both shapes.
 
 /** A standalone clamping scroll container whose content height is settable. */
 export interface ClampingScrollEl {
@@ -63,8 +69,80 @@ export function makeClampingScrollEl(scrollHeight: number, clientHeight: number)
   };
 }
 
-/** Handle for a patched row/container geometry, restored by `restore()`. */
-export interface RowGeometry {
+/** A container that does NOT reconcile its offset when the content shrinks. */
+export interface DeferredClampScrollEl {
+  el: HTMLElement;
+  /** Shrink or grow the content, leaving the stored offset exactly where it is
+   *  even when that is now past the end, and firing no event. */
+  setScrollHeight(next: number): void;
+  /** Move the offset the way a USER does: clamped, then a scroll event. This is
+   *  also what makes a real container of this shape reconcile, which is why the
+   *  bug it models "fixes itself when I scroll". */
+  userScrollTo(top: number): void;
+  /** The largest offset the geometry allows right now. */
+  maxTop(): number;
+}
+
+/**
+ * A scroll container shaped like WebKit rather than like Blink: a write is
+ * clamped, but an offset already established is NOT reconciled when the content
+ * shrinks under it. The offset simply stays where it was, out of range, and
+ * reports itself that way, until something writes it or the user scrolls.
+ *
+ * This is the container `makeClampingScrollEl` cannot express, and the reason
+ * this file exists a second time. Both older fixtures reconcile synchronously
+ * (`setScrollHeight` re-clamps and fires the event in one call, and
+ * `installRowGeometry` clamps inside the `scrollTop` GETTER), so
+ * `distanceFromBottom()` is never negative in a test written on them, and the
+ * whole third arithmetic state that `reconcileScrollRange` exists for is
+ * unreachable. That is why the defect shipped: not one test could fail for it.
+ *
+ * Which of the two doubles is honest depends on the engine, and nothing in the
+ * specs picks a winner. CSSOM View clamps a programmatic scroll at write time,
+ * which both fixtures model; neither it nor CSS Overflow 3 says when a UA must
+ * reconcile an offset the content has shrunk out from under. So a library that
+ * only works on the reconciling double works only on some browsers, and every
+ * position invariant deserves a test against both.
+ *
+ * Deliberately models ONE divergence. Writes still clamp here, because that part
+ * IS specified; a fixture that broke both at once would stop being evidence
+ * about either.
+ */
+export function makeDeferredClampScrollEl(
+  scrollHeight: number,
+  clientHeight: number,
+): DeferredClampScrollEl {
+  const el = document.createElement("div");
+  let height = scrollHeight;
+  let top = 0;
+  const maxTop = (): number => Math.max(0, height - clientHeight);
+  Object.defineProperty(el, "scrollHeight", { get: () => height, configurable: true });
+  Object.defineProperty(el, "clientHeight", { get: () => clientHeight, configurable: true });
+  Object.defineProperty(el, "scrollTop", {
+    get: () => top,
+    // A write is clamped (CSSOM View), and is the supported way back into range.
+    set: (v: number) => {
+      top = Math.max(0, Math.min(v, maxTop()));
+    },
+    configurable: true,
+  });
+  return {
+    el,
+    setScrollHeight(next: number): void {
+      // The whole point: the offset is not touched and no event fires, so a
+      // shrink below it leaves the container reporting an offset it cannot
+      // legally hold, silently.
+      height = next;
+    },
+    userScrollTo(top_: number): void {
+      el.scrollTop = top_;
+      el.dispatchEvent(new Event("scroll"));
+    },
+    maxTop,
+  };
+}
+
+/** Handle for a patched row/container geometry, restored by `restore()`. */ export interface RowGeometry {
   restore(): void;
   /** Change the row height, the way a font load, a zoom, or a CSS change does.
    *  Every row's offset and the container's height move together, which is what
@@ -104,10 +182,23 @@ export function installRowGeometry(opts: {
   /** Rows above the first built one still occupy space in a real surface; this
    *  keeps the container's height honest for a sparse store. */
   heightOf?: (output: HTMLElement) => number;
+  /** How the container answers for an offset the content has shrunk out from
+   *  under.
+   *
+   *  `"synchronous"` (the DEFAULT) clamps in the GETTER, so an out-of-range
+   *  offset is never observable. That is Blink and Gecko, and it is the model
+   *  every test in this repo was written on.
+   *
+   *  `"deferred"` clamps a WRITE but leaves an established offset exactly where
+   *  it was, reporting it out of range until something writes it. That is
+   *  WebKit, and it is the shape `reconcileScrollRange` exists for. Use it for
+   *  any test about a position invariant surviving a content shrink. */
+  reconcile?: "synchronous" | "deferred";
 }): RowGeometry {
   const { output, termWrap, clientHeight } = opts;
   let rowHeight = opts.rowHeight;
   const mode = opts.offsets ?? "documentOrder";
+  const reconcile = opts.reconcile ?? "synchronous";
   const prevOffsetTop = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "offsetTop");
   Object.defineProperty(HTMLElement.prototype, "offsetTop", {
     configurable: true,
@@ -156,7 +247,10 @@ export function installRowGeometry(opts: {
   Object.defineProperty(termWrap, "clientHeight", { configurable: true, get: () => clientHeight });
   Object.defineProperty(termWrap, "scrollTop", {
     configurable: true,
-    get: () => settle(),
+    // The getter settles only in the synchronous mode. In the deferred mode it
+    // reports the stored offset verbatim, which is how an offset past the end of
+    // the content becomes observable at all.
+    get: () => (reconcile === "synchronous" ? settle() : top),
     set: (v: number) => {
       top = v;
       settle();

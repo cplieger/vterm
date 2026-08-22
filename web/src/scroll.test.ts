@@ -16,7 +16,7 @@
 
 import { describe, it, expect, beforeEach } from "vitest";
 import * as scroll from "./scroll.js";
-import { makeClampingScrollEl } from "./test-helpers/scroll-fixture.js";
+import { makeClampingScrollEl, makeDeferredClampScrollEl } from "./test-helpers/scroll-fixture.js";
 
 function makeScrollEl(scrollHeight: number, clientHeight: number): HTMLElement {
   const el = document.createElement("div");
@@ -124,7 +124,11 @@ describe("scroll controller (brick 4)", () => {
   it("stickToBottom pins to the bottom while following", () => {
     expect(el.scrollTop).toBe(0);
     scroll.stickToBottom();
-    expect(el.scrollTop).toBe(1000); // pinned to scrollHeight
+    // The bottom is scrollHeight - clientHeight, written out. This fixture stores
+    // whatever it is handed, so it is the one that can tell the difference
+    // between the pin computing the bottom and the pin writing scrollHeight and
+    // trusting the container to clamp it back.
+    expect(el.scrollTop).toBe(700);
   });
 
   it("stickToBottom does nothing while holding (does not yank the reader)", () => {
@@ -138,7 +142,7 @@ describe("scroll controller (brick 4)", () => {
     scrollTo(el, 0); // holding
     expect(scroll.isUserScrolledUp()).toBe(true);
     scroll.scrollToBottom();
-    expect(el.scrollTop).toBe(1000);
+    expect(el.scrollTop).toBe(700);
     expect(scroll.isUserScrolledUp()).toBe(false);
   });
 
@@ -450,7 +454,7 @@ describe("restoreView", () => {
     el.dispatchEvent(new Event("scroll"));
     expect(scroll.isUserScrolledUp()).toBe(false);
     scroll.stickToBottom();
-    expect(el.scrollTop).toBe(1000);
+    expect(el.scrollTop).toBe(700); // the bottom: scrollHeight - clientHeight
   });
 
   it("does not arm the one-event pass-through when the position did not move", () => {
@@ -469,5 +473,190 @@ describe("restoreView", () => {
     scroll.restoreView({ top: Number.NaN, following: true });
     expect(el.scrollTop).toBe(400); // not coerced to 0 / jumped to the top
     expect(scroll.isUserScrolledUp()).toBe(false);
+  });
+});
+
+// reconcileScrollRange is the third arithmetic state of distanceFromBottom:
+// positive means content below (pin), zero means the tail (nothing to do), and
+// NEGATIVE means the container is holding an offset past the end of its own
+// content. Only two of the three were ever consumed, so a container that does
+// not reconcile a shrink left the viewport parked over empty space with the
+// content above it, and nothing in the library wrote the offset again.
+//
+// Every test here uses the DEFERRED-CLAMP fixture, because that is the whole
+// subject: on a container that reconciles synchronously the negative state does
+// not exist, which is exactly why the clamping fixtures could not fail for this.
+describe("reconcileScrollRange (a container that does not reconcile a shrink)", () => {
+  it("moves a FOLLOWING reader back onto the content after a big shrink", () => {
+    const f = makeDeferredClampScrollEl(85000, 600);
+    scroll.init({ scrollEl: f.el });
+    f.userScrollTo(84400); // at the tail of a long session, following
+    expect(scroll.isUserScrolledUp()).toBe(false);
+
+    // The application erases its scrollback: only the live screen survives.
+    const before = f.el.scrollTop;
+    f.setScrollHeight(600);
+    // The offset is untouched and illegal: 84400 into 600px of content.
+    expect(f.el.scrollTop).toBe(84400);
+    expect(f.maxTop()).toBe(0);
+
+    scroll.noteContentShrink(before);
+    scroll.reconcileScrollRange();
+    expect(f.el.scrollTop).toBe(0); // the whole bug: this used to stay at 84400
+  });
+
+  it("keeps a following reader following across the correction", () => {
+    const f = makeDeferredClampScrollEl(85000, 600);
+    scroll.init({ scrollEl: f.el });
+    f.userScrollTo(84400);
+
+    const before = f.el.scrollTop;
+    f.setScrollHeight(6000);
+    scroll.noteContentShrink(before);
+    scroll.reconcileScrollRange();
+    expect(f.el.scrollTop).toBe(5400);
+    // The correction produced a large UPWARD move, which the direction rule
+    // would read as the user pulling away from the tail. It goes through
+    // writePreservingFollow, so the event it causes passes through instead.
+    f.el.dispatchEvent(new Event("scroll"));
+    expect(scroll.isUserScrolledUp()).toBe(false);
+  });
+
+  it("corrects a HOLDING reader too, and leaves them holding", () => {
+    // The pin cannot own this correction: it is follow-gated, and a reader who
+    // scrolled up to read is stranded over empty space by the same shrink. The
+    // read anchor cannot own it either, because it deliberately stands down when
+    // the lines it was holding were discarded rather than trimmed. Landing at
+    // the tail with follow still OFF is the ratified degradation for a reading
+    // position whose lines no longer exist.
+    const f = makeDeferredClampScrollEl(85000, 600);
+    scroll.init({ scrollEl: f.el });
+    f.userScrollTo(84400); // following
+    f.userScrollTo(20000); // scrolled up to read
+    expect(scroll.isUserScrolledUp()).toBe(true);
+
+    const before = f.el.scrollTop;
+    f.setScrollHeight(600);
+    scroll.noteContentShrink(before);
+    scroll.reconcileScrollRange();
+    expect(f.el.scrollTop).toBe(0);
+    f.el.dispatchEvent(new Event("scroll"));
+    expect(scroll.isUserScrolledUp()).toBe(true); // still holding
+  });
+
+  it("leaves an out-of-range offset alone when no caller announced a removal", () => {
+    // The overscroll bounce. Safari reports an offset past the maximum while a
+    // rubber-band is in flight, with no content change at all, and correcting
+    // that would cut the user's own gesture. Nothing announced a shrink, so
+    // nothing is armed, so the call is a no-op.
+    const f = makeDeferredClampScrollEl(6000, 600);
+    scroll.init({ scrollEl: f.el });
+    f.userScrollTo(5400); // at the bottom
+    // The bounce, forced past the maximum the way the platform does it (a write
+    // would be clamped, which is the point of not using one here).
+    Object.defineProperty(f.el, "scrollTop", { value: 5600, configurable: true });
+
+    scroll.reconcileScrollRange();
+    expect(f.el.scrollTop).toBe(5600); // untouched
+  });
+
+  it("corrects a bounce that coincides with a removal, and that is the choice", () => {
+    // The accepted overlap, pinned so it reads as a decision. A bounce during a
+    // row-removing pass (cap eviction under heavy streaming) satisfies the gate,
+    // and the correction snaps the offset to the maximum the bounce was settling
+    // towards anyway. The alternative (refuse whenever the offset was ALREADY
+    // out of range) skips the repair for the rest of the session whenever the
+    // two coincide, and a cut animation is the cheaper loss.
+    const f = makeDeferredClampScrollEl(6000, 600);
+    scroll.init({ scrollEl: f.el });
+    f.userScrollTo(5400);
+    Object.defineProperty(f.el, "scrollTop", {
+      get: () => bounced,
+      set: (v: number) => {
+        bounced = Math.max(0, Math.min(v, f.maxTop()));
+      },
+      configurable: true,
+    });
+    let bounced = 5600; // mid-bounce, past the maximum
+
+    const before = f.el.scrollTop;
+    f.setScrollHeight(5000); // a cap eviction lands in the same frame
+    scroll.noteContentShrink(before);
+    scroll.reconcileScrollRange();
+    expect(f.el.scrollTop).toBe(4400);
+  });
+
+  it("does not correct a subpixel residual", () => {
+    // scrollHeight and clientHeight are integers while scrollTop is fractional,
+    // so a correctly reconciled offset can read a fraction past the end. The
+    // epsilon keeps its original job; correcting this would write on every
+    // shrink pass to move the viewport by half a pixel.
+    const f = makeDeferredClampScrollEl(6000, 600);
+    scroll.init({ scrollEl: f.el });
+    f.userScrollTo(5400);
+    Object.defineProperty(f.el, "scrollTop", { value: 5400.6, configurable: true });
+
+    scroll.noteContentShrink(5400.6);
+    scroll.reconcileScrollRange();
+    expect(f.el.scrollTop).toBe(5400.6); // untouched
+  });
+
+  it("arms both questions when the container reconciles only partway", () => {
+    // The two questions are independent, which is why neither test returns early
+    // on the other: a partial reconciliation moved the offset (so the event it
+    // produced is a clamp, not a gesture) AND left it out of range (so a
+    // correction is still owed). Answering only the first is what shipped.
+    const f = makeDeferredClampScrollEl(85000, 600);
+    scroll.init({ scrollEl: f.el });
+    f.userScrollTo(84400);
+
+    const before = f.el.scrollTop;
+    f.setScrollHeight(600);
+    Object.defineProperty(f.el, "scrollTop", { value: 40000, configurable: true });
+    scroll.noteContentShrink(before); // moved down, and still illegal
+
+    // The clamp's own event must not disengage follow (question one)...
+    f.el.dispatchEvent(new Event("scroll"));
+    expect(scroll.isUserScrolledUp()).toBe(false);
+    // ...and the offset must still be corrected (question two). Restore a
+    // writable property so the correction can land.
+    let top = 40000;
+    Object.defineProperty(f.el, "scrollTop", {
+      get: () => top,
+      set: (v: number) => {
+        top = Math.max(0, Math.min(v, f.maxTop()));
+      },
+      configurable: true,
+    });
+    scroll.reconcileScrollRange();
+    expect(f.el.scrollTop).toBe(0);
+  });
+
+  it("is a no-op when nothing armed it, so an out-of-band call cannot misfire", () => {
+    const f = makeDeferredClampScrollEl(6000, 600);
+    scroll.init({ scrollEl: f.el });
+    f.userScrollTo(2000); // holding, well inside the range
+    scroll.reconcileScrollRange();
+    expect(f.el.scrollTop).toBe(2000);
+    expect(scroll.isUserScrolledUp()).toBe(true);
+  });
+
+  it("consumes the arm, so a later pass that strands nothing writes nothing", () => {
+    const f = makeDeferredClampScrollEl(85000, 600);
+    scroll.init({ scrollEl: f.el });
+    f.userScrollTo(84400);
+
+    const before = f.el.scrollTop;
+    f.setScrollHeight(600);
+    scroll.noteContentShrink(before);
+    scroll.reconcileScrollRange();
+    expect(f.el.scrollTop).toBe(0);
+
+    // Output resumes and the reader scrolls up to read it. A second call with
+    // nothing armed must not drag them back to the tail.
+    f.setScrollHeight(6000);
+    f.userScrollTo(1000);
+    scroll.reconcileScrollRange();
+    expect(f.el.scrollTop).toBe(1000);
   });
 });

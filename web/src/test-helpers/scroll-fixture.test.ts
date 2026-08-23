@@ -1,5 +1,3 @@
-// @vitest-environment happy-dom
-//
 // Contract test for the scroll-container fixtures.
 //
 // A test double normally needs no test of its own, and this one is the
@@ -17,7 +15,7 @@
 // offset when the content grows back); and a shrink that moves the offset
 // announces it with exactly one scroll event, which is the event the library
 // must not mistake for a user scrolling up. Precedent for testing a helper
-// here: wire-manifest.test.ts, beside this file.
+// here: wire-manifest.node.test.ts, beside this file.
 
 import { describe, it, expect, afterEach } from "vitest";
 import { makeClampingScrollEl, installRowGeometry } from "./scroll-fixture.js";

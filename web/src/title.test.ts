@@ -1,5 +1,3 @@
-// @vitest-environment happy-dom
-//
 // MSG_TITLE wire decoding (the TS half of the OSC 0/1/2 title path).
 //
 // Spec: xterm OSC 0/1/2 set the window/icon title (OSC 0 = icon + window,

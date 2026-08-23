@@ -1,5 +1,3 @@
-// @vitest-environment happy-dom
-//
 // Wide-char (East Asian Wide/Fullwidth) and zero-width rendering.
 //
 // Spec: UAX#11 East Asian Width — Wide/Fullwidth chars occupy 2 cells,
@@ -24,12 +22,13 @@ import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import * as render from "./render.js";
 import type { ScreenMessage, WireRun } from "./types.js";
 
-// Deterministic cell metrics for happy-dom (which implements neither Canvas2D
-// nor layout). measureText counts CODE POINTS (matching a real font's per-glyph
-// advance, so an astral char measures one cell, not two UTF-16 units), and
-// getBoundingClientRect reports width proportional to text length so
-// measureCellWidth yields a stable non-zero cell (CELL_PX). Both are needed for
-// the letterSpacing (double-width) assertions to be meaningful.
+// Deterministic cell metrics, declared rather than measured: a real Canvas2D and
+// real layout both answer from whatever font the machine has installed, and the
+// letterSpacing (double-width) assertions below need an exact cell. measureText
+// counts CODE POINTS (matching a real font's per-glyph advance, so an astral
+// char measures one cell, not two UTF-16 units), and getBoundingClientRect
+// reports width proportional to text length so measureCellWidth yields a stable
+// non-zero cell (CELL_PX).
 const CELL_PX = 8;
 
 interface FakeCtx {
@@ -86,7 +85,16 @@ function makeMsg(rows: WireRun[][], cursor: [number, number], changed?: number[]
 
 async function flush(msg: ScreenMessage): Promise<void> {
   render.handleScreen(msg);
-  await new Promise((r) => setTimeout(r, 16));
+  // Wait for the frame render.ts scheduled, not for a duration: real frames
+  // tick, so a fixed sleep races the flush in both directions. Two deep because
+  // the first callback can run in the frame the flush was queued in.
+  await new Promise<void>((resolve) => {
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        resolve();
+      });
+    });
+  });
 }
 
 function row(text: string): WireRun[] {

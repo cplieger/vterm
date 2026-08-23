@@ -1,8 +1,8 @@
-// @vitest-environment happy-dom
-
 // The mouse module's two DOM-contract obligations, which no behavioural test can
-// see because happy-dom models neither: the wheel listener's passive flag and the
-// disposer's detach.
+// see: the wheel listener's passive flag and the disposer's detach. Neither is
+// observable from the outcome of a dispatched event — a passive listener's
+// preventDefault is ignored with only a console warning, and a leaked listener
+// looks identical until something else is listening too.
 //
 // Both are asserted at the registration, and both are stated that way on
 // purpose. `passive: false` is what makes the unconditional preventDefault in

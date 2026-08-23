@@ -1,5 +1,3 @@
-// @vitest-environment happy-dom
-//
 // Spec-FIRST conformance for the kitty keyboard disambiguate encoder. The
 // expectations come from test-helpers/kitty-spec-vectors.ts, which is
 // transcribed from the official spec's normative tables — NOT from this

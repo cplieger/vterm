@@ -1,5 +1,3 @@
-// @vitest-environment happy-dom
-//
 // SECURITY invariant — OSC 8 hyperlink scheme allow-list.
 //
 // xterm OSC 8 (`OSC 8 ; params ; URI ST`) lets an application attach an
@@ -24,7 +22,8 @@ import fc from "fast-check";
 import * as render from "./render.js";
 import type { ScreenMessage, WireRun } from "./types.js";
 
-// happy-dom has no Canvas2D; render's width cache needs measureText.
+// A fixed cell metric: a real Canvas2D measures whatever font the machine has
+// installed, and render's width cache needs a deterministic measureText.
 HTMLCanvasElement.prototype.getContext = function (): unknown {
   return { font: "", measureText: (t: string) => ({ width: t.length * 8 }) };
 } as typeof HTMLCanvasElement.prototype.getContext;

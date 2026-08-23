@@ -1,5 +1,3 @@
-// @vitest-environment happy-dom
-//
 // mapKeyboardEvent takes its mode state explicitly (design section 8), so a
 // tabbed shell can map a keystroke against the active tab's modes rather than a
 // process-global singleton. These tests pass ad-hoc KeyboardModes objects and

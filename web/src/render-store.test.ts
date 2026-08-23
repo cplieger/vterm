@@ -1,5 +1,3 @@
-// @vitest-environment happy-dom
-//
 // Brick-3 renderer properties (store-backed, absolute-index DOM rows). These
 // pin what the rewrite changed versus the old live-zone model: rows carry
 // data-abs, the window is fixed-height (no trailing-blank trim, the bug-3
@@ -47,7 +45,19 @@ function scrollMsg(firstIndex: number, texts: string[]): ScrollMessage {
   return { type: "scroll", firstIndex, lines: texts.map(row) };
 }
 
-const tick = (): Promise<void> => new Promise((r) => setTimeout(r, 20));
+/** Wait for the frame render.ts scheduled, not for a duration: real frames tick,
+ *  so a fixed sleep races the flush in both directions, and Chromium throttles
+ *  rAF outright when the page is not visible. Two deep because the first
+ *  callback can run in the frame the flush was queued in. (The viewport-first
+ *  describe below captures rAF callbacks itself and does not use this.) */
+const tick = (): Promise<void> =>
+  new Promise<void>((resolve) => {
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        resolve();
+      });
+    });
+  });
 
 function absList(out: HTMLElement): number[] {
   return Array.from(out.children).map((c) => Number((c as HTMLElement).dataset["abs"]));

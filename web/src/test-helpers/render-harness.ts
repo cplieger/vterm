@@ -1,14 +1,13 @@
 // Shared render harness for the DOM-tier display-conformance tests (tier 1
-// per-attribute, tier 2 cross-language golden). It drives the REAL render.ts
-// under happy-dom and returns the DOM a caller can assert against — the tests
+// per-attribute, tier 2 cross-language golden). It drives the REAL render.ts in
+// a real browser and returns the DOM a caller can assert against — the tests
 // state the SPEC and check compliance; this file only provides the plumbing.
-//
-// Requires the happy-dom environment (`// @vitest-environment happy-dom` in the
-// importing test file).
 import * as render from "../render.js";
 import type { ScreenMessage, WireRun } from "../types.js";
 
-// Fixed cell metric so measureText is deterministic. happy-dom has no Canvas2D.
+// Fixed cell metric so measureText is deterministic. A real Canvas2D measures
+// the actual font, which varies with what the machine has installed, so the
+// arithmetic every caller asserts against is pinned here instead.
 const CELL_PX = 8;
 
 // Rows in the rendered window. Content under test goes on row 0; the cursor is
@@ -22,6 +21,29 @@ function installCanvasStub(): void {
       measureText: (text: string): { width: number } => ({ width: text.length * CELL_PX }),
     };
   } as typeof HTMLCanvasElement.prototype.getContext;
+}
+
+/**
+ * flushFrame waits for the frame render.ts scheduled, rather than for a
+ * duration. render.ts batches DOM writes behind
+ * `pendingFrame = requestAnimationFrame(flushRender)`, so the DOM is current
+ * only once that callback has RUN. Two frames deep because one rAF resolves at
+ * the START of the frame the flush is queued in, which can be the same frame:
+ * the second callback is guaranteed to run after the first has completed.
+ *
+ * A fixed sleep was correct only while frames never ticked. Against real frames
+ * it is a race in both directions — too short under load, and needlessly slow
+ * otherwise — and Chromium additionally throttles rAF when the page is not
+ * visible, which no duration can account for.
+ */
+async function flushFrame(): Promise<void> {
+  await new Promise<void>((resolve) => {
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        resolve();
+      });
+    });
+  });
 }
 
 /**
@@ -62,7 +84,7 @@ export async function renderRow(runs: WireRun[]): Promise<HTMLElement[]> {
     cursorBlink: false,
   };
   render.handleScreen(msg);
-  await new Promise((resolve) => setTimeout(resolve, 20));
+  await flushFrame();
   const output = document.querySelector<HTMLElement>(".term-output")!;
   const rowEl = output.children[0] as HTMLElement;
   return Array.from(rowEl.children) as HTMLElement[];
@@ -80,7 +102,7 @@ export function firstTextSpan(spans: HTMLElement[]): HTMLElement | undefined {
  */
 export async function renderScreen(msg: ScreenMessage): Promise<HTMLElement> {
   render.handleScreen(msg);
-  await new Promise((resolve) => setTimeout(resolve, 20));
+  await flushFrame();
   return document.querySelector<HTMLElement>(".term-output")!;
 }
 

@@ -1,12 +1,11 @@
-// @vitest-environment happy-dom
-//
-// Brick-4 scroll controller. happy-dom has no real layout, so scrollHeight /
-// clientHeight are overridden to drive the follow/hold state machine
-// deterministically: following derives from scroll position plus movement
-// direction, asymmetrically (any upward move with content below holds; only a
-// DOWNWARD move landing at the bottom re-engages, so a shrink clamp can never
-// engage follow under a reader who scrolled up), and stickToBottom only pins
-// when following.
+// Brick-4 scroll controller. scrollHeight / clientHeight are declared rather
+// than measured, because the geometry IS the premise: the follow/hold state
+// machine is what is under test, and a container given real overflow would
+// answer from whatever this file's fixture markup lays out at. Following derives
+// from scroll position plus movement direction, asymmetrically (any upward move
+// with content below holds; only a DOWNWARD move landing at the bottom
+// re-engages, so a shrink clamp can never engage follow under a reader who
+// scrolled up), and stickToBottom only pins when following.
 //
 // Fixture note: the mock starts at scrollTop 0 while reporting 700px of scroll
 // range, which is a state the real container is never in (init's contract is
@@ -320,7 +319,7 @@ describe("per-view scroll memory seam (currentScrollTop / restoreScrollTop)", ()
     // fires a scroll event (as any scrollTop assignment does in a browser) and
     // the follow/hold state re-derives from it like a user scroll.
     scroll.restoreScrollTop(100);
-    el.dispatchEvent(new Event("scroll")); // happy-dom doesn't auto-fire it
+    el.dispatchEvent(new Event("scroll")); // the fixture's setter fires none
     expect(scroll.currentScrollTop()).toBe(100);
     expect(scroll.isUserScrolledUp()).toBe(true);
 

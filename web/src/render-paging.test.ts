@@ -1,12 +1,10 @@
-// @vitest-environment happy-dom
-//
 // The renderer's DEMAND-PAGING half (docs/paged-scrollback.md §5.4-5.5): the
 // fetch controller (when a request fires, where it is anchored, and the guards
 // that keep it dormant) and the gap markers (a projection of the store's
 // geometry, so a gap that heals from either edge updates without any caller
 // knowing which edge moved).
 //
-// Drives the REAL render.ts under happy-dom, with the transport replaced by
+// Drives the REAL render.ts in a real browser, with the transport replaced by
 // spies — this layer's job is deciding WHAT to ask for, not sending it.
 
 import { describe, it, expect, beforeEach, vi } from "vitest";
@@ -14,6 +12,18 @@ import * as render from "./render.js";
 import * as scroll from "./scroll.js";
 import { PAGE_SIZE, PREFETCH_THRESHOLD } from "./store.js";
 import type { ScreenMessage, ScrollMessage, WireRun } from "./types.js";
+
+// A real browser's ESM module namespace is non-configurable, so `vi.spyOn` on a
+// module export cannot install itself: the property is not redefinable. The
+// emulator ran behind a transform that rewrote exports into configurable
+// getters, which is why these spies used to work without this line.
+//
+// `spy: true` asks vitest for the module with its exports wrapped in spies that
+// CALL THROUGH by default, so nothing is stubbed out wholesale — the same
+// scroll.ts runs, and only the exports a test explicitly overrides behave
+// differently. render.ts imports the same mocked module, which is what makes
+// this the parked-reader seam these tests need.
+vi.mock("./scroll.js", { spy: true });
 
 const CELL_PX = 8;
 
@@ -92,37 +102,66 @@ function initRender(opts: { wireTransport?: boolean } = {}): void {
   render.updateFontMetrics();
 }
 
-/** Let the render flush run (it is rAF/timeout driven). */
+/** Let the render flush run: it is rAF-driven, so wait for the frame rather
+ *  than for a duration. Two deep because one rAF resolves at the start of the
+ *  frame the flush is queued in, which can be the same frame. */
 async function flush(): Promise<void> {
-  await new Promise((resolve) => setTimeout(resolve, 20));
+  await new Promise<void>((resolve) => {
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        resolve();
+      });
+    });
+  });
 }
 
 const ROW_PX = 17;
 
+let nativeOffsetTop: PropertyDescriptor | undefined;
+
 /**
  * Park the reader on the row at `abs`.
  *
- * happy-dom reports `offsetTop` 0 for every element, which collapses the
- * renderer's binary search for the top visible row onto the first child — so a
- * test that wants a real reading position has to supply a layout. Derive one
- * from `data-abs` (rows are in ascending order, one row tall each) and put the
- * scroll offset on the target row.
+ * The renderer finds the top visible row by binary-searching the rows' offsets,
+ * and this model declares them: rows sit in ascending `data-abs` order, one row
+ * tall each, with the scroll offset on the target row. A real browser reports
+ * real offsets, but they derive from whatever height the test's own fixture
+ * markup happens to lay out at, which is not the uniform grid the search is
+ * being tested against.
+ *
+ * The patch is contained to elements the model describes — those carrying
+ * `data-abs` — and everything else falls through to the browser's real
+ * `offsetTop`. A prototype patch reaches every element in the page for the rest
+ * of the file, the runner's own DOM included, so answering only for the rows
+ * keeps the blast radius to the thing under test.
  */
 function parkViewportAt(abs: number): void {
+  nativeOffsetTop ??= Object.getOwnPropertyDescriptor(HTMLElement.prototype, "offsetTop");
+  const native = nativeOffsetTop;
   Object.defineProperty(HTMLElement.prototype, "offsetTop", {
     configurable: true,
     get(this: HTMLElement): number {
       const a = Number(this.dataset["abs"] ?? "");
-      return Number.isFinite(a) ? a * ROW_PX : 0;
+      if (Number.isFinite(a)) {
+        return a * ROW_PX;
+      }
+      return Number(native?.get?.call(this) ?? 0);
     },
   });
   vi.spyOn(scroll, "isUserScrolledUp").mockReturnValue(true);
   vi.spyOn(scroll, "currentScrollTop").mockReturnValue(abs * ROW_PX);
 }
 
-/** Undo parkViewportAt's prototype patch (mocks are restored separately). */
+/** Undo parkViewportAt's prototype patch (mocks are restored separately).
+ *
+ *  RESTORE the saved descriptor, never `delete`. `offsetTop` is defined on
+ *  HTMLElement.prototype by the platform, so deleting the patched property
+ *  removes the real accessor with it and every later `el.offsetTop` in this file
+ *  reads `undefined`. Under the emulator the same line looked like a cleanup. */
 function unparkViewport(): void {
-  delete (HTMLElement.prototype as unknown as Record<string, unknown>)["offsetTop"];
+  if (nativeOffsetTop) {
+    Object.defineProperty(HTMLElement.prototype, "offsetTop", nativeOffsetTop);
+  }
 }
 
 /** The gap markers currently in the DOM, in document order. */

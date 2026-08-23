@@ -1,5 +1,3 @@
-// @vitest-environment happy-dom
-//
 // The resume-ack budget pass's CONTAINMENT decision, in both directions.
 //
 // docs/paged-scrollback.md §5.3 makes a normative claim about it — "a FOLLOWING

@@ -11,7 +11,7 @@
 // This module renders that surface FROM the existing WIRE_COMPATIBILITY export,
 // so the numbers keep exactly one source of truth in the TypeScript half. The
 // rendered text is checked into the repo (see the drift guard in
-// wire-manifest.test.ts) because the publish pipeline runs no build step: npm
+// wire-manifest.node.test.ts) because the publish pipeline runs no build step: npm
 // and JSR publish the working tree as-is, so a manifest generated at publish
 // time would never exist in the tarball.
 //

@@ -9,7 +9,7 @@
 //
 // Regenerate (same code path that compares, so the two can never disagree):
 //
-//   cd web && UPDATE_GOLDEN=1 npx vitest --run src/test-helpers/wire-manifest.test.ts
+//   cd web && UPDATE_GOLDEN=1 npx vitest --run src/test-helpers/wire-manifest.node.test.ts
 //
 // The third surface, the Go constants, is pinned by
 // terminal/wire_manifest_test.go; between the two, the manifest, the TS
@@ -42,7 +42,7 @@ describe("generated wire-compatibility manifest", () => {
     expect(
       onDisk,
       `web/${WIRE_MANIFEST_PATH} drifted from web/src/wire-compatibility.ts. ` +
-        "Regenerate with: cd web && UPDATE_GOLDEN=1 npx vitest --run src/test-helpers/wire-manifest.test.ts " +
+        "Regenerate with: cd web && UPDATE_GOLDEN=1 npx vitest --run src/test-helpers/wire-manifest.node.test.ts " +
         "(and re-run `go test ./terminal/ -run TestWireManifest` so the Go constants are re-checked).",
     ).toBe(rendered);
   });

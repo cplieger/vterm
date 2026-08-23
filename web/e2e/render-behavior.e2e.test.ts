@@ -1,8 +1,9 @@
-// Tier 3 — behavioral display conformance in a REAL browser. The happy-dom
+// Tier 3 — behavioral display conformance through a SERVED page. The Vitest
 // sibling (src/render-behavior.test.ts) asserts the DOM grid after each escape
-// operation; this runs the SAME Go-generated fixtures through the real render.ts
-// in headless chromium, so the grid is asserted with real layout (rows actually
-// positioned, text actually flowed), not happy-dom's layout-free DOM.
+// operation inside the test runner's page; this runs the SAME Go-generated
+// fixtures through the real render.ts in a Playwright-driven chromium loading the
+// real harness page, so the grid is asserted against a full page load and the
+// engine's own bundle rather than the runner's module graph.
 //
 // Each scenario's frame is the engine's real wire output for a real escape
 // SEQUENCE (clear, erase, cursor-move, insert/delete, scroll, ...); the expected

@@ -1,5 +1,3 @@
-// @vitest-environment happy-dom
-//
 // Behavioral display conformance — the RENDERER half of "does the operation
 // actually look right on screen". esctest2 proves the Go engine's screen MODEL
 // is correct after clear/erase/cursor/insert/delete; this proves render.ts
@@ -12,12 +10,15 @@
 //
 // Scope: in-place SCREEN-grid operations (what the renderer paints). Scroll-to-
 // history is covered by render-store.test.ts.
+//
+// The manifest is a Vite `?raw` import rather than a node:fs read, so this file
+// runs in the browser project where the renderer belongs. render-golden/ sits at
+// the repo root above the Vite root, which is what vitest.config.ts's
+// `server.fs.allow` entry is for.
 import { describe, it, expect, beforeEach } from "vitest";
-import { readFileSync } from "node:fs";
-import { fileURLToPath } from "node:url";
-import { dirname, join } from "node:path";
 import { decodeWireBinary } from "./wire-binary.js";
 import { initHarness, renderScreen, rowSpans } from "./test-helpers/render-harness.js";
+import manifestRaw from "../../render-golden/behavior.manifest.json?raw";
 import type { ScreenMessage } from "./types.js";
 
 interface BehaviorEntry {
@@ -30,13 +31,19 @@ interface BehaviorEntry {
 }
 
 function loadManifest(): BehaviorEntry[] {
-  const dir = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "render-golden");
-  return JSON.parse(readFileSync(join(dir, "behavior.manifest.json"), "utf8")) as BehaviorEntry[];
+  return JSON.parse(manifestRaw) as BehaviorEntry[];
 }
 
 function frameBuffer(b64: string): ArrayBuffer {
-  const buf = Buffer.from(b64, "base64");
-  return buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength);
+  // atob + charCodeAt rather than Buffer.from: the browser has no Buffer, and
+  // the base64 here is the engine's own wire bytes, so a lossy decode would
+  // corrupt the frame under test.
+  const binary = atob(b64);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) {
+    bytes[i] = binary.charCodeAt(i);
+  }
+  return bytes.buffer;
 }
 
 // rowText returns a rendered row's visible text, normalizing the nbsp filler an

@@ -1,5 +1,3 @@
-// @vitest-environment happy-dom
-//
 // The transport's RULES, stated one at a time: which timers belong to which
 // socket, what a scheduled reconnect may and may not spawn, what a socket that
 // never opened is allowed to do afterwards, and which frame shapes reach the
@@ -1210,14 +1208,28 @@ describe("connection: the module's own defaults, on a pristine instance", () => 
   // unmanaged contract therefore cannot be observed on a module some other suite
   // has already switched sessions on (vitest runs these files with
   // isolate:false), so these tests import a FRESH module instance instead.
+  //
+  // The query bust, not `vi.resetModules()`: the browser's module registry is
+  // URL-keyed, so resetting and re-importing the same specifier hands back the
+  // CACHED instance with its latches already thrown, and each test would assert
+  // against the state it exists to exclude. The counter gives every test its own
+  // evaluation, and `@vite-ignore` opts out of Vite's variable-dynamic-import
+  // rewrite, which otherwise resolves the specifier against a generated glob map
+  // that no query matches. The extension stays `.ts` (the real file) rather than
+  // the `.js` the static imports use, because this specifier is built at runtime
+  // and so IS the URL the browser requests — written `.js`, every evaluation is
+  // attributed to a file that does not exist and coverage silently reports zero.
   let mod: typeof ConnectionModule;
+  let pristineBoot = 0;
 
   beforeEach(async () => {
     sockets.length = 0;
     vi.useFakeTimers();
     vi.stubGlobal("WebSocket", makeMockWebSocket());
-    vi.resetModules();
-    mod = await import("./connection.js");
+    pristineBoot++;
+    mod = (await import(
+      /* @vite-ignore */ `./connection.ts?pristine=${String(pristineBoot)}`
+    )) as typeof ConnectionModule;
   });
 
   afterEach(() => {

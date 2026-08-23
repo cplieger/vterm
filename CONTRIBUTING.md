@@ -24,7 +24,7 @@ The Go server and TS client agree on a byte-level WebSocket protocol without imp
 Two rules keep the two halves honest, and both have been broken:
 
 - **Every `wire-golden/*.bin` fixture needs a decode test on the TS side.** A fixture
-  the Go generator writes and nothing in `web/src/wire-golden.test.ts` reads pins one
+  the Go generator writes and nothing in `web/src/wire-golden.node.test.ts` reads pins one
   half of a two-language contract: a layout change then fails loudly in Go and
   silently in the browser. Add the fixture and its consumer assertions in the same
   change.
@@ -52,12 +52,12 @@ This check was added after v3.2.1 and is a behaviour change for existing callers
 Regenerate after any change to `web/src/wire-compatibility.ts`:
 
 ```sh
-cd web && UPDATE_GOLDEN=1 npx vitest --run src/test-helpers/wire-manifest.test.ts
+cd web && UPDATE_GOLDEN=1 npx vitest --run src/test-helpers/wire-manifest.node.test.ts
 ```
 
 Three guards keep the surfaces from diverging, all on the normal CI path:
 
-- Drift: `web/src/test-helpers/wire-manifest.test.ts` regenerates the manifest and fails on any byte of difference (same code path that writes it under `UPDATE_GOLDEN=1`).
+- Drift: `web/src/test-helpers/wire-manifest.node.test.ts` regenerates the manifest and fails on any byte of difference (same code path that writes it under `UPDATE_GOLDEN=1`).
 - TypeScript conformance: the same test pins every manifest value to its `wire-compatibility.ts` constant.
 - Go conformance: `terminal/wire_manifest_test.go` pins the manifest against `WireProtocolVersion` / `WireIncompatibleCloseCode`, checks the client floor cannot exceed the server's revision, and feeds the manifest through `WirePairIncompatibility` to assert the published pair accepts itself.
 
@@ -117,9 +117,11 @@ npx eslint .
 npx prettier --check .
 ```
 
-The Playwright `e2e/` suite runs the real modules in headless Chromium. It checks display conformance against Go-generated `render-golden` fixtures, keyboard encoding against real browser events, and typed-framing negotiation against a real Go server. Install Chromium once with `npx playwright install chromium`. Happy-dom unit tests live under `src/`.
+The Playwright `e2e/` suite runs the real modules against a served harness page in headless Chromium. It checks display conformance against Go-generated `render-golden` fixtures, keyboard encoding against real browser events, and typed-framing negotiation against a real Go server. Install Chromium once with `npx playwright install chromium`.
 
-ESLint uses the `strictTypeChecked` and `stylisticTypeChecked` presets. `tsconfig.json` enables `exactOptionalPropertyTypes`, `noUncheckedIndexedAccess`, `noPropertyAccessFromIndexSignature`, and related strict checks. Vitest runs in a `node` environment with `requireAssertions`; `fc-strict-setup.ts` configures fast-check property tests.
+The Vitest unit suites live under `src/` and run in **two projects**. The default is `browser`: Vitest Browser Mode drives them in headless Chromium (`@vitest/browser-playwright`), because this package renders DOM, measures text through Canvas2D and reads layout, so the browser is the environment it ships into. A file opts out with the `.node.test.ts` suffix and lands in the `node` project — reserved for genuine Node capabilities, which here means the three suites that read `wire-golden/` fixtures off disk by name and, in `wire-manifest`, write a regenerated manifest back under `UPDATE_GOLDEN=1`. A write has no import equivalent, so that one is irreducible. Placement is readable off the filename because a misplaced file that needs *browser* globals fails silently rather than loudly. `*.fuzz.test.ts` keeps its own suffix untouched: that is how CI selects fuzz targets.
+
+ESLint uses the `strictTypeChecked` and `stylisticTypeChecked` presets. `tsconfig.json` enables `exactOptionalPropertyTypes`, `noUncheckedIndexedAccess`, `noPropertyAccessFromIndexSignature`, and related strict checks. Vitest runs with `requireAssertions`; `fc-strict-setup.ts` configures fast-check property tests.
 
 CI (`.github/workflows/ci.yaml`) detects both surfaces and runs Go and TypeScript jobs in parallel. Run checks for the half you changed, or both for protocol changes.
 

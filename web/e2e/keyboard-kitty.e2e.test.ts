@@ -1,6 +1,6 @@
-// Tier 3 — kitty keyboard (disambiguate 0x1) encoding in a REAL browser.
+// Tier 3 — kitty keyboard (disambiguate 0x1) encoding through real key events.
 //
-// The happy-dom siblings (src/keyboard-modes-arg.test.ts) construct synthetic
+// The Vitest siblings (src/keyboard-modes-arg.test.ts) construct synthetic
 // KeyboardEvents; this drives REAL chromium key events via page.keyboard, so
 // ev.code / ev.key / the modifier flags are filled by the browser exactly as
 // they are for a user, then runs the real keyboard.ts encoder over them and

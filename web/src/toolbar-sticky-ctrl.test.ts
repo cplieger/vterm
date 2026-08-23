@@ -1,5 +1,3 @@
-// @vitest-environment happy-dom
-//
 // Two edges of the toolbar's sticky-Ctrl state machine that toolbar.test.ts
 // leaves open: the same-value write, and multi-char input under kitty
 // disambiguate.

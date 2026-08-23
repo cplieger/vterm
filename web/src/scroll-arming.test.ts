@@ -1,5 +1,3 @@
-// @vitest-environment happy-dom
-//
 // The scroll controller's ARMING discipline and its two boundaries — the parts
 // of the follow/hold state machine that scroll.test.ts exercises around but does
 // not reach:

@@ -1,5 +1,3 @@
-// @vitest-environment happy-dom
-//
 // Behaviours of render.ts that the existing tiers exercise but never assert.
 // Four areas, each one a contract a reader can check without opening render.ts:
 //
@@ -8,10 +6,11 @@
 //     row's top in the SCROLL CONTAINER's coordinate space, which is not the
 //     row's `offsetTop`: the stylesheet makes the row container a positioned
 //     element, so rows report offsets in ITS space, and the missing term is the
-//     container's own offset plus any border a wrapper grows. happy-dom has no
-//     layout at all (every box reports 0), so a test that wants a real reading
-//     position has to supply one — the model below is the ordinary DOM shape
-//     with non-uniform rows, a positioned row container and a bordered wrapper.
+//     container's own offset plus any border a wrapper grows. The model below
+//     declares that geometry — non-uniform rows, a positioned row container, a
+//     bordered wrapper — rather than measuring it, because the coordinate
+//     arithmetic IS the subject and a real box would be whatever this file's
+//     fixture markup happens to lay out at.
 //   - The caret's cell ownership. A Wide glyph owns two cells and the caret
 //     covers both; the decision is a measurement against the cell, so its
 //     BOUNDARY and the FACE it measures with are both observable.
@@ -30,6 +29,25 @@ import * as render from "./render.js";
 import * as scroll from "./scroll.js";
 import { LineStore, PAGE_SIZE } from "./store.js";
 import type { ScreenMessage, ScrollMessage, WireRun } from "./types.js";
+
+// A real browser's ESM module namespace is non-configurable, so `vi.spyOn` on a
+// module export cannot install itself: the property is not redefinable. The
+// emulator ran behind a transform that rewrote exports into configurable
+// getters, which is why these spies used to work without this line.
+//
+// `spy: true` asks vitest for the module with its exports wrapped in spies that
+// CALL THROUGH by default, so nothing is stubbed out wholesale — the same
+// scroll.ts runs, and only the exports a test explicitly overrides behave
+// differently. render.ts imports the same mocked module, which is what makes
+// this the parked-reader seam these tests need.
+//
+// One consequence to know when reading the call-count assertions below: an
+// auto-spy starts recording at module load, and `vi.spyOn` on a property that is
+// already a mock hands back THAT spy rather than a fresh one. So a spy taken
+// mid-test carries whatever the setup above it already did, and every site whose
+// assertion is a COUNT clears it first (`.mockClear()`) to mean what it says —
+// the calls the action under test causes.
+vi.mock("./scroll.js", { spy: true });
 
 // --- The font model ---------------------------------------------------------
 //
@@ -268,6 +286,22 @@ function attach(
   termWrap.style.fontFamily = "monospace";
   termWrap.style.padding = opts.padding ?? "0px";
   termWrap.style.lineHeight = `${String(LINE_PX)}px`;
+  // scrollTop belongs to the declared model, like the rects and offsets above
+  // it. A real container with no overflow cannot scroll, so a real browser
+  // clamps `termWrap.scrollTop = 25` straight back to 0 — and the rect-delta
+  // fallback then measures a model row against a live offset of zero, which is
+  // neither the model's answer nor a meaningful one. An own property on this
+  // element (never a prototype patch, so no other element in the page is
+  // affected) keeps the whole coordinate model in one place; it stores 0 by
+  // default, which is what every other test here already assumed.
+  let scrollTop = 0;
+  Object.defineProperty(termWrap, "scrollTop", {
+    configurable: true,
+    get: () => scrollTop,
+    set: (v: number) => {
+      scrollTop = v;
+    },
+  });
   render.init({
     output,
     termWrap,
@@ -1096,7 +1130,7 @@ describe("a store swap starts from the incoming store alone", () => {
     paint({ rows: [row("a"), row("b"), row("c")], cursor: [0, 0] });
     runFrame();
     vi.spyOn(scroll, "currentScrollTop").mockReturnValue(2 * ROW_PX);
-    const shrink = vi.spyOn(scroll, "noteContentShrink");
+    const shrink = vi.spyOn(scroll, "noteContentShrink").mockClear();
 
     render.bind(new LineStore());
     expect(shrink.mock.calls).toEqual([[2 * ROW_PX]]);
@@ -1261,7 +1295,7 @@ describe("a flush that moved nothing corrects nothing", () => {
     // double-compensate there and throw the view the other way.
     paint({ rows: [row("a"), row("b"), row("c")], cursor: [0, 0] });
     parkJustAboveRow2();
-    const shift = vi.spyOn(scroll, "adjustForContentShift");
+    const shift = vi.spyOn(scroll, "adjustForContentShift").mockClear();
 
     paint({ rows: [row("a"), row("b"), row("c2")], changed: [2], cursor: [0, 0] });
     expect(shift.mock.calls).toEqual([[0]]);
@@ -1277,7 +1311,7 @@ describe("a flush that moved nothing corrects nothing", () => {
     parkJustAboveRow2();
     render.updateFontMetrics();
     expect(render.pendingRestoreAbs()).toBe(2);
-    const shift = vi.spyOn(scroll, "adjustForContentShift");
+    const shift = vi.spyOn(scroll, "adjustForContentShift").mockClear();
 
     runFrame();
     expect(render.pendingRestoreAbs()).toBeNull();
@@ -1354,7 +1388,7 @@ describe("leaving the alternate screen is a content shrink like any other", () =
     // auto-follow off.
     render.handleScroll(scrollMsg(0, 5));
     paint({ rows: [row("t0"), row("t1")], base: 5, cursor: [0, 0], altActive: true });
-    const shrink = vi.spyOn(scroll, "noteContentShrink");
+    const shrink = vi.spyOn(scroll, "noteContentShrink").mockClear();
 
     paint({ rows: [row("W5"), row("W6")], base: 5, cursor: [0, 0], altActive: false });
     expect(shrink).toHaveBeenCalledTimes(1);

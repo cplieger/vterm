@@ -153,6 +153,60 @@ describe("LineStore: the provisional floor and malformed frames", () => {
     expect(s.oldestIndex()).toBe(0);
   });
 
+  it("keeps the transcript when a screen frame is based below zero", () => {
+    // The path the test above deliberately steps around, with a window short
+    // enough to reach it. A base below zero puts the window BOTTOM
+    // (`base + height - 1`) below every retained index, and truncateBelowWindow
+    // reads that as "every line is stranded past the live window" and forgets
+    // all of them. Nothing records it: the eviction watermark only moves on a
+    // trim, so `hasTrimmedHistory()` stays false and the renderer draws no
+    // "earlier output trimmed" marker — the transcript just disappears. Same
+    // class as the rows-less guard one branch up, whose comment records the same
+    // measurement (a 3024-line store wiped to 0 rows, silently).
+    const s = new LineStore();
+    s.applyScreen(screenMsg(10, 3));
+    s.applyScroll(scrollMsg(10, 3, "H")); // committed history, not a drawn screen
+    expect(heldKeys(s)).toEqual([10, 11, 12]);
+
+    s.applyScreen(screenMsg(-5, 3));
+
+    expect(heldKeys(s)).toEqual([10, 11, 12]);
+    expect(s.oldestIndex()).toBe(10);
+    expect(s.highestIndex()).toBe(12);
+    expect(s.hasTrimmedHistory()).toBe(false);
+  });
+
+  it("applies the addressable rows of a below-zero frame without adopting its window", () => {
+    // The other half: the frame is refused as GEOMETRY, not as content. Its rows
+    // at or above zero are ordinary content (applyLine's guard 1 is what decides
+    // that, as the test above pins), while the descriptor keeps the last base a
+    // frame stated legitimately — so the retention bound, the guard-2 window
+    // exemption and the renderer's window all keep naming real screen positions.
+    const s = new LineStore();
+    s.applyScreen(screenMsg(10, 3));
+
+    s.applyScreen(screenMsg(-2, 5)); // rows at -2..2; only 0, 1 and 2 are addressable
+
+    expect(heldKeys(s)).toEqual([0, 1, 2, 10, 11, 12]);
+    expect(s.getWindow().base).toBe(10);
+    expect(s.getWindow().height).toBe(3);
+  });
+
+  it("keeps a replay that arrived before any window frame when a below-zero frame follows", () => {
+    // The same wipe reached with no window ESTABLISHED yet. A resume replays
+    // history before the screen frame that describes the window (the ordering
+    // enforceCap's comment names), so `win` is still the initial base 0/height 0
+    // descriptor — a window bottom of -1, below every retained index. There is no
+    // window, so nothing can be stranded past one.
+    const s = new LineStore();
+    s.applyScroll(scrollMsg(10, 3, "H")); // replay, still no window frame
+
+    s.applyScreen(screenMsg(-5, 3));
+
+    expect(heldKeys(s)).toEqual([10, 11, 12]);
+    expect(s.hasTrimmedHistory()).toBe(false);
+  });
+
   it("confirms nothing from a scroll frame that carries no lines", () => {
     // confirmRange's `count <= 0` guard. An empty chunk proves nothing about
     // any index, so it must not raise the floor: doing so would claim the

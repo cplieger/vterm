@@ -21,7 +21,7 @@
     "esbuild": "0.28.2",
     "eslint": "10.8.1",
     "fast-check": "4.9.0",
-    "happy-dom": "20.11.4",
+    "happy-dom": "20.11.6",
     "pngjs": "7.0.0",
     "prettier": "3.9.6",
     "typescript": "npm:@typescript/typescript6@6.0.2",

@@ -782,7 +782,21 @@ function retransmitOutbox(sock: WebSocket, upgraded: boolean, st: ResumeState): 
 }
 
 function scheduleReconnect(): void {
-  if (connState.status === "reconnecting") {
+  // Nothing to schedule when the state already owns a path back to a socket: a
+  // backoff timer is pending ("reconnecting"), or a socket exists that will
+  // drive its own retry from its close handler or its connect timeout
+  // ("connecting"/"connected"). Both callers set "disconnected" before calling
+  // cb.onClose(), so a consumer that reconnects from its own close hook lands
+  // here at "connecting" — and scheduling over it would OVERWRITE connState,
+  // hiding that socket from connect()'s double-call guard, which then never
+  // aborts it: the timer's connect() adds a second live socket with the first
+  // one's listeners still bound, i.e. the duplicate server connection and
+  // double delivery documented inside connect().
+  if (
+    connState.status === "reconnecting" ||
+    connState.status === "connecting" ||
+    connState.status === "connected"
+  ) {
     return;
   }
   const step = nextBackoffDelay(reconnectDelay);

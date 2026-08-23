@@ -527,6 +527,45 @@ describe("connection: the reconnect schedule and what may cancel it", () => {
     expect(sockets).toHaveLength(2);
   });
 
+  it("a connect from the consumer's own onClose leaves no timer to spawn a third socket", () => {
+    // The re-entrant shape of the test above, and the one the guard at
+    // scheduleReconnect misses. The close handler sets "disconnected", calls
+    // onClose, THEN schedules: a consumer that reconnects from its own close
+    // hook (a "retry now" button, a status-driven reconnect) is already back at
+    // "connecting" with a live socket by the time the schedule runs. Arming a
+    // backoff over it also OVERWRITES connState, so connect()'s double-call
+    // guard can no longer see that socket and never aborts it — the timer's
+    // connect() stacks a third socket with the second one's listeners still
+    // bound. That is the duplicate server connection + double delivery the
+    // comment inside connect() describes, reached from the other direction.
+    let reentered = 0;
+    installConsumer({
+      onClose: () => {
+        reentered++;
+        connect();
+      },
+    });
+    const { sock } = openSession("onclose-reentry");
+
+    sock.fireClose(1006);
+    expect(reentered).toBe(1);
+    expect(sockets).toHaveLength(2);
+    const second = sockets[1]!;
+
+    vi.advanceTimersByTime(5_000); // past the whole backoff ladder's first steps
+
+    expect(sockets).toHaveLength(2);
+    // One frame, one delivery: every socket still able to deliver gets the
+    // server's output, so a second live socket doubles every frame the page
+    // renders.
+    for (const s of sockets.slice(1)) {
+      s.fireOpen();
+      s.fireMessage(titleFrame("live"));
+    }
+    expect(onMessage).toHaveBeenCalledTimes(1);
+    expect(second.closed).toBe(false);
+  });
+
   it("a connect that never opens is retried after the connect timeout", () => {
     connect();
     expect(sockets).toHaveLength(1);

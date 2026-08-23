@@ -1,5 +1,3 @@
-// @vitest-environment happy-dom
-
 // The four decisions in mapKeyboardEvent that no scenario in the keyboard
 // suites reaches from the side that distinguishes them.
 //

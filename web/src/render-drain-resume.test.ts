@@ -1,5 +1,3 @@
-// @vitest-environment happy-dom
-//
 // handleScrollPosition: the renderer's scroll-position contract, its bounded
 // drain recovery, and the reschedule rule's canary
 // (docs/tab-switch-repaint.md §3.1, §4.1).

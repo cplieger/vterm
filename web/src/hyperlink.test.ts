@@ -1,5 +1,3 @@
-// @vitest-environment happy-dom
-//
 // OSC 8 hyperlink rendering: a run carrying an OSC 8 URI is painted as an <a>.
 //
 // Spec: xterm ctlseqs OSC 8 (`OSC 8 ; params ; URI ST`) — the URI in the
@@ -49,11 +47,18 @@ function frame(rowsByIdx: Record<number, WireRun[]>, cursor: [number, number]): 
 
 async function flushFrame(msg: ScreenMessage): Promise<void> {
   render.handleScreen(msg);
-  // render batches DOM updates via requestAnimationFrame (happy-dom
-  // implements rAF as a ~16ms timer). Wait two frames on a plain timer
-  // instead of racing the rAF-queue ordering, which is runtime/timing
-  // dependent and flaked on CI while passing locally.
-  await new Promise((r) => setTimeout(r, 32));
+  // Wait for the frame render.ts scheduled, not for a duration. This used to be
+  // a 32ms sleep because the emulator implemented rAF as a ~16ms timer and
+  // racing its queue ordering flaked on CI; against real frames the honest wait
+  // is the frame itself. Two deep because the first callback can run in the
+  // frame the flush was queued in.
+  await new Promise<void>((resolve) => {
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        resolve();
+      });
+    });
+  });
 }
 
 describe("OSC 8 hyperlink rendering", () => {

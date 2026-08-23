@@ -1,5 +1,3 @@
-// @vitest-environment happy-dom
-
 // Five decisions in the scroll controller that the existing suites reach from
 // one side only.
 //
@@ -173,14 +171,30 @@ describe("scroll: the zero-delta content shift", () => {
 });
 
 describe("scroll: an unmounted controller", () => {
+  /** The query that makes the import below a distinct URL, and therefore a
+   *  distinct module evaluation. */
+  const FRESH_INSTANCE_QUERY = "unmounted=1";
+
   it("ignores restoreView entirely, including the follow state", async () => {
     // The renderer calls restoreView from bind, which can run before any
     // container is attached. Applying the follow state there would leave the
     // module holding a state for a container it does not have, and the first
     // real init would then report a follow change that no user gesture caused.
     // A fresh module instance is the only way to observe the un-inited state.
-    vi.resetModules();
-    const fresh = await import("./scroll.js");
+    //
+    // The query bust, not `vi.resetModules()`: the browser's module registry is
+    // URL-keyed, so resetting and re-importing the same specifier returns the
+    // CACHED instance — already inited by the suites above, and the test would
+    // then assert against exactly the state it was written to avoid. The
+    // extension stays `.ts` (the real file) rather than the `.js` the static
+    // imports use, because this specifier is built at runtime and so IS the URL
+    // the browser requests; written `.js`, the evaluation is attributed to a
+    // file that does not exist and coverage silently reports zero for it.
+    // Interpolated rather than written as one literal so tsc treats it as a
+    // runtime specifier instead of trying to resolve `scroll.ts?unmounted=1`.
+    const fresh = (await import(
+      /* @vite-ignore */ `./scroll.ts?${FRESH_INSTANCE_QUERY}`
+    )) as typeof scroll;
 
     expect(fresh.isUserScrolledUp()).toBe(false); // follows by default
     fresh.restoreView({ top: 4200, following: false });

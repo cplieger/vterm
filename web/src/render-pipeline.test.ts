@@ -1,5 +1,3 @@
-// @vitest-environment happy-dom
-//
 // Full-pipeline integration test: feeds REAL the host application PTY bytes captured
 // from a working session through the WS binary decoder and the renderer,
 // then validates the resulting DOM matches the expected post-keystroke
@@ -15,8 +13,9 @@ import * as render from "./render.js";
 import { decodeWireBinary } from "./wire-binary.js";
 import type { ScreenMessage } from "./types.js";
 
-// happy-dom doesn't implement Canvas2D. Stub measureText so render
-// can compute cell widths.
+// A real Canvas2D measures whatever font the machine has installed, so
+// measureText is declared here and render computes cell widths from a fixed
+// metric.
 interface FakeCtx {
   font: string;
   measureText: (t: string) => { width: number };
@@ -142,12 +141,26 @@ function buildScreenFrame(opts: {
   return buf;
 }
 
+/** Wait for the frame render.ts scheduled, not for a duration: real frames tick,
+ *  so a fixed sleep races the flush in both directions, and Chromium throttles
+ *  rAF outright when the page is not visible. Two deep because the first
+ *  callback can run in the frame the flush was queued in. */
+async function nextFrames(): Promise<void> {
+  await new Promise<void>((resolve) => {
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        resolve();
+      });
+    });
+  });
+}
+
 async function flushFrame(buf: ArrayBuffer): Promise<void> {
   const msg = decodeWireBinary(buf) as ScreenMessage;
   expect(msg).not.toBeNull();
   expect(msg.type).toBe("screen");
   render.handleScreen(msg);
-  await new Promise((r) => setTimeout(r, 16));
+  await nextFrames();
 }
 
 describe("full pipeline: binary frame -> decoder -> renderer", () => {
@@ -378,7 +391,7 @@ describe("full pipeline: binary frame -> decoder -> renderer", () => {
     const msg2 = decodeWireBinary(frame2) as ScreenMessage;
     render.handleScreen(msg1);
     render.handleScreen(msg2);
-    await new Promise((r) => setTimeout(r, 16));
+    await nextFrames();
     expectInverseAtCol(outputEl, 19, 4, " ");
   });
 });
@@ -420,8 +433,9 @@ describe("cursor-blink visibility gate", () => {
   let outputEl: HTMLDivElement;
   let termWrap: HTMLDivElement;
 
-  // setVisibility fakes the page's visibility state (happy-dom has no native
-  // way to background a document) and fires the event the gate listens on.
+  // setVisibility shadows the page's visibility state (a test cannot background
+  // a real document) and fires the event the gate listens on. Note the browser
+  // reports "visible" by default, so the hidden arm is never taken by accident.
   function setVisibility(state: "visible" | "hidden"): void {
     Object.defineProperty(document, "visibilityState", { value: state, configurable: true });
     document.dispatchEvent(new Event("visibilitychange"));

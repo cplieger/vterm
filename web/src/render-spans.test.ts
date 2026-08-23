@@ -1,5 +1,3 @@
-// @vitest-environment happy-dom
-//
 // Row-span construction: what render.ts paints for a run, and what it must NOT
 // paint. Two properties the existing attribute tier cannot express, because it
 // only ever asserts the POSITIVE direction of one attribute at a time:
@@ -22,6 +20,7 @@
 
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import * as render from "./render.js";
+import { cssColor } from "./test-helpers/spec-colors.js";
 import type { ScreenMessage, WireRun } from "./types.js";
 
 // --- The font model ---------------------------------------------------------
@@ -90,8 +89,9 @@ function installStubs(): void {
     };
     return ctx;
   } as typeof HTMLCanvasElement.prototype.getContext;
-  // happy-dom has no layout: the cell measurement reads a rect off a probe span
-  // of ten `M`s, so report a width proportional to the text at the live size.
+  // The cell measurement reads a rect off a probe span of ten `M`s, and a real
+  // font's advance depends on what the machine has installed, so the metric is
+  // declared here: a width proportional to the text at the live size.
   HTMLElement.prototype.getBoundingClientRect = function fakeRect(this: HTMLElement): DOMRect {
     const width = [...(this.textContent ?? "")].length * cellOf(fontPx);
     return {
@@ -202,8 +202,11 @@ describe("color index 0 is black, not 'default'", () => {
     // that treats 0 as absent silently drops black text — invisible on a dark
     // theme, wrong on a light one.
     const spans = renderRow([run("M", { f: 0, b: 0 })]);
-    expect(spans[0]!.style.color).toBe("#000000");
-    expect(spans[0]!.style.background).toBe("#000000");
+    // cssColor rather than a "#000000" literal: CSSOM does not round-trip the
+    // authored hex, it reports the CSS Color 4 serialization, so both sides go
+    // through the browser's own serializer from the same wire value.
+    expect(spans[0]!.style.color).toBe(cssColor(0x000000));
+    expect(spans[0]!.style.background).toBe(cssColor(0x000000));
   });
 
   it("keeps the colors of an inverse run that already carries them", () => {
@@ -213,9 +216,9 @@ describe("color index 0 is black, not 'default'", () => {
     // both colors default — and applying it here would throw the application's
     // chosen colors away.
     const withFg = renderRow([run("M", { a: 8, f: 0xff0000 })]);
-    expect(withFg[0]!.style.color).toBe("#ff0000");
+    expect(withFg[0]!.style.color).toBe(cssColor(0xff0000));
     const withBg = renderRow([run("N", { a: 8, b: 0x00ff00 })]);
-    expect(withBg[0]!.style.background).toBe("#00ff00");
+    expect(withBg[0]!.style.background).toBe(cssColor(0x00ff00));
   });
 });
 

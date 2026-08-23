@@ -1,5 +1,3 @@
-// @vitest-environment happy-dom
-
 // SPEC-FIRST property tests for keyboard.ts.
 //
 // These assert xterm-encoding INVARIANTS over arbitrary modifier

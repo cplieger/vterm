@@ -1,5 +1,3 @@
-// @vitest-environment happy-dom
-
 // SPEC-FIRST tests for application keypad mode (DECKPAM, enabled by ESC =).
 //
 // Expected sequences are transcribed from the "VT220-Style Function Keys"

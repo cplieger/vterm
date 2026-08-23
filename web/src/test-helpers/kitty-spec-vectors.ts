@@ -5,7 +5,8 @@
 // authored FROM THE SPEC, not from our encoder — so the implementation is
 // asserted against what the protocol mandates rather than against itself. Each
 // vector cites the spec section it enforces. Consumed by kitty-encoder.test.ts
-// (happy-dom unit) and mirrored by e2e/keyboard-kitty.e2e.test.ts (real browser).
+// (Vitest Browser Mode) and mirrored by e2e/keyboard-kitty.e2e.test.ts
+// (Playwright, against a served page).
 //
 // `kitty` is the expected result with the disambiguate flag active; `legacy` is
 // the expected result with the flag OFF and is given only where our legacy

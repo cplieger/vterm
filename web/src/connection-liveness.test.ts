@@ -1,5 +1,3 @@
-// @vitest-environment happy-dom
-//
 // The client's liveness probe and the session switch — the two paths that decide
 // when a socket is REPLACED.
 //

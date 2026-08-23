@@ -1,5 +1,3 @@
-// @vitest-environment happy-dom
-
 // Mouse hit-testing and mode-gating tests: the parts of mouse.ts that decide
 // WHETHER to report and WHICH coordinate pair to report, as opposed to the
 // button-byte composition mouse.test.ts already pins.
@@ -8,8 +6,9 @@
 //   - SGR-pixels (DEC 1016): the whole pixel-coordinate branch, which had no
 //     test at all even though the wire decoder plumbs the flag.
 //   - The terminal element's own viewport offset, which every existing test
-//     hides by leaving getBoundingClientRect all-zero (happy-dom does no
-//     layout), so a sign error in the rect subtraction is invisible to them.
+//     hides by leaving getBoundingClientRect all-zero (their fixture element is
+//     detached, so it genuinely has no box), so a sign error in the rect
+//     subtraction is invisible to them.
 //   - The refusals: tracking off, no supported encoding enabled, a degenerate
 //     cell size, a pointer outside the element.
 //   - The disposer detaching EVERY listener, not just mousedown.
@@ -42,10 +41,11 @@ interface Fixture {
 }
 
 /**
- * A terminal element with an 8x16 cell and a settable viewport rect. happy-dom
- * has no layout, so getBoundingClientRect is defined here: with left/top 0 the
- * hit test is `floor(clientX / 8) + 1`, and a non-zero rect is how an element
- * that is not at the viewport origin is expressed.
+ * A terminal element with an 8x16 cell and a settable viewport rect. The rect is
+ * declared per element rather than measured, because the OFFSET is the subject:
+ * with left/top 0 the hit test is `floor(clientX / 8) + 1`, and a non-zero rect
+ * is how an element that is not at the viewport origin is expressed. Assigning
+ * it on the instance keeps every other element in the page on real layout.
  */
 function setup(rect: { left: number; top: number } = { left: 0, top: 0 }): Fixture {
   const term = document.createElement("div");

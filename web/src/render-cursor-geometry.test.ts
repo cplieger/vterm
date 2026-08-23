@@ -1,5 +1,3 @@
-// @vitest-environment happy-dom
-//
 // Caret geometry and shape: where the two overlays land, and what the DECSCUSR
 // style byte turns into on screen.
 //
@@ -49,8 +47,9 @@ function installStubs(): void {
     };
     return ctx;
   } as typeof HTMLCanvasElement.prototype.getContext;
-  // happy-dom has no layout; the cell measurement reads a rect off a probe span
-  // of ten `M`s.
+  // The cell measurement reads a rect off a probe span of ten `M`s, and a real
+  // font's advance depends on what the machine has installed, so the metric is
+  // declared here rather than measured.
   HTMLElement.prototype.getBoundingClientRect = function fakeRect(this: HTMLElement): DOMRect {
     const width = [...(this.textContent ?? "")].length * CELL_PX;
     return {

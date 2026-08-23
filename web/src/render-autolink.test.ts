@@ -1,5 +1,3 @@
-// @vitest-environment happy-dom
-//
 // The two link paths render.ts runs, at the edges the existing hyperlink tests
 // do not reach.
 //
@@ -24,6 +22,7 @@
 
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import * as render from "./render.js";
+import { cssColor } from "./test-helpers/spec-colors.js";
 import type { ScreenMessage, WireRun } from "./types.js";
 
 let realGetContext: typeof HTMLCanvasElement.prototype.getContext;
@@ -34,7 +33,8 @@ let output: HTMLDivElement;
 
 beforeEach(() => {
   realGetContext = HTMLCanvasElement.prototype.getContext;
-  // happy-dom has no Canvas2D; the width cache needs measureText.
+  // A fixed cell metric: a real Canvas2D measures whatever font the machine has
+  // installed, and the width cache needs a deterministic measureText.
   HTMLCanvasElement.prototype.getContext = function fakeGetContext(): unknown {
     return { font: "", measureText: (t: string) => ({ width: [...t].length * 8 }) };
   } as typeof HTMLCanvasElement.prototype.getContext;
@@ -121,7 +121,7 @@ describe("autolinking a bare URL in plain text", () => {
     const spans = renderRow([run("https://example.com/x", { f: 0xff0000, a: 1 })]);
     const anchor = spans[0]!;
     expect(anchor.tagName).toBe("A");
-    expect(anchor.style.color).toBe("#ff0000");
+    expect(anchor.style.color).toBe(cssColor(0xff0000));
     expect(anchor.style.fontWeight).toBe("bold");
   });
 });

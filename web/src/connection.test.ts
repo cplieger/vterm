@@ -1,5 +1,3 @@
-// @vitest-environment happy-dom
-//
 // Regression test for the duplicate-output-on-reconnect bug. When the
 // browser fired both `visibilitychange` and `pageshow` on iPad wake,
 // each event triggered connection.reconnectNow(); the old WebSocket
@@ -1042,7 +1040,7 @@ describe("connection: ledger-loss signal, ackOnly trimming, wire-version surface
   // frame trims the outbox when input produced no output frame, and the
   // resumeAck's serverWireVersion tail surfaces a protocol skew through
   // onWireVersionMismatch. Frames are hand-built byte-mirrors of the Go
-  // encoders (wire-golden.test.ts pins the exact cross-language bytes).
+  // encoders (wire-golden.node.test.ts pins the exact cross-language bytes).
   let onMessage: ReturnType<typeof vi.fn<(msg: ServerMessage) => void>>;
   let onServerRestart: ReturnType<typeof vi.fn<() => void>>;
   let onWireVersionMismatch: ReturnType<typeof vi.fn<(server: number, client: number) => void>>;

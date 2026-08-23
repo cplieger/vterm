@@ -1,5 +1,3 @@
-// @vitest-environment happy-dom
-//
 // Tier 1 display conformance: does render.ts turn each wire attribute into the
 // on-screen result the SPEC requires? Each test STATES the spec (what the
 // attribute must produce) and asserts the real renderer complies. Expectations
@@ -11,7 +9,7 @@
 //   64 hidden · 128 blink · 256 overline · 512 double-underline
 import { describe, it, expect, beforeEach } from "vitest";
 import { initHarness, renderRow, firstTextSpan } from "./test-helpers/render-harness.js";
-import { rgb, hex } from "./test-helpers/spec-colors.js";
+import { rgb, cssColor } from "./test-helpers/spec-colors.js";
 import type { WireRun } from "./types.js";
 
 const A = {
@@ -110,18 +108,18 @@ describe("SGR text attributes → on-screen effect (spec)", () => {
 describe("colors → on-screen effect (spec)", () => {
   it("truecolor foreground: MUST render the exact RGB", async () => {
     const style = await styleOf({ f: rgb(255, 0, 0) });
-    expect(style.color).toBe(hex(rgb(255, 0, 0))); // #ff0000
+    expect(style.color).toBe(cssColor(rgb(255, 0, 0))); // #ff0000
   });
 
   it("truecolor background: MUST render the exact RGB", async () => {
     const style = await styleOf({ b: rgb(0, 0, 255) });
-    expect(style.background).toBe(hex(rgb(0, 0, 255))); // #0000ff
+    expect(style.background).toBe(cssColor(rgb(0, 0, 255))); // #0000ff
   });
 
   it("SGR 58 underline color: MUST color the underline decoration", async () => {
     const style = await styleOf({ a: A.underline, uc: rgb(0, 255, 0) });
     expect(style.textDecoration).toContain("underline");
-    expect(style.textDecorationColor).toBe(hex(rgb(0, 255, 0))); // #00ff00
+    expect(style.textDecorationColor).toBe(cssColor(rgb(0, 255, 0))); // #00ff00
   });
 
   it("default foreground: MUST NOT pin an explicit color (inherits the theme)", async () => {

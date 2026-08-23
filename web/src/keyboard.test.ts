@@ -1,5 +1,3 @@
-// @vitest-environment happy-dom
-
 // SPEC-FIRST keyboard input-encoding tests for keyboard.ts.
 //
 // Every expected byte sequence in this file is derived from the xterm

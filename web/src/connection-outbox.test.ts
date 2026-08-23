@@ -1,5 +1,3 @@
-// @vitest-environment happy-dom
-//
 // The connection layer's RELIABLE-INPUT half: the outbox, the acked-byte window
 // and what a reconnect replays over the new socket.
 //

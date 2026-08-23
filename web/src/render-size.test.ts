@@ -1,5 +1,3 @@
-// @vitest-environment happy-dom
-//
 // The two numbers the renderer derives for the transport rather than for the
 // screen, both otherwise unexercised against the real DOM:
 //
@@ -66,8 +64,9 @@ function restoreStubs(): void {
 
 /**
  * Attach the renderer to a terminal element of a known BORDER box with known
- * padding. happy-dom has no layout, so clientWidth/clientHeight are defined
- * here the way a browser would report them: the padding box, padding included.
+ * padding. clientWidth/clientHeight are declared here the way a browser reports
+ * them — the padding box, padding included — because the box IS the subject and
+ * a real one would be whatever the fixture markup happens to lay out at.
  */
 function attachSized(opts: {
   clientWidth: number;

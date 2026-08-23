@@ -1,5 +1,3 @@
-// @vitest-environment happy-dom
-
 // Observable getter-contract tests for modes.ts — the DEC private-mode state
 // the server syncs via a ModesMessage. These assert that each getter
 // (isBracketedPaste, isApplicationCursor, getMouseMode, ...) reflects the

@@ -1,5 +1,3 @@
-// @vitest-environment happy-dom
-//
 // Bounded error-path reschedule (d-u4-1, guarding the l-f28 retry).
 //
 // flushRender's catch reschedules a flush when flushRenderInner throws mid-drain
@@ -21,8 +19,9 @@ import { LineStore as RealLineStore } from "./store.js";
 import type { WireRun } from "./types.js";
 import type { LineStore, StoreChanges, WindowState } from "./store.js";
 
-// happy-dom has no Canvas2D; render's measureChar needs measureText. The
-// transient test builds a real row on the successful retry, so stub it.
+// A fixed cell metric: a real Canvas2D measures whatever font the machine has
+// installed, and render's measureChar needs a deterministic measureText. The
+// transient test builds a real row on the successful retry, so it is needed here.
 interface FakeCtx {
   font: string;
   measureText: (t: string) => { width: number };

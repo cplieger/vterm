@@ -1,5 +1,3 @@
-// @vitest-environment happy-dom
-//
 // DECSCNM (reverse video, DEC private mode 5) conformance, end to end: the wire
 // decoder lifts bit 5 into a ModesMessage, modes.ts holds that state, and
 // render.ts reflects it on screen. Spec-first — expectations come from the

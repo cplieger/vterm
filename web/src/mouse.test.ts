@@ -1,5 +1,3 @@
-// @vitest-environment happy-dom
-
 // SPEC-FIRST mouse input-encoding tests.
 //
 // Expected byte sequences here are derived from the xterm mouse-tracking
@@ -66,9 +64,11 @@ function enableSGR(mode: number): void {
   modes.setModes(true, false, true, false, mode, false, false, false);
 }
 
-// happy-dom does no layout, so getBoundingClientRect is all-zero. With an
-// 8x16 cell that makes hit-testing deterministic: col = floor(clientX/8)+1,
-// row = floor(clientY/16)+1. So (clientX=16, clientY=32) -> cell (3,3).
+// The fixture element is never attached to the document, so its
+// getBoundingClientRect is genuinely all-zero. With an 8x16 cell that makes
+// hit-testing deterministic: col = floor(clientX/8)+1, row = floor(clientY/16)+1.
+// So (clientX=16, clientY=32) -> cell (3,3). mouse-hit-testing.test.ts covers
+// the non-zero-offset case with an explicit rect.
 function setup(): { term: HTMLDivElement; sent: string[] } {
   const term = document.createElement("div");
   const sent: string[] = [];
@@ -82,8 +82,8 @@ function setup(): { term: HTMLDivElement; sent: string[] } {
 }
 
 // Force event fields via defineProperty so the button-bit composition is
-// exercised deterministically regardless of which MouseEventInit fields the
-// DOM shim honours (happy-dom ignores clientX/clientY on WheelEvent, etc.).
+// exercised deterministically regardless of which MouseEventInit fields a given
+// event constructor honours.
 function patch(target: object, props: Record<string, unknown>): void {
   for (const [key, value] of Object.entries(props)) {
     Object.defineProperty(target, key, { value, configurable: true });

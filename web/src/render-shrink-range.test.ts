@@ -1,5 +1,3 @@
-// @vitest-environment happy-dom
-//
 // The renderer's half of the shrink-range correction: a flush that removes rows
 // on a container that does NOT reconcile the offset must leave the viewport on
 // the content, not parked past the end of it.

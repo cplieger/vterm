@@ -105,7 +105,29 @@ export const kitty16: readonly number[] = [
   0xffffff, // 15 bright white
 ];
 
-/** hex formats a 0xRRGGBB value as the CSS "#rrggbb" the DOM tiers assert against. */
+/** hex formats a 0xRRGGBB value as the CSS "#rrggbb" hex notation. */
 export function hex(value: number): string {
   return "#" + (value >>> 0).toString(16).padStart(6, "0");
+}
+
+/**
+ * cssColor formats a 0xRRGGBB SPEC value the way a browser serializes that
+ * color when a style declaration is read back — `rgb(r, g, b)`, not the hex
+ * notation it was authored in.
+ *
+ * The DOM conformance tiers compare a rendered span's `style.color` against a
+ * spec-derived value, and the renderer writes hex. CSSOM does not round-trip
+ * the authored text: reading the property back yields the computed-value
+ * serialization from CSS Color 4, so a literal "#ff0000" can never equal what
+ * `style.color` reports even when the color is exactly right.
+ *
+ * Both sides are therefore put through the SAME serializer, the browser's own,
+ * rather than the assertion being relaxed. The spec integer stays the
+ * authority: `cssColor(standard256(196))` still fails if the renderer produces
+ * any other color, and a format-only difference no longer registers as one.
+ */
+export function cssColor(value: number): string {
+  const probe = document.createElement("span");
+  probe.style.color = hex(value);
+  return probe.style.color;
 }

@@ -1,5 +1,3 @@
-// @vitest-environment happy-dom
-//
 // bindMobileToolbar — the on-screen mobile keyboard toolbar widget
 // (toolbar.ts, split out of keyboard.ts 2026-07). Covers button wiring,
 // sticky-Ctrl semantics, dispose, the DECCKM/kitty-aware arrow + Escape

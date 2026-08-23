@@ -1,5 +1,3 @@
-// @vitest-environment happy-dom
-//
 // The reading position must survive content vanishing ABOVE it. When the
 // retention cap is reached, every new line evicts one from the top of history —
 // so a user scrolled up to read has the content above them shrink continuously
@@ -12,10 +10,11 @@
 // agent kept writing. render.ts anchors the position by hand now; these tests
 // pin that, and they fail if restoreReadAnchor is removed.
 //
-// happy-dom has no layout, so offsetTop is faked from DOM order (rows are
-// uniform-height and in document order, which is exactly what the binary search
-// in captureReadAnchor relies on) and the scroll element's geometry is derived
-// from the child count.
+// offsetTop is declared rather than measured, because the geometry IS the
+// premise: rows uniform-height and in document order is exactly what the binary
+// search in captureReadAnchor relies on, and real layout would report whatever
+// height this file's fixture markup happens to produce. The scroll element's
+// geometry is derived from the child count for the same reason.
 
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import * as render from "./render.js";
@@ -53,7 +52,18 @@ function screenMsg(base: number, rows: WireRun[][], changed: number[]): ScreenMe
 function scrollMsg(firstIndex: number, texts: string[]): ScrollMessage {
   return { type: "scroll", firstIndex, lines: texts.map(row) };
 }
-const tick = (): Promise<void> => new Promise((r) => setTimeout(r, 20));
+/** Wait for the frame render.ts scheduled, not for a duration: real frames tick,
+ *  so a fixed sleep races the flush in both directions, and Chromium throttles
+ *  rAF outright when the page is not visible. Two deep because the first
+ *  callback can run in the frame the flush was queued in. */
+const tick = (): Promise<void> =>
+  new Promise<void>((resolve) => {
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        resolve();
+      });
+    });
+  });
 
 describe("render: the reading position holds when history is evicted above it", () => {
   let outputEl: HTMLDivElement;
@@ -332,7 +342,7 @@ describe("render: manual anchoring does not fight native scroll anchoring", () =
       render.handleScreen(
         screenMsg(committed, [row("w0"), row("w1"), row("w2"), row("w3")], [0, 1, 2, 3]),
       );
-      await new Promise((r) => setTimeout(r, 20));
+      await tick();
     };
     await commitLines(60);
 

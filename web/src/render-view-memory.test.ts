@@ -1,5 +1,3 @@
-// @vitest-environment happy-dom
-//
 // Per-view scroll memory: captureViewMemory + bind({ view })
 // (docs/scroll-position-fidelity.md §3).
 //
@@ -24,6 +22,25 @@ import * as scroll from "./scroll.js";
 import { LineStore } from "./store.js";
 import { installRowGeometry, type RowGeometry } from "./test-helpers/scroll-fixture.js";
 import type { ScreenMessage, ScrollMessage, WireRun } from "./types.js";
+
+// A real browser's ESM module namespace is non-configurable, so `vi.spyOn` on a
+// module export cannot install itself: the property is not redefinable. The
+// emulator ran behind a transform that rewrote exports into configurable
+// getters, which is why these spies used to work without this line.
+//
+// `spy: true` asks vitest for the module with its exports wrapped in spies that
+// CALL THROUGH by default, so nothing is stubbed out wholesale — the same
+// scroll.ts runs, and only the exports a test explicitly overrides behave
+// differently. render.ts imports the same mocked module, which is what makes
+// this the parked-reader seam these tests need.
+//
+// One consequence to know when reading the call-count assertions below: an
+// auto-spy starts recording at module load, and `vi.spyOn` on a property that is
+// already a mock hands back THAT spy rather than a fresh one. So a spy taken
+// mid-test carries whatever the setup above it already did, and a site whose
+// assertion is a COUNT clears it first (`.mockClear()`) to mean what it says —
+// the calls the action under test causes.
+vi.mock("./scroll.js", { spy: true });
 
 interface FakeCtx {
   font: string;
@@ -423,7 +440,7 @@ describe("per-view scroll memory across a multi-frame rebuild", () => {
     render.bind(s);
     pumpUntilIdle();
 
-    const spy = vi.spyOn(scroll, "noteContentShrink");
+    const spy = vi.spyOn(scroll, "noteContentShrink").mockClear();
 
     // Through the renderer, not the store: a direct store mutation schedules no
     // flush, so both halves below would be vacuously true.

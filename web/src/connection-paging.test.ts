@@ -1,5 +1,3 @@
-// @vitest-environment happy-dom
-//
 // The connection layer's DEMAND-PAGING half (docs/paged-scrollback.md §4 and
 // §5.1): reading the server's capability off the resumeAck, capturing the values
 // this socket SENT so the store can predict the replay start, the single-flight

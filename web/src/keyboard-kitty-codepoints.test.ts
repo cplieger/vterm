@@ -1,5 +1,3 @@
-// @vitest-environment happy-dom
-
 // The kitty protocol's "unicode-key-code" rule, on the inputs the existing
 // keyboard suites do not reach.
 //

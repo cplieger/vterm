@@ -1,5 +1,3 @@
-// @vitest-environment happy-dom
-//
 // The bounds and the pacing around a history request, and the replay bound the
 // resume carries. Three edges the paging suite leaves open, all of them arithmetic
 // that decides what the server sends back:

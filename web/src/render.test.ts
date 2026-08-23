@@ -1,5 +1,3 @@
-// @vitest-environment happy-dom
-//
 // Renders the captured the host application WS frame sequence (typing "abc",
 // space, "d", LEFT, LEFT, "X") through render.handleScreen and
 // inspects the resulting DOM after each step.
@@ -14,9 +12,9 @@ import { describe, it, expect, beforeEach } from "vitest";
 import * as render from "./render.js";
 import type { ScreenMessage, WireRun } from "./types.js";
 
-// happy-dom does not implement Canvas2D. measureChar() in render.ts
-// requires `getContext("2d").measureText`; stub a minimal version
-// returning a fixed-width metric.
+// measureChar() in render.ts requires `getContext("2d").measureText`, and a real
+// Canvas2D measures whatever font the machine has installed. A fixed-width
+// metric is declared instead so the cell arithmetic is deterministic.
 interface FakeCtx {
   font: string;
   measureText: (t: string) => { width: number };
@@ -66,13 +64,20 @@ function frame(rowsByIdx: Record<number, WireRun[]>, cursor: [number, number]): 
   };
 }
 
-// flushFrame pumps a screen message through handleScreen + the rAF
-// flush. Because requestAnimationFrame is async and happy-dom may
-// schedule it on the microtask queue, we await a microtask.
+// flushFrame pumps a screen message through handleScreen and then waits for the
+// frame render.ts scheduled — the frame itself, not a duration. Real frames
+// tick, so a fixed sleep races the flush in both directions and Chromium
+// throttles rAF outright when the page is not visible. Two deep because the
+// first callback can run in the frame the flush was queued in.
 async function flushFrame(msg: ScreenMessage): Promise<void> {
   render.handleScreen(msg);
-  // happy-dom: rAF runs on the next microtask scheduled after a setTimeout(0)
-  await new Promise((r) => setTimeout(r, 16));
+  await new Promise<void>((resolve) => {
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        resolve();
+      });
+    });
+  });
 }
 
 describe("render: cursor cell updates with inline inverse-video character", () => {

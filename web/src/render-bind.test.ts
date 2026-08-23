@@ -1,5 +1,3 @@
-// @vitest-environment happy-dom
-//
 // render.bind / render.rebuild: the per-tab store swap the tabs feature uses on
 // every switch (design sections 5, 6, 8). Behaviors pinned here:
 // 1. bind() points the one renderer at a different, independently-populated
@@ -47,7 +45,20 @@ function screenMsg(
 function scrollMsg(firstIndex: number, texts: string[]): ScrollMessage {
   return { type: "scroll", firstIndex, lines: texts.map(row) };
 }
-const tick = (): Promise<void> => new Promise((r) => setTimeout(r, 20));
+/** Wait for the frame render.ts scheduled, not for a duration: real frames tick,
+ *  so a fixed sleep races the flush in both directions, and Chromium throttles
+ *  rAF outright when the page is not visible. Two deep because the first
+ *  callback can run in the frame the flush was queued in. (The one test below
+ *  that pumps frames by hand replaces rAF for its own duration and does not use
+ *  this.) */
+const tick = (): Promise<void> =>
+  new Promise<void>((resolve) => {
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        resolve();
+      });
+    });
+  });
 function texts(out: HTMLElement): string[] {
   return Array.from(out.children)
     .map((c) => (c.textContent ?? "").trim())
@@ -173,11 +184,11 @@ describe("render.bind / rebuild (per-tab store swap)", () => {
   // paints as a black pane), and `stickToBottom` refusing to correct it because
   // it measured `distanceFromBottom() === 0` against the phantom height.
   //
-  // happy-dom has no layout, so these pin the mechanical resets the geometry
-  // depends on, and each one is synchronous inside `bind` on purpose: the
-  // browser paints once between the switch and the first flush, and the clamp
-  // has to land before `noteContentShrink` and `pendingRestore.lastWrote` read
-  // the offset.
+  // These pin the mechanical resets the geometry depends on, rather than the
+  // resulting pixels: each one is synchronous inside `bind` on purpose, because
+  // the browser paints once between the switch and the first flush, and the
+  // clamp has to land before `noteContentShrink` and `pendingRestore.lastWrote`
+  // read the offset.
 
   it("hides the caret overlay synchronously in bind, before any frame runs", async () => {
     render.handleScreen({

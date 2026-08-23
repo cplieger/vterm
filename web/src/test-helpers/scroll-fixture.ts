@@ -1,15 +1,22 @@
 // Scroll-container fixtures that behave like a REAL scroller.
 //
-// happy-dom has no layout, so every scroll test defines scrollHeight /
-// clientHeight / scrollTop itself. The fixtures that predate this file define
-// scrollTop as a plain setter, which stores whatever it is handed — and a real
-// container CLAMPS to [0, scrollHeight - clientHeight]. That difference is not
-// cosmetic: the clamp IS the mechanism behind the tab-switch position bug
-// (docs/scroll-position-fidelity.md §1.1), and it is the mechanism the pin's
-// deliberate over-scroll write (`scrollTop = scrollHeight`) relies on. A
-// non-clamping double cannot express either, so a test written on one cannot
+// A real browser gives a container real layout, and these fixtures still fake
+// it, deliberately: what they model is the CLAMP, and the clamp is not something
+// a test can arrange by giving an element overflow. The fixtures that predate
+// this file define scrollTop as a plain setter, which stores whatever it is
+// handed — and a real container CLAMPS to [0, scrollHeight - clientHeight]. That
+// difference is not cosmetic: the clamp IS the mechanism behind the tab-switch
+// position bug (docs/scroll-position-fidelity.md §1.1), and it is the mechanism
+// the pin's deliberate over-scroll write (`scrollTop = scrollHeight`) relies on.
+// A non-clamping double cannot express either, so a test written on one cannot
 // fail for the reason it exists — which is why the bug shipped, and why
 // docs/paged-scrollback.md §7's multi-frame-prepend anchor test needs this too.
+//
+// Every fixture here fakes scrollHeight, clientHeight and scrollTop TOGETHER,
+// from one derivation. That matters more in a browser than it did under an
+// emulator: a faked scrollTop beside a real scrollHeight is a container whose
+// two halves disagree, and the arithmetic under test is exactly the difference
+// between them.
 //
 // Both helpers clamp. Use makeClampingScrollEl for a standalone container with
 // a settable height, and installRowGeometry when rows in a real DOM tree must
@@ -17,7 +24,8 @@
 //
 // makeDeferredClampScrollEl is the third, and the odd one: a container that
 // clamps a WRITE but does not reconcile an offset the content shrank out from
-// under. That is the WebKit shape, it is the state reconcileScrollRange exists
+// under. That is the WebKit shape — so no browser this suite runs in can supply
+// it, whatever layout it is given — it is the state reconcileScrollRange exists
 // for, and neither clamping fixture can express it. A position invariant is
 // worth testing against both shapes.
 
@@ -200,9 +208,18 @@ export function installRowGeometry(opts: {
   const mode = opts.offsets ?? "documentOrder";
   const reconcile = opts.reconcile ?? "synchronous";
   const prevOffsetTop = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "offsetTop");
+  // A prototype patch reaches every element in the page for as long as it is
+  // installed, the runner's own DOM included, and rows are built by the renderer
+  // AFTER this call so a per-element assignment cannot cover them. Containment
+  // is the next best thing: answer only for descendants of the fixture's own
+  // container and let everything else fall through to the browser's real
+  // offsetTop.
   Object.defineProperty(HTMLElement.prototype, "offsetTop", {
     configurable: true,
     get(this: HTMLElement): number {
+      if (this !== output && !output.contains(this)) {
+        return Number(prevOffsetTop?.get?.call(this) ?? 0);
+      }
       if (mode === "byAbs") {
         const abs = Number(this.dataset["abs"] ?? "");
         if (Number.isFinite(abs)) {
@@ -259,6 +276,11 @@ export function installRowGeometry(opts: {
 
   return {
     restore(): void {
+      // RESTORE the descriptor, never `delete`. `offsetTop` is defined on
+      // HTMLElement.prototype by the platform, so deleting the patched property
+      // removes the real accessor with it and every later read returns
+      // `undefined`. The else branch is therefore unreachable in a browser and
+      // exists only so a missing descriptor cannot leave the patch installed.
       if (prevOffsetTop) {
         Object.defineProperty(HTMLElement.prototype, "offsetTop", prevOffsetTop);
       } else {

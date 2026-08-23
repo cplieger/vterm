@@ -11,7 +11,7 @@ import (
 
 // The golden frames are the cross-language wire contract. This Go encoder MUST
 // produce exactly these bytes, and the TypeScript decoder MUST decode them
-// (web/src/wire-golden.test.ts reads the same files). Keeping the Go encoder
+// (web/src/wire-golden.node.test.ts reads the same files). Keeping the Go encoder
 // and the TS decoder in one repo means a wire change is one PR; these fixtures
 // make a drift between the two halves a test failure rather than a runtime
 // mis-decode.
@@ -77,7 +77,7 @@ func TestWireGolden(t *testing.T) {
 		}
 		if !bytes.Equal(got, want) {
 			t.Errorf("%s: Go encoding drifted from the golden fixture (%d bytes now, %d in fixture). "+
-				"If this wire change is intentional, regenerate with UPDATE_GOLDEN=1 and update the TS decoder + web/src/wire-golden.test.ts in the same change.",
+				"If this wire change is intentional, regenerate with UPDATE_GOLDEN=1 and update the TS decoder + web/src/wire-golden.node.test.ts in the same change.",
 				name, len(got), len(want))
 		}
 	}

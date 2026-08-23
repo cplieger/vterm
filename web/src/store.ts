@@ -1826,6 +1826,17 @@ export class LineStore {
     if (this.highest < 0) {
       return;
     }
+    // No window established yet — the descriptor is still the initial base
+    // 0/height 0, whose bottom row is -1, below every index a line can hold.
+    // This whole pass rests on "the window's bottom row is the most recent line
+    // in the terminal", which says nothing at all when there is no window: a
+    // resume replays history BEFORE the screen frame describing the window, so
+    // taking -1 as the tail bound strands that replay and forgets it, silently
+    // (this path is not a trim, so no marker explains it). Same test `inWindow`
+    // and applyScroll's alt gate use to ask whether a window exists at all.
+    if (this.win.height <= 0) {
+      return;
+    }
     const windowBottom = this.win.base + this.win.height - 1;
     if (this.highest <= windowBottom) {
       return;
@@ -2008,6 +2019,18 @@ export class LineStore {
   }
 
   private updateWindow(msg: ScreenMessage): void {
+    // A base that is not a non-negative integer is not a screen position — the
+    // same validity test markUnconfirmedFrom applies to this very value — so it
+    // must not redefine the window's shape, for the same reason a rows-less
+    // frame must not: `base + height - 1` lands below every retained index, and
+    // truncateBelowWindow then hands the WHOLE store over as stranded past the
+    // live window. That is the silent wipe applyScreen's rows-less guard
+    // records, reached with rows present, and just as silent (this path is not a
+    // trim, so no marker explains the missing transcript). The frame's
+    // addressable rows still apply through applyLine's guard 1.
+    if (!Number.isInteger(msg.base) || msg.base < 0) {
+      return;
+    }
     const next: WindowState = {
       base: msg.base,
       height: msg.rows.length,

@@ -177,12 +177,18 @@ function NewOriginPolicy
 function WithManagerOriginPolicy
 function WithOriginPolicy
 
-# WithTheme (terminal/terminal.go:258) -- the Handler-level OSC 10/11/12 theme
-# option. Not exercised anywhere, not even by this repo's tests, hence EU1002.
-# Do not confuse it with vt.WithTheme (vt/screen.go:243), which is live
-# (terminal/terminal.go:362, internal/esctest/harness.go:135): the Handler
-# option is the only unused one, and the entry below would also cover the vt
-# one if that ever went unused, because both print as `function WithTheme`.
+# WithTheme (terminal/terminal.go:449) -- the Handler-level OSC 10/11/12 theme
+# option. EU1001 rather than EU1002 because TestWithThemeReachesTheScreen
+# (terminal/theme_option_test.go) exercises it: like WithMinimumContrast below,
+# the option is configured on the Handler and enforced by the screen, so the
+# plumb-through in NewHandler is the one thing that can silently break between
+# them. Real callers would be consumers, in another MODULE; none passes a theme
+# today, and it is the ONLY way a Handler consumer can set one, since NewHandler
+# builds the screen itself and accepts no vt.Option.
+# Do not confuse it with vt.WithTheme (vt/screen.go:261), which is live
+# (terminal/terminal.go:730, internal/esctest/harness.go:136): the entry below
+# also covers the vt one if that ever went unused, because both print as
+# `function WithTheme`.
 function WithTheme
 
 # WithMinimumContrast -- the Handler-level minimum-contrast floor, the sibling of

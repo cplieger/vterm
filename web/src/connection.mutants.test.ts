@@ -307,9 +307,25 @@ function inputSent(sock: MockWS): number[][] {
   return out;
 }
 
-/** Let the Blob→ArrayBuffer promise chain drain (real timers required). */
-async function drainBlobChain(): Promise<void> {
-  await new Promise((r) => setTimeout(r, 5));
+/**
+ * Give the Blob→ArrayBuffer chain a bounded window to drain, for the two
+ * assertions that a frame produced NOTHING (real timers required).
+ *
+ * A fixed delay is the wrong instrument for asserting that something DID
+ * happen, and it used to be used for that here: `blob.arrayBuffer()` is a real
+ * async read served outside the renderer, so its latency is a property of the
+ * machine rather than of this module. Three CI failures in 24h came from a 5ms
+ * bound; `await vi.waitFor(...)` at every positive assertion is what replaced
+ * it, and that has no bound to get wrong.
+ *
+ * A negative assertion cannot be written that way — `waitFor` on "nothing
+ * happened" passes on its first poll — so these two keep a window. Its failure
+ * direction is the safe one: too short makes the assertion vacuous, never red.
+ * 250ms is ~50x the observed conversion cost and still under a tenth of the
+ * 5s test timeout.
+ */
+async function settleBlobChain(): Promise<void> {
+  await new Promise((r) => setTimeout(r, 250));
 }
 
 // --- shared consumer -------------------------------------------------------
@@ -1002,12 +1018,13 @@ describe("connection: binary frame delivery and its failure modes", () => {
     const { sock } = openSession("blob-ok");
 
     sock.fireMessage(new Blob([new Uint8Array(titleFrame("blobbed"))]));
-    await drainBlobChain();
 
     // The whole iOS path depends on this: a client that silently drops Blob
     // frames looks connected and renders nothing, and the liveness probe never
     // fires because arrival already refreshed the activity clock.
-    expect(onMessage).toHaveBeenCalledWith(expect.objectContaining({ title: "blobbed" }));
+    await vi.waitFor(() => {
+      expect(onMessage).toHaveBeenCalledWith(expect.objectContaining({ title: "blobbed" }));
+    });
   });
 
   it("a text frame the protocol does not define is dropped without complaint", async () => {
@@ -1015,7 +1032,7 @@ describe("connection: binary frame delivery and its failure modes", () => {
     const { sock } = openSession("text-frame");
 
     sock.fireMessage(JSON.stringify({ type: "screen" }));
-    await drainBlobChain();
+    await settleBlobChain();
 
     // Server→client text frames were retired in 2026-07 (they were accepted as
     // unvalidated ServerMessages). Ignoring one is correct; routing it into a
@@ -1064,16 +1081,18 @@ describe("connection: binary frame delivery and its failure modes", () => {
     sock.fireOpen();
 
     sock.fireMessage(new Blob([new Uint8Array(titleFrame("first"))]));
-    await drainBlobChain();
-    expect(errSpy).toHaveBeenCalledWith("vterm: dropped binary (blob) frame", expect.any(Error));
+    await vi.waitFor(() => {
+      expect(errSpy).toHaveBeenCalledWith("vterm: dropped binary (blob) frame", expect.any(Error));
+    });
 
     boom = false;
     sock.fireMessage(new Blob([new Uint8Array(titleFrame("second"))]));
-    await drainBlobChain();
 
     // A rejected chain skips every later .then, so one throwing callback would
     // drop all binary frames until reconnect.
-    expect(seen).toEqual(["title"]);
+    await vi.waitFor(() => {
+      expect(seen).toEqual(["title"]);
+    });
   });
 
   it("a Blob frame that resolves after its socket was replaced is dropped", async () => {
@@ -1091,7 +1110,7 @@ describe("connection: binary frame delivery and its failure modes", () => {
     expect(second).not.toBe(first);
     second.fireOpen();
 
-    await drainBlobChain();
+    await settleBlobChain();
 
     // Handled, this frame's resumeAck would upgrade, reset or retransmit
     // against the REPLACEMENT socket's server; even a title is a fact about a

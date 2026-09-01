@@ -6,9 +6,8 @@ import (
 	"time"
 )
 
-// csiHandler executes one dispatched CSI command. A handler owns everything
-// after the parser: it reads its parameters (s.paramVal) and s.privateMarker
-// itself, exactly as the former switch arms did.
+// csiHandler executes one dispatched CSI command, reading its own parameters
+// (s.paramVal) and s.privateMarker.
 type csiHandler = func(s *Screen)
 
 // csiCUP implements CUP / HVP — cursor position (shared by 'H' and 'f').
@@ -116,11 +115,10 @@ var csiMain = [256]csiHandler{
 			s.xtRestoreModes()
 		}
 	},
-	// SGR — select graphic rendition. CSI > Pp;Pv m is XTMODKEYS
-	// (modifyOtherKeys) and CSI ? Pp m is XTQMODKEYS — key-option controls,
-	// NOT SGR. Routing them to applySGR would apply bogus text attributes
-	// (kiro-cli emits CSI > 4 ; 1 m at init). We don't implement
-	// modifyOtherKeys, so consume the marked forms as no-ops.
+	// SGR — select graphic rendition. CSI > Pp;Pv m (XTMODKEYS) and
+	// CSI ? Pp m (XTQMODKEYS) are key-option controls, not SGR, so a marked
+	// form is a no-op rather than routed to applySGR (kiro-cli emits
+	// CSI > 4 ; 1 m at init, which would otherwise apply bogus attributes).
 	'm': func(s *Screen) {
 		if s.privateMarker == 0 {
 			s.applySGR()
@@ -408,24 +406,19 @@ func (s *Screen) backspace() {
 	s.pendingWrap = false
 	switch {
 	case wasPending && revWrap:
-		// In the deferred-wrap ("do-wrap") position, a backspace under
-		// reverse-wrap only cancels the pending wrap (done above); the cursor
-		// stays on the last column so the next glyph overwrites it.
+		// Deferred-wrap position: cancel the pending wrap only; the cursor stays
+		// on the last column so the next glyph overwrites it.
 	case s.curX > left:
-		// Ordinary move left, stopping at the left margin.
 		s.curX--
 	case revWrap && s.curY > s.scrollTop:
-		// At (or left of) the left margin, reverse-wrap back to the right margin
-		// of the previous line.
 		s.curY--
 		s.curX = s.rightBound()
 	case revWrap && s.curY <= s.scrollTop:
-		// At the top of the scroll region, wrap around to the bottom margin's
-		// right edge rather than stopping (version-0 mode-45 semantics).
+		// Top of the scroll region: wrap around to the bottom margin's right
+		// edge rather than stopping (version-0 mode-45 semantics).
 		s.curY = s.scrollBottom
 		s.curX = s.rightBound()
 	case s.curX > 0 && s.curX < left:
-		// Left of the left margin (no reverse-wrap): move left toward column 0.
 		s.curX--
 	}
 }
@@ -592,19 +585,12 @@ func (s *Screen) eraseInDisplay(mode int, selective bool) {
 		s.Drained = nil
 		s.clearWrapState()
 	case 3:
-		// ED3 — "Erase Saved Lines" (xterm). Clears the scrollback buffer
-		// ONLY; the visible screen is left untouched. The VT has no handle on
-		// the terminal-layer scrollback ring, so it raises a flag the handler
-		// observes to clear the ring and tell the client to drop its history.
-		// Inline TUIs (kiro-cli) emit ED3 on every resize redraw to discard the
-		// previous frame before repainting; honoring it is exactly what keeps a
-		// real terminal from accumulating stale frames on resize. The pending
-		// (not-yet-committed) drain is scrollback-bound, so it is discarded too.
+		// ED3 ("Erase Saved Lines"): clears scrollback only, screen untouched.
+		// The VT has no handle on the terminal-layer ring, so it raises a flag
+		// the handler observes to clear it and tell the client to drop history.
 		s.scrollbackCleared = true
 		s.Drained = nil
-		// The retained cross-boundary chain tail describes history that no
-		// longer exists; the on-screen flags describe rows that remain.
-		s.drainTail = nil
+		s.drainTail = nil // describes history that no longer exists
 	}
 }
 

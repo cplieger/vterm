@@ -6,19 +6,14 @@ type Color struct {
 	Type uint8
 	// Val is the palette index for basic (0-7) or 256-color modes.
 	Val uint8
-	// R is the red component for RGB colors.
-	R uint8
-	// G is the green component for RGB colors.
-	G uint8
-	// B is the blue component for RGB colors.
-	B uint8
+	R   uint8 // red component, used when Type == 3
+	G   uint8 // green component, used when Type == 3
+	B   uint8 // blue component, used when Type == 3
 }
 
 // Style holds SGR attributes for a cell.
 type Style struct {
-	// FG is the foreground color.
 	FG Color
-	// BG is the background color.
 	BG Color
 	// UnderlineColor is the color used for underline decorations (SGR 58).
 	UnderlineColor Color

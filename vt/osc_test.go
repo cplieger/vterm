@@ -9,7 +9,6 @@ import (
 
 func TestOSC2SetsTitleBEL(t *testing.T) {
 	s := New(24, 80)
-	// OSC 2 ; hello BEL
 	s.Write([]byte("\x1b]2;hello\x07"))
 	if s.Title != "hello" {
 		t.Fatalf("expected title %q, got %q", "hello", s.Title)
@@ -18,7 +17,6 @@ func TestOSC2SetsTitleBEL(t *testing.T) {
 
 func TestOSC2SetsTitleST(t *testing.T) {
 	s := New(24, 80)
-	// OSC 2 ; world ST (ESC \)
 	s.Write([]byte("\x1b]2;world\x1b\\"))
 	if s.Title != "world" {
 		t.Fatalf("expected title %q, got %q", "world", s.Title)
@@ -46,7 +44,6 @@ func TestOSC1DoesNotSetTitle(t *testing.T) {
 
 func TestUnknownOSCIgnored(t *testing.T) {
 	s := New(24, 80)
-	// Write some content first
 	s.Write([]byte("ABC"))
 	// Send an out-of-scope OSC (777 = urxvt notifications): it must be consumed
 	// and ignored (dispatchOsc's default case), touching neither the screen nor
@@ -351,7 +348,7 @@ func TestOSC104ResetAllPalette(t *testing.T) {
 	s.Write([]byte("\x1b]4;1;rgb:00/ff/00\x07"))
 	s.Write([]byte("\x1b]4;2;rgb:00/00/ff\x07"))
 	s.paletteChanged = false
-	s.Write([]byte("\x1b]104\x07")) // reset ALL
+	s.Write([]byte("\x1b]104\x07"))
 	if !s.paletteChanged {
 		t.Error("OSC 104 reset-all did not mark PaletteChanged")
 	}

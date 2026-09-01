@@ -6,7 +6,7 @@ import "testing"
 // VT output containing mixed printable text and escape sequences.
 func BenchmarkScreenWrite(b *testing.B) {
 	// Simulate a typical terminal frame: colored text with cursor movement.
-	frame := []byte("\x1b[H\x1b[2J") // clear
+	frame := []byte("\x1b[H\x1b[2J")
 	for i := range 24 {
 		frame = append(frame, []byte("\x1b[38;5;"+string(rune('0'+i%10))+"m")...)
 		frame = append(frame, []byte("Hello, terminal world! Line content here.\r\n")...)

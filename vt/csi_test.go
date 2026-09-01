@@ -30,7 +30,7 @@ func TestCSIBangGuardRequiresInterm(t *testing.T) {
 // main-switch 'A' (cursor up), not the SP-branch 'A' (SR).
 func TestCSISpaceGuardRequiresInterm(t *testing.T) {
 	s := New(10, 10)
-	s.Write([]byte("\x1b[6;1H")) // cursor to row 5
+	s.Write([]byte("\x1b[6;1H")) // row 5
 	s.Write([]byte("\x1b[ q"))   // DECSCUSR: leaves pIntermed[0]==' ', numInterm==1
 	s.Write([]byte("\x1b[2A"))   // CSI 2 A with numInterm==0 -> cursor up
 	if row, _ := s.CursorPos(); row != 3 {

@@ -269,9 +269,8 @@ func trimTrailingSpaces(s string) string {
 // no cell and moves no cursor, so diffWindow yields no changed rows and the
 // cursor is unmoved -- frameEmpty would drop the frame and the bell would never
 // reach the client. Build folds the cursor row into `changed` when the bell rang
-// so the screen frame is emitted with its bell flag set. A mutant removing that
-// fold makes this Build return nil. The first Build primes the previous-window
-// cache so the second sees a genuinely idle (bell-only) screen.
+// so the screen frame is emitted with its bell flag set. The first Build primes
+// the previous-window cache so the second sees a genuinely idle (bell-only) screen.
 func TestBuild_bellOnlyStillEmitsFrame(t *testing.T) {
 	screen := vt.New(10, 40)
 	if _, err := screen.Write([]byte("hello world")); err != nil {
@@ -346,10 +345,7 @@ func TestBuildModesPayload_kittyKeyboardFlag(t *testing.T) {
 // announced flags so the NEXT Build re-emits both even though the screen state
 // is unchanged. Without it, titleStable/modesStable suppress the re-announce
 // and a resuming or second-tab client keeps a stale title and default modes
-// (breaking mouse/arrow-key input encoding). Reset shows 100% statement
-// coverage only because Build calls it incidentally; no test asserts this
-// effect, so a mutant dropping `b.titleAnnounced = false` or
-// `b.modesAnnounced = false` from Reset survives every other test.
+// (breaking mouse/arrow-key input encoding).
 func TestReset_reAnnouncesTitleAndModes(t *testing.T) {
 	screen := vt.New(5, 20)
 	screen.Title = "session title"

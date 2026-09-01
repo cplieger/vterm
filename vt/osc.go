@@ -105,62 +105,43 @@ func (s *Screen) dispatchOsc() {
 
 	switch id {
 	case 0:
-		// OSC 0 sets both the icon name and the window title.
 		title := s.decodeTitle(data)
 		s.Title = title
 		s.iconTitle = title
 	case 2:
-		// OSC 2 sets the window title only.
 		s.Title = s.decodeTitle(data)
 	case 1:
-		// OSC 1 sets the icon name only. Tracked separately from the window
-		// title so XTWINOPS 20 (report icon label) round-trips; it is not sent
-		// to the client (which shows the window title).
+		// Tracked separately from the window title so XTWINOPS 20 (report icon
+		// label) round-trips; not sent to the client, which shows the title.
 		s.iconTitle = s.decodeTitle(data)
 	case 8:
-		// OSC 8 ; params ; URI — set/clear hyperlink.
-		// Format: "params;URI" where params is key=value pairs separated
-		// by ':' (the 'id=' param is parsed but not used). Empty URI clears.
 		s.handleOsc8(data)
 	case 4:
-		// OSC 4 — set/query a palette color (index 0-255) or a special color
-		// (index 256+). Resolved server-side (colorToWire), so an override
-		// reaches the client through the normal RGB runs.
+		// Resolved server-side (colorToWire), so an override reaches the
+		// client through the normal RGB runs.
 		s.handleOscPalette(data)
 	case 5:
-		// OSC 5 — set/query a special color by number k (bold/underline/blink/
-		// reverse/italic), the OSC 4 index 256+k under a shorter addressing.
 		s.handleOscSpecialColor(data)
 	case 10, 11, 12, 13, 14, 15, 16, 17, 18, 19:
-		// Set or query a dynamic color (default fg/bg/cursor/mouse/highlight/…).
-		// Both set and query round-trip through dynColors; see handleOscColor.
 		s.handleOscColor(id, data)
 	case 9:
-		// OSC 9 — desktop notification (Pt captured into Notification) or a
-		// ConEmu subcommand (numeric first field); subcommand 4 is progress,
+		// ConEmu subcommand form (numeric first field); subcommand 4 is progress,
 		// captured into Progress/ProgressValue. See handleOsc9.
 		s.handleOsc9(data)
 	case 52:
-		// OSC 52 — clipboard. SET always works (kiro-cli uses this to copy);
-		// the query form is denied by default (letting a remote app read the
-		// clipboard is a data-exfiltration risk most terminals disable) and
-		// answered only when AllowScreenReport opts in — see handleOsc52's
-		// gated read-back of the engine-side selection buffer.
+		// Query is denied by default — letting a remote app read the clipboard
+		// is a data-exfiltration risk most terminals disable.
 		s.handleOsc52(data)
 	case 104:
-		// OSC 104 — reset one or all OSC 4 palette overrides.
 		s.handleOscPaletteReset(data)
 	case 105:
-		// OSC 105 — reset one or all special colors (set via OSC 5 / OSC 4 256+).
 		s.handleSpecialColorReset(data)
 	case 110, 111, 112, 113, 114, 115, 116, 117, 118, 119:
-		// Reset a dynamic color (OSC 11x resets OSC 1x, i.e. slot id-100) back
-		// to its theme default by dropping any stored override.
+		// OSC 11x resets OSC 1x (slot id-100) by dropping its stored override.
 		if s.dynColors != nil {
 			delete(s.dynColors, id-100)
 		}
 	default:
-		// Unknown/out-of-scope OSC (7, 133, 777, ...): consumed, ignored.
 	}
 }
 
@@ -168,25 +149,18 @@ func (s *Screen) dispatchOsc() {
 // hostile or runaway program cannot grow the stored string without bound.
 const maxNotificationLen = 256
 
-// handleOsc9 handles the two OSC 9 forms. A human-readable message
-// (ESC ] 9 ; <text> ST) is captured into Notification for the status layer,
-// stripped of control bytes and length-clamped because it is attacker-influenced
-// terminal output. The ConEmu subcommand form (OSC 9 ; Ps [; ...] where the
-// first field is numeric) is not a notification: subcommand 4 is progress
-// reporting (OSC 9 ; 4 [; st [; pr]]), captured into Progress/ProgressValue so
-// the status layer can derive working/error/warning, and any other numeric
-// subcommand is ignored. The engine stays generic: it stores whatever
-// notification text arrives and does not interpret it. Mapping a message to a
-// session status (kiro-cli's "Response complete" / "Permission required") is the
-// consumer's job, so no application strings are hard-coded here.
+// handleOsc9 handles the two OSC 9 forms: a human-readable message is
+// captured into Notification (stripped and length-clamped, since it is
+// attacker-influenced); a ConEmu subcommand (OSC 9 ; Ps [; ...]) is not a
+// notification — only subcommand 4 (progress) is handled, into
+// Progress/ProgressValue. The engine stores notification text without
+// interpreting it; mapping a message to a session status is the consumer's job.
 //
-// The two forms are told apart by the FIRST ';'-delimited field, and only a
-// PURELY numeric one is a subcommand — a message that merely starts with digits
-// ("4 files changed") is free text and must arrive as a notification. The
-// degenerate subcommand, a payload that is nothing but digits and carries no
-// separator at all, is a subcommand too: that is how the abbreviated progress
-// form (ESC ] 9 ; 4 ST, "stop the progress bar") reaches setProgress instead of
-// being captured as the notification text "4".
+// The two forms are told apart by the FIRST ';'-delimited field: only a PURELY
+// numeric one is a subcommand, so "4 files changed" is free text. A payload
+// that is nothing but digits with no separator is a subcommand too — that is
+// how the abbreviated progress form (OSC 9 ; 4 ST, "stop the bar") reaches
+// setProgress instead of being captured as notification text "4".
 func (s *Screen) handleOsc9(data string) {
 	if data == "" {
 		return
@@ -196,10 +170,8 @@ func (s *Screen) handleOsc9(data string) {
 		if head == "4" {
 			s.setProgress(rest, hasFields)
 		}
-		// Every other ConEmu subcommand is consumed and ignored, deliberately:
-		// driven from terminal output, 9;7 (run a process), 9;6 (GUI macro) and
-		// 9;2 (message box) are remote-execution and UI-hijack primitives. Do not
-		// "complete" ConEmu support here.
+		// Other ConEmu subcommands (9;7 run process, 9;6 GUI macro, 9;2 message
+		// box) are remote-execution/UI-hijack primitives; ignored deliberately.
 		return
 	}
 	msg := sanitizeNotification(data)
@@ -223,22 +195,14 @@ const (
 )
 
 // setProgress records a ConEmu/iTerm2 OSC 9;4 progress report from the payload
-// following "4" ("st", "st;pr", or nothing at all). hasFields reports whether a
-// ';' followed the subcommand, which is what separates the abbreviated form
-// (ESC ] 9 ; 4 ST — no state field, stops the progress bar) from an explicit but
-// empty state field ("9;4;", malformed).
-//
-// State 4 is read with iTerm2's semantics (warning at pr percent) rather than
-// ConEmu's (paused), because the engine advertises TERM_PROGRAM=iTerm.app — that
-// identity is what makes a client emit these sequences — and iTerm2's definition
-// is the more specified of the two.
-//
-// A progress report is a STATE, not an event: it persists until the program
-// sends another one, and only state 0 (or the abbreviated form) clears it.
-// Neither source defines the malformed cases, so these are OUR documented
-// choices: a non-numeric or out-of-range st, and a pr that is not a number at
-// all, leave the previous state untouched rather than inventing one; a numeric
-// pr outside 0-100 is clamped into range; fields beyond pr are ignored.
+// following "4" ("st", "st;pr", or nothing at all). hasFields tells the
+// abbreviated form (no state field, stops the bar) from an explicit but empty
+// one ("9;4;", malformed). State 4 is read with iTerm2's semantics (warning at
+// pr percent, not ConEmu's paused), because the engine advertises
+// TERM_PROGRAM=iTerm.app. A report is a STATE, not an event: it persists until
+// the program sends another one. Malformed cases are undefined by both specs,
+// so these are OUR choices: an unparseable st or pr leaves the previous state
+// untouched; pr outside 0-100 is clamped; fields beyond pr are ignored.
 func (s *Screen) setProgress(rest string, hasFields bool) {
 	if !hasFields {
 		// Abbreviated form: no state field at all means stop the progress bar.
@@ -295,15 +259,10 @@ func isAllDigits(s string) bool {
 }
 
 // sanitizeNotification drops every rune of runesafe's unsafe classes — C0
-// controls (newlines included) + DEL, C1 controls, the Unicode Bidi_Control
-// set (Trojan-Source reordering), and U+2028/U+2029 (JS line terminators) —
-// from an OSC 9 message and clamps it to maxNotificationLen runes, so the
-// stored text is safe to place in a struct field, a log line, or a status
-// event. The class definition is runesafe's, not a local list: this function
-// used to hand-roll C0/C1 only, and the missed Bidi/2028-29 classes reached
-// every consumer's classifier and log attributes (the drift the shared
-// predicate exists to prevent). Dropping (not space-replacing) is a composed
-// policy on runesafe.IsUnsafeSingleLine, keeping the historical output shape.
+// controls (newlines included) + DEL, C1 controls, Bidi_Control (Trojan-Source
+// reordering), and U+2028/U+2029 (JS line terminators) — from an OSC 9 message
+// and clamps it to maxNotificationLen runes, so the stored text is safe to
+// place in a struct field, a log line, or a status event.
 func sanitizeNotification(data string) string {
 	var b strings.Builder
 	n := 0
@@ -459,15 +418,12 @@ func (s *Screen) handleOscPaletteReset(data string) {
 
 // handleOsc52 implements OSC 52 clipboard manipulation. Payload is
 // "<targets>;<data>" where data is base64 (set), "?" (query), or neither
-// (clear). On SET the decoded text is surfaced via PendingClipboard for the
-// handler to push to the browser clipboard, and retained as the session
-// selection buffer. On QUERY the retained buffer is reported back base64-
-// encoded — but only when AllowScreenReport is enabled, the same gate used for
-// DECRQCRA: the reply is injected into the PTY as input, and clipboard
-// read-back is a data-exfiltration vector, so production leaves it off (a
-// query is then silently ignored, xterm's behavior with allowWindowOps off).
-// The reported buffer is only ever what an in-session OSC 52 SET wrote; the vt
-// has no access to the real OS clipboard.
+// (clear). SET decodes the text into the session selection buffer, drained by
+// TakeClipboard for the handler to push to the browser clipboard. QUERY
+// reports that buffer back base64-encoded, but only when AllowScreenReport is
+// enabled (the same gate as DECRQCRA): the reply is injected into the PTY as
+// input, and clipboard read-back is a data-exfiltration vector, so production
+// silently ignores the query.
 func (s *Screen) handleOsc52(data string) {
 	targets, payload, ok := strings.Cut(data, ";")
 	if !ok {

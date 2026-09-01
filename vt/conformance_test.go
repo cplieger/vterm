@@ -10,25 +10,21 @@ import (
 func TestDECSC_RoundTrip(t *testing.T) {
 	s := New(24, 80)
 
-	// Set up non-default state
 	s.Write([]byte("\x1b[1;31m")) // bold + red FG
 	s.Write([]byte("\x1b[?6h"))   // origin mode on
 	s.Write([]byte("\x1b[?7l"))   // autowrap off
 	s.Write([]byte("\x1b(0"))     // G0 = DEC Special Graphics
 	s.Write([]byte("\x1b[5;10H")) // move cursor to row 5, col 10
 
-	// Save cursor (ESC 7)
-	s.Write([]byte("\x1b7"))
+	s.Write([]byte("\x1b7")) // save cursor
 
-	// Change everything
 	s.Write([]byte("\x1b[0m"))   // reset style
 	s.Write([]byte("\x1b[?6l"))  // origin mode off
 	s.Write([]byte("\x1b[?7h"))  // autowrap on
 	s.Write([]byte("\x1b(B"))    // G0 = ASCII
 	s.Write([]byte("\x1b[1;1H")) // move cursor to 1,1
 
-	// Restore cursor (ESC 8)
-	s.Write([]byte("\x1b8"))
+	s.Write([]byte("\x1b8")) // restore cursor
 
 	row, col := s.CursorPos()
 	if row != 4 || col != 9 { // 0-indexed: row 5 → 4, col 10 → 9
@@ -60,8 +56,8 @@ func TestDECSC_Mode1048(t *testing.T) {
 	s.Write([]byte("\x1b[3;5H"))   // row 3, col 5
 	s.Write([]byte("\x1b[?1048h")) // save
 
-	s.Write([]byte("\x1b[0m"))   // reset
-	s.Write([]byte("\x1b[1;1H")) // home
+	s.Write([]byte("\x1b[0m")) // reset
+	s.Write([]byte("\x1b[1;1H"))
 
 	s.Write([]byte("\x1b[?1048l")) // restore
 

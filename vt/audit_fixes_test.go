@@ -40,7 +40,7 @@ func TestXTQMODKEYS_NotTreatedAsSGR(t *testing.T) {
 // the client, so advertising support is correct.
 func TestKittyKeyboardQuery_ReportsFlags(t *testing.T) {
 	s := New(10, 20)
-	s.Write([]byte("\x1b[5;7H")) // cursor to row 4, col 6 (0-based)
+	s.Write([]byte("\x1b[5;7H")) // row 4, col 6 (0-based)
 	s.Write([]byte("\x1b[?u"))   // kitty flags query
 	if row, col := s.CursorPos(); row != 4 || col != 6 {
 		t.Errorf("CSI ?u moved cursor to %d,%d, want 4,6", row, col)
@@ -163,7 +163,7 @@ func TestDECSTBM_InvalidRegionNoOp(t *testing.T) {
 func TestCursorUpDown_RespectScrollMargins(t *testing.T) {
 	s := New(10, 20)
 	s.Write([]byte("\x1b[3;8r")) // region rows 2..7 (0-based); homes cursor to 0,0
-	s.Write([]byte("\x1b[6;1H")) // cursor to row 5 (inside region)
+	s.Write([]byte("\x1b[6;1H")) // row 5 (inside region)
 	s.Write([]byte("\x1b[100A")) // CUU far
 	if row, _ := s.CursorPos(); row != 2 {
 		t.Errorf("CUU from inside region -> row %d, want 2 (top margin)", row)
@@ -197,7 +197,7 @@ func TestDECSTR_PreservesTabStops(t *testing.T) {
 func TestIRM_InsertMode(t *testing.T) {
 	s := New(2, 10)
 	s.Write([]byte("ABC"))
-	s.Write([]byte("\x1b[G"))  // cursor to col 0
+	s.Write([]byte("\x1b[G"))  // col 0
 	s.Write([]byte("\x1b[4h")) // IRM on
 	s.Write([]byte("X"))
 	if got := s.RowString(0); got != "XABC" {

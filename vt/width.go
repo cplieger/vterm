@@ -48,7 +48,6 @@ func runeWidth(r rune) int {
 	if isZeroWidth(r) {
 		return 0
 	}
-	// East Asian Wide/Fullwidth → 2 cells.
 	if isWide(r) {
 		return 2
 	}

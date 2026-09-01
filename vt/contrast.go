@@ -119,14 +119,12 @@ func blendToContrast(fg, bg, target int32, ratio float64) (int32, bool) {
 }
 
 // liftForContrast applies the configured floor to a run's resolved foreground.
-// It resolves a default background (-1) to the theme background, because that is
-// what the client's CSS paints for it, and swaps the theme pair under DECSCNM
-// reverse video, because the client's CSS swaps it too.
-//
-// A DEFAULT foreground is returned untouched. The client's CSS owns that color
-// (--text) and swaps it with --bg under DECSCNM, so baking a lifted RGB here
-// would freeze the pair and defeat a consumer's own theme override. A consumer
-// whose own default pair is illegible fixes its CSS, not its terminal.
+// A DEFAULT foreground (-1) is returned untouched: the client's CSS owns that
+// color (--text) and swaps it with --bg under DECSCNM, so baking a lifted RGB
+// here would freeze the pair and defeat a consumer's own theme override — a
+// consumer whose default pair is illegible fixes its CSS, not its terminal. A
+// default BACKGROUND resolves to the theme background (swapped under DECSCNM
+// reverse video) so the lift is computed against what the client actually paints.
 func (s *Screen) liftForContrast(fg, bg int32) int32 {
 	if fg == wireDefaultColor {
 		return fg

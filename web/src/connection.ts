@@ -700,10 +700,6 @@ export function sendResize(): void {
   sendControl({ type: "resize", cols, rows });
 }
 
-// resetLedger drops a session's reliable-input accounting. Called when the
-// server's boot epoch changes (restart) or when the server no longer recognizes
-// the session -- both invalidate the local bytesSent/bytesAcked/outbox state.
-// The three entry points below differ only in whether the UI hears about it.
 // resetLedger drops a session's reliable-input accounting. Called whenever the
 // server no longer holds the ledger these counters were keyed to (a restart, an
 // idle-GC'd resume key, a session the server does not recognize): its

@@ -20,25 +20,18 @@ import "fmt"
 //
 // Spec: https://sw.kovidgoyal.net/kitty/keyboard-protocol/
 //
-// Honored flags. We honor only disambiguate (0x1) — the headline enhancement
-// that gives apps unambiguous Esc / Ctrl / Alt key events (the main reason
-// agent apps such as Codex query for the protocol). The remaining flags are NOT
-// honored:
-//   - report-event-types (0x2) would need key-release reporting, which our
-//     keydown-only client input path does not produce;
-//   - report-alternate-keys (0x4) needs shifted / base-layout codepoints the
-//     browser does not reliably expose;
-//   - report-all-keys-as-escape-codes (0x8) and report-associated-text (0x10)
-//     would route every keystroke (including plain text) through key-event
-//     escape codes, which is incompatible with the client's hidden-textarea/IME
-//     input model (it would break composition, dead keys and mobile
-//     autocomplete).
+// Honored flags: only disambiguate (0x1), the headline enhancement giving apps
+// unambiguous Esc/Ctrl/Alt key events. NOT honored: report-event-types (0x2,
+// needs key-release reporting our keydown-only input path lacks),
+// report-alternate-keys (0x4, needs codepoints the browser doesn't expose),
+// report-all-keys-as-escape-codes (0x8) and report-associated-text (0x10,
+// both incompatible with the client's hidden-textarea/IME input model).
 //
-// Incoming flags are masked to the honored subset on store, so the CSI ? u
-// query truthfully reports only what we honor; an application that needs an
-// unsupported flag can detect the gap (set-then-query) and fall back. The spec
-// sanctions this detectable partial implementation. Adding a flag later means
-// extending both this mask and the client encoder together.
+// Incoming flags are masked to the honored subset on store, so CSI ? u
+// truthfully reports only what is honored; an app needing an unsupported flag
+// can detect the gap (set-then-query) and fall back — a partial implementation
+// the spec sanctions. Adding a flag later means extending both this mask and
+// the client encoder together.
 const (
 	kbdDisambiguate uint8 = 1 << 0 // 0x1  disambiguate escape codes
 

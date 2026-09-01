@@ -11,20 +11,15 @@ import (
 // 16=strikethrough, 32=dim, 64=hidden, 128=blink, 256=overline,
 // 512=double-underline, 1024=autolink (heuristic URL, see AttrAutolink).
 type WireRun struct {
-	// T is the text content of the run.
 	T string `json:"t"`
 	// U is the hyperlink URI (empty means no link): an app-provided OSC 8
 	// link, or — when A carries AttrAutolink — the full URL of a
 	// server-detected bare link, joined across soft-wrap continuations.
-	U string `json:"u,omitempty"`
-	// F is the foreground color as 0xRRGGBB, or -1 for default.
-	F int32 `json:"f,omitempty"`
-	// B is the background color as 0xRRGGBB, or -1 for default.
-	B int32 `json:"b,omitempty"`
-	// Uc is the underline color as 0xRRGGBB, or -1 for default.
-	Uc int32 `json:"uc,omitempty"`
-	// A is a bitmask of SGR attributes (bold=1, italic=2, underline=4, etc.).
-	A uint16 `json:"a,omitempty"`
+	U  string `json:"u,omitempty"`
+	F  int32  `json:"f,omitempty"`
+	B  int32  `json:"b,omitempty"`
+	Uc int32  `json:"uc,omitempty"`
+	A  uint16 `json:"a,omitempty"`
 }
 
 // Default flag for FG/BG meaning "use theme default".
@@ -100,18 +95,16 @@ func trimmableBlank(c Cell) bool {
 
 // trimTrailingBlanks returns row without its trailing run of trimmable blanks.
 //
-// Every cell grid pads each row to the full width, so today a `$ ` prompt row
-// ships ~118 spaces the application never printed — over the wire, into the
-// client's line store, and into the DOM, where they are selectable and land in
-// a copy. Right-trimming the wire representation is what xterm.js and tmux
-// already do on their own string/copy paths, so this matches the industry norm
-// and improves copy fidelity; an INTENDED trailing default-style space is
+// Without this, a `$ ` prompt row ships ~118 spaces the application never
+// printed, selectable in the DOM and landing in a copy. Right-trimming the
+// wire representation matches what xterm.js and tmux already do on their own
+// string/copy paths; an INTENDED trailing default-style space is
 // indistinguishable from padding in any cell grid, xterm.js included.
 //
-// Mid-line and leading whitespace are untouched, and paste INTO the terminal is
-// unaffected. A fully-blank row trims to zero runs, which the client renders as
-// a single non-breaking-space filler (render.ts buildRowSpans) so the row keeps
-// full line height instead of collapsing the grid.
+// Mid-line and leading whitespace are untouched, and paste INTO the terminal
+// is unaffected. A fully-blank row trims to zero runs, which the client
+// renders as a single non-breaking-space filler (render.ts buildRowSpans) so
+// the row keeps full line height instead of collapsing the grid.
 func trimTrailingBlanks(row []Cell) []Cell {
 	n := len(row)
 	for n > 0 && trimmableBlank(row[n-1]) {
@@ -543,17 +536,12 @@ func (s *Screen) colorToWire(c Color) int32 {
 // basic16RGB resolves palette indices 0-15 (SGR 30-37 / 90-97 and their 40-47 /
 // 100-107 background forms) to RGB. These 16 slots are TERMINAL-DEFINED: no spec
 // assigns them values, so this is a palette choice, and the choice is kitty's
-// published default (kitty/options/definition.py color0-color15).
-//
-// kitty is the reference because it is the only widely-used terminal whose
-// default background is pure black, which is web-terminal-ui's default too, so
-// its slot values are chosen against the background this engine actually renders
-// on. The engine previously used the classic VGA / Linux-console table
-// (0x0000aa blue and friends). That table predates dark-theme legibility work
-// and reads at 1.58:1 against black, far under the WCAG AA floor of 4.5:1; GNOME
-// Terminal still ships it, under the name "Linux Console", as a legacy preset
-// rather than a default. Every actively-designed default lifts these slots, and
-// this one lifts each failing slot by 1.3x to 3x.
+// published default (kitty/options/definition.py color0-color15) — chosen
+// because kitty is the only widely-used terminal whose default background is
+// pure black, matching web-terminal-ui's default, so its slot values are
+// chosen against the background this engine actually renders on. (The classic
+// VGA / Linux-console table's blue reads at 1.58:1 against black, far under
+// the WCAG AA floor of 4.5:1; kitty's slots clear that floor in 13 of 16.)
 //
 // An application can still override any slot with OSC 4, and a consumer can put
 // a contrast floor over the whole palette with WithMinimumContrast.

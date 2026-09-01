@@ -43,7 +43,7 @@ func setParamGroups(s *Screen, vals ...uint16) {
 // reset fast path.
 func TestSGRSingleNonZeroParamApplies(t *testing.T) {
 	s := New(2, 10)
-	s.Write([]byte("\x1b[1m")) // SGR 1 = bold
+	s.Write([]byte("\x1b[1m"))
 
 	if !s.style.Bold {
 		t.Errorf("CSI 1 m: style.Bold = false, want true (a single non-zero SGR must apply, not reset)")
@@ -54,8 +54,8 @@ func TestSGRSingleNonZeroParamApplies(t *testing.T) {
 // style, matching SGR 0.
 func TestSGREmptyParamResetsStyle(t *testing.T) {
 	s := New(1, 10)
-	s.Write([]byte("\x1b[1m")) // bold
-	s.Write([]byte("\x1b[m"))  // empty param = SGR 0 (reset)
+	s.Write([]byte("\x1b[1m"))
+	s.Write([]byte("\x1b[m")) // empty param = SGR 0 (reset)
 	s.Write([]byte("X"))
 	if s.Cells[0][0].Ch != 'X' {
 		t.Fatal("X not written")

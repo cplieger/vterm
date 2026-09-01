@@ -178,10 +178,7 @@ func TestRegistry_ConcurrentResolveSharedSession(t *testing.T) {
 // TestResolveSession_evictsOldestWhenOverCap pins the maxResumeSessions cap backstop
 // (CWE-770) that ResolveSession enforces via evictOldestSession: when a new
 // session pushes the retained count past maxResumeSessions, the single oldest-lastSeen
-// entry is evicted (not the newcomer) and the count returns to maxResumeSessions. The
-// eviction body (find-oldest loop + delete) was unexercised after extraction
-// into evictOldestSession (only the early-return ran, 22.2% coverage), so a
-// mutant in the `sx.lastSeen.Before(oldest)` comparison or the delete survived.
+// entry is evicted (not the newcomer) and the count returns to maxResumeSessions.
 func TestResolveSession_evictsOldestWhenOverCap(t *testing.T) {
 	r := newClientRegistry(slog.Default())
 	now := time.Now()

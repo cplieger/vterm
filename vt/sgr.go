@@ -114,11 +114,9 @@ func (s *Screen) applySGR() {
 func (s *Screen) parseExtColorGroup(i int, c *Color) int {
 	g := s.paramGroup(i)
 	if g.Len >= 3 {
-		// Colon-subparam form: all values live in one group.
 		parseExtColorColon(g, c)
 		return i
 	}
-	// Semicolon-legacy form: consume following groups.
 	return s.parseExtColorLegacy(i, c)
 }
 

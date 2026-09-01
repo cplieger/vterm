@@ -89,7 +89,7 @@ func TestMouseModeBoundaryResize(t *testing.T) {
 // 223-column encoding limit on a wide screen and SGR mode can be enabled.
 func TestMouseCoords223Boundary(t *testing.T) {
 	s := New(5, 250)
-	s.Write([]byte("\x1b[?1000h")) // enable mouse
+	s.Write([]byte("\x1b[?1000h"))
 	if s.MouseMode != 1000 {
 		t.Fatalf("expected mouse mode 1000")
 	}
@@ -101,7 +101,7 @@ func TestMouseCoords223Boundary(t *testing.T) {
 	if _, col := s.CursorPos(); col != 249 {
 		t.Fatalf("expected col 249, got %d", col)
 	}
-	s.Write([]byte("\x1b[?1006h")) // SGR mouse handles coords > 223
+	s.Write([]byte("\x1b[?1006h"))
 	if !s.MouseSGR {
 		t.Fatal("expected SGR mode")
 	}

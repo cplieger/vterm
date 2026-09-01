@@ -1355,9 +1355,7 @@ function flushRender(): void {
   const anchor = captureReadAnchor();
   try {
     flushRenderInner();
-    // A clean pass means the error condition (if any) has cleared, so give a
-    // later transient error its full retry budget again. Any backlog reschedule
-    // was already issued from flushRenderInner's own end-of-body.
+    // Clean pass: give a later transient error its full retry budget again.
     renderNoProgressStreak = 0;
   } catch (err) {
     console.error("vterm: render error", err);
@@ -1525,7 +1523,6 @@ function flushRenderInner(): void {
     }
   }
 
-  // Refresh cursor state from the window.
   const win = store.getWindow();
   const newCursorAbs = win.base + win.cursorRow;
   cursorAbs = newCursorAbs;
@@ -1538,11 +1535,9 @@ function flushRenderInner(): void {
   // resulting mode is unchanged.
   syncCursorBlink();
 
-  // Alt screen: render the ephemeral grid instead of the absolute buffer.
-  // Returning here skips the dirtyLines queueing below — safe by invariant:
-  // main-buffer rows never repaint while alt is active, and the alt-exit
-  // branch below rebuilds EVERYTHING via queueRowsViewportFirst, so any line
-  // dirtied during the alt session is repainted at exit.
+  // Skips the dirtyLines queueing below — safe: main-buffer rows never
+  // repaint while alt is active, and alt-exit rebuilds via
+  // queueRowsViewportFirst, repainting any line dirtied during the alt session.
   if (store.isAlt()) {
     const altRows = store.getAltRows();
     renderAlt(altRows);
@@ -1570,7 +1565,6 @@ function flushRenderInner(): void {
     queueRowsViewportFirst();
   }
 
-  // Queue this frame's changed rows for building.
   for (const abs of ch.dirtyLines) {
     renderQueue.add(abs);
   }

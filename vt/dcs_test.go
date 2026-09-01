@@ -67,7 +67,7 @@ func TestDECRQSS_DECSTBMDefault(t *testing.T) {
 // region set via DECSTBM.
 func TestDECRQSS_DECSTBMCustom(t *testing.T) {
 	s := New(24, 80)
-	s.Write([]byte("\x1b[5;20r")) // set scroll region
+	s.Write([]byte("\x1b[5;20r"))
 	s.Write([]byte("\x1bP$qr\x1b\\"))
 	want := "\x1bP1$r5;20r\x1b\\"
 	if got := string(s.response); got != want {
@@ -217,7 +217,7 @@ func TestMultipleSequentialDECRQSS(t *testing.T) {
 	s.Write([]byte("\x1bP$qm\x1b\\"))
 	first := string(s.response)
 	s.response = nil
-	s.Write([]byte("\x1b[1m")) // set bold
+	s.Write([]byte("\x1b[1m"))
 	s.Write([]byte("\x1bP$qm\x1b\\"))
 	second := string(s.response)
 	if first == second {

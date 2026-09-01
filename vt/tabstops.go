@@ -10,7 +10,6 @@ func (s *Screen) initTabStops() {
 	}
 }
 
-// setTabStop sets a tab stop at the given column.
 func (s *Screen) setTabStop(col int) {
 	if s.tabStops == nil {
 		s.initTabStops()
@@ -20,7 +19,6 @@ func (s *Screen) setTabStop(col int) {
 	}
 }
 
-// clearTabStop clears the tab stop at the given column.
 func (s *Screen) clearTabStop(col int) {
 	if s.tabStops == nil {
 		s.initTabStops()
@@ -30,7 +28,6 @@ func (s *Screen) clearTabStop(col int) {
 	}
 }
 
-// clearAllTabStops removes all tab stops.
 func (s *Screen) clearAllTabStops() {
 	s.tabStops = make([]bool, s.Width)
 }
@@ -39,7 +36,6 @@ func (s *Screen) clearAllTabStops() {
 // If no tab stops are set, uses default every-8 behavior.
 func (s *Screen) nextTabStop(col int) int {
 	if s.tabStops == nil {
-		// Default: every 8 columns
 		return (col + 8) &^ 7
 	}
 	for i := col + 1; i < s.Width; i++ {

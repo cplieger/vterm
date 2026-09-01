@@ -198,11 +198,9 @@ func (s *sessionReap) teardownOnce() {
 		s.waitGone(left, containGrace)
 	}
 
-	// Fires ONLY when something actually had to be reclaimed, so a quiet log
-	// means every session ended on its own terms. term_reclaimed and kill_forced
-	// separate a tree that honours SIGTERM from one that had to be killed —
-	// without the split, a runtime nobody had signalled looks identical to one
-	// that ignored the signal.
+	// Fires only when something had to be reclaimed. term_reclaimed and
+	// kill_forced separate a tree that honoured SIGTERM from one that had to be
+	// killed.
 	s.log.Warn("terminal: session reap reclaimed escaped processes",
 		"session", LogID(s.id),
 		"survivors", survivors,

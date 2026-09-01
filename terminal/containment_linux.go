@@ -430,7 +430,7 @@ func (s *sessionCgroup) current() (memBytes uint64, tasks, procs int) {
 // creates a sub-cgroup (its shell runs as root and this tree is writable by
 // construction) reports zero survivors while populated says 1, which would skip
 // the graceful SIGTERM pass and silence the reclaim warning in exactly the case
-// containment is doing the most work. Measured before this was written.
+// containment is doing the most work.
 //
 // Zombies are excluded by the kernel, so every entry is a live process.
 func (s *sessionCgroup) liveProcs() []int {
@@ -541,7 +541,7 @@ func (s *sessionCgroup) killAll() error {
 // cgroup.kill kills a whole subtree but removes no directory, and rmdir refuses a
 // cgroup that still has children, so a session that created one sub-cgroup would
 // otherwise leave a directory neither teardown nor the startup sweep could ever
-// remove. Measured before this was written.
+// remove.
 func removeCgroupTree(dir string) error {
 	if entries, err := os.ReadDir(dir); err == nil {
 		for _, e := range entries {
@@ -602,12 +602,10 @@ func (s *sessionCgroup) teardownOnce() {
 	s.remove()
 
 	if survivors > 0 {
-		// Only fires when containment actually did something no other mechanism
-		// would have done, so every occurrence is a real finding. The split says
-		// which: term_reclaimed means a well-behaved process nobody had
-		// signalled, kill_forced means something ignored SIGTERM and is worth an
-		// upstream report. Clamped because the two counts are separate snapshots
-		// and a fork between them could otherwise print a negative.
+		// Only fires when containment reclaimed something. term_reclaimed means a
+		// well-behaved process nobody had signalled; kill_forced means something
+		// ignored SIGTERM. Clamped: the two counts are separate snapshots, and a
+		// fork between them could otherwise print a negative.
 		s.log.Warn("terminal: containment reclaimed escaped processes",
 			"session", LogID(s.id),
 			"survivors", survivors,

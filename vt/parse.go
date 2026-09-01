@@ -40,12 +40,10 @@ func (s *Screen) feed(b byte) {
 		}
 	}
 
-	// Transition action.
 	if act != actNone {
 		s.doAction(act, b)
 	}
 
-	// Transition and entry action.
 	if next != s.pState {
 		s.pState = next
 		if ea := entryAction[next]; ea != actNone {
@@ -129,10 +127,8 @@ func (s *Screen) handleParam(b byte) {
 		return
 	}
 	if b == ';' {
-		// Semicolon: finalize current param, start new group
 		s.pushParam(true)
 	} else {
-		// Digit
 		s.paramSeen = true
 		v := min(uint32(s.curParam)*10+uint32(b-'0'), maxCSIArgValue)
 		// min caps v at maxCSIArgValue (65535), so the narrowing cannot overflow.
@@ -144,7 +140,6 @@ func (s *Screen) handleSubparam() {
 	if s.ignoring {
 		return
 	}
-	// Colon: finalize current param value as part of same group (subparam)
 	s.pushParam(false)
 }
 
@@ -157,7 +152,6 @@ func (s *Screen) pushParam(newGroup bool) {
 	}
 	s.pParams[s.numParams] = s.curParam
 	s.numParams++
-	// Increment the length of the current group
 	if s.numGroups > 0 {
 		gStart := s.groupStartIdx(s.numGroups - 1)
 		s.pGroupLen[gStart]++
@@ -166,9 +160,7 @@ func (s *Screen) pushParam(newGroup bool) {
 	s.paramSeen = false
 
 	if newGroup {
-		// Start a new group — next pushParam will be into it
 		if s.numGroups < maxParams && s.numParams < maxParams {
-			// The new group starts at numParams
 			s.pGroupLen[s.numParams] = 0
 			s.numGroups++
 		}
@@ -182,7 +174,6 @@ func (s *Screen) finalizeParams() {
 	if s.ignoring {
 		return
 	}
-	// Always push the trailing param (even if 0/default)
 	if s.numParams >= maxParams {
 		return
 	}
@@ -202,7 +193,6 @@ func (s *Screen) parserClear() {
 	s.numInterm = 0
 	s.ignoring = false
 	s.privateMarker = 0
-	// Initialize first group
 	s.pGroupLen[0] = 0
 	s.numGroups = 1
 }
@@ -231,7 +221,6 @@ func (s *Screen) paramGroup(i int) ParamGroup {
 	if i >= int(s.numGroups) {
 		return g
 	}
-	// Find start index of group i
 	var startIdx uint8
 	for range i {
 		if int(startIdx) >= maxParams {
@@ -328,8 +317,8 @@ func (s *Screen) execControl(b byte) {
 
 //nolint:gocyclo // flat dispatch over the ESC final bytes
 func (s *Screen) dispatchEsc(b byte) {
-	// Handle ESC intermediates. '#' introduces the DEC line-size / alignment
-	// group (DECALN etc.); '(', ')', '*', '+' designate character sets.
+	// '#' introduces the DEC line-size / alignment group (DECALN etc.);
+	// '(', ')', '*', '+' designate character sets.
 	if s.numInterm > 0 {
 		if s.pIntermed[0] == '#' {
 			s.decLineSize(b)

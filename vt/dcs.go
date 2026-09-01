@@ -11,7 +11,7 @@ import (
 //
 // Routing: intermediate='$', final='q' → DECRQSS
 
-// dcsHook is called on entry to DcsPassthrough. Routes to the appropriate handler.
+// dcsHook is called on entry to DcsPassthrough, and routes to the handler.
 func (s *Screen) dcsHook(finalByte byte) {
 	switch {
 	case s.numInterm == 1 && s.pIntermed[0] == '$' && finalByte == 'q':
@@ -33,11 +33,10 @@ func (s *Screen) dcsPut(b byte) {
 			s.dcsBuf = append(s.dcsBuf, b)
 		}
 	case dcsIgnored:
-		// Don't buffer unknown DCS data
 	}
 }
 
-// dcsUnhook is called on exit from DcsPassthrough. Dispatches the completed DCS.
+// dcsUnhook is called on exit from DcsPassthrough, dispatching the completed DCS.
 func (s *Screen) dcsUnhook() {
 	switch s.dcsFunc {
 	case dcsDecrqss:
@@ -118,9 +117,8 @@ func encodeHexString(s string) string {
 	return string(out)
 }
 
-// handleDecrqss processes a DECRQSS query and appends the response to s.response.
-// Valid response: DCS 1 $ r <data> ST
-// Invalid response: DCS 0 $ r ST
+// handleDecrqss answers a DECRQSS query, appending to s.response:
+// valid → DCS 1 $ r <data> ST; invalid → DCS 0 $ r ST.
 //
 //nolint:gocyclo // flat DECRQSS selector dispatch (one status string per selector)
 func (s *Screen) handleDecrqss(query []byte) {
@@ -168,7 +166,6 @@ func (s *Screen) handleDecrqss(query []byte) {
 	case "$~": // DECSSDT (status display type) — none (0)
 		s.response = append(s.response, "\x1bP1$r0$~\x1b\\"...)
 	default:
-		// Unrecognized query
 		s.response = append(s.response, "\x1bP0$r\x1b\\"...)
 	}
 }

@@ -4,7 +4,6 @@ import "testing"
 
 func TestOSC8SetsHyperlinkBEL(t *testing.T) {
 	s := New(24, 80)
-	// OSC 8 ; ; http://example.com BEL then print text
 	s.Write([]byte("\x1b]8;;http://example.com\x07"))
 	s.Write([]byte("link"))
 	for i := range 4 {
@@ -16,7 +15,6 @@ func TestOSC8SetsHyperlinkBEL(t *testing.T) {
 
 func TestOSC8SetsHyperlinkST(t *testing.T) {
 	s := New(24, 80)
-	// OSC 8 ; ; http://example.com ST
 	s.Write([]byte("\x1b]8;;http://example.com\x1b\\"))
 	s.Write([]byte("hi"))
 	for i := range 2 {
@@ -30,7 +28,6 @@ func TestOSC8ClearsOnEmptyURI(t *testing.T) {
 	s := New(24, 80)
 	s.Write([]byte("\x1b]8;;http://example.com\x07"))
 	s.Write([]byte("AB"))
-	// Close hyperlink
 	s.Write([]byte("\x1b]8;;\x07"))
 	s.Write([]byte("CD"))
 	// AB should have the link

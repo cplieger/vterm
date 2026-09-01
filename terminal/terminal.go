@@ -1589,7 +1589,7 @@ func (h *Handler) flushPass() (holdUntil time.Time) {
 //     (possibly extended) deadline; passes stay suppressed while held.
 //
 // Dirty sources: PTY output (handlePTYData), resize, resume/attach, and
-// reliable input needing an ack sweep (deliverInput). Zero-client suspension
+// reliable input needing an ack sweep. Zero-client suspension
 // lives in buildFrame: a poke with nobody attached drains scrollback into the
 // ring and skips all render/diff work.
 func (h *Handler) flushLoop(ctx context.Context) {
@@ -1676,7 +1676,7 @@ func (h *Handler) waitForBatchWindow(ctx context.Context) (gotMore, alive bool) 
 // advanced without a content frame carrying the new value this pass — input
 // into a silent app (no echo, no output; e.g. `read -s`) would otherwise stay
 // unacked indefinitely, leaving the client outbox untrimmed and widening the
-// window where a later ledger loss drops (previously) or duplicated input.
+// window where a later ledger loss drops or duplicates input.
 // Called from flushLoop only on passes that produced no frame; passes WITH a
 // frame stamp the fresh ack on every payload via withClientAck instead.
 func (h *Handler) sweepAcks() {
@@ -1736,7 +1736,7 @@ func (h *Handler) dispatchFrame(frame *flushFrame) {
 	durable := durableSubset(frame.clipboardPayload, scrollPayloads)
 	// Fan out concurrently: one goroutine per client, each writing ITS frames
 	// in order. Serial fan-out let one wedged client stall every other
-	// client's output for up to 5s × payload count (judgement finding); now a
+	// client's output for up to 5s × payload count; now a
 	// wedged client costs only itself, and the tick blocks at most one 5s
 	// window total. Per-connection write serialization is coder/websocket's
 	// (concurrent writers to one conn are internally locked); the multi-write
@@ -1826,7 +1826,7 @@ func durableSubset(clipboardPayload []byte, scrollPayloads [][]byte) [][]byte {
 //     chunks carry absolute indices and the client applies them
 //     idempotently. Two residuals, accepted and bounded:
 //
-//     1. CLOSED 2026-08 (owner-ratified): the client's alt gate now accepts
+//     1. The client's alt gate now accepts
 //     history strictly below its frozen main win.base (store.ts
 //     applyScroll), so a client the batch flipped into alt STORES the
 //     durable chunk instead of dropping it — the lines surface at alt
@@ -1842,8 +1842,7 @@ func durableSubset(clipboardPayload []byte, scrollPayloads [][]byte) [][]byte {
 //     plus a full payload encode, i.e. milliseconds under a heavy drain,
 //     not microseconds. The ED3 loss self-heals at the app's next ED3
 //     (kiro-cli re-emits it on every resize redraw); until then that
-//     client over-retains history the server dropped. The pre-fix
-//     behavior for that client was the ordering race itself.
+//     client over-retains history the server dropped.
 //
 // A nil state is tolerated for frames constructed without a registry
 // snapshot (tests); buildFrame always populates writers, so production
@@ -2152,7 +2151,7 @@ func (h *Handler) resumeControl(ws *websocket.Conn, state *clientState, c *contr
 		return d
 	}
 	if !state.takeResumeToken() {
-		// Resume-spam throttle (2026-08, owner-ratified): each resume runs a
+		// Resume-spam throttle: each resume runs a
 		// full per-socket write transaction — writeMu held across a screen
 		// snapshot, a builder reset and a replay of up to the whole retained
 		// ring — so an unthrottled client could pin the handler's flush
@@ -2428,12 +2427,11 @@ func replayStart(committed uint64, haveThrough int64, replayMax *int64) uint64 {
 //   - main screen (winAlt == false): the window frame precedes the replay
 //     so a client with a stale alt flag (disconnected in alt, app left alt
 //     while away) leaves alt before the replayed history lands; otherwise
-//     it silently drops those frames (finding l-f38).
+//     it silently drops those frames.
 //   - alt screen (winAlt == true): the replay precedes the window frame so
 //     a client not yet in alt (fresh load / second tab on an in-alt
 //     session) stores the main-screen history before the window frame
-//     flips it into alt; otherwise that history is lost (the h-f1
-//     regression).
+//     flips it into alt; otherwise that history is lost.
 //
 // haveThrough is the highest absolute line index the client already
 // holds (-1 = none). The server replays lines with index > haveThrough,
@@ -2483,7 +2481,7 @@ func (h *Handler) handleResume(ws *websocket.Conn, state *clientState, sessionID
 	// this, a flush could land out of order around the batch and the
 	// batch's older window overwrote a newer screen — a reconnect during
 	// active output showed an old or mixed screen until an unrelated full
-	// repaint (R4 adversarial finding, gpt).
+	// repaint.
 	state.writeMu.Lock()
 	defer state.writeMu.Unlock()
 
@@ -2579,7 +2577,7 @@ func (h *Handler) handleResume(ws *websocket.Conn, state *clientState, sessionID
 	// and the window frame is what sets that flag to winAlt:
 	//   - winAlt == false: window FIRST so a client with a stale alt flag
 	//     (disconnected in alt, app left alt while away) leaves alt before the
-	//     replay lands (finding l-f38).
+	//     replay lands.
 	//   - winAlt == true: replay FIRST so a client not yet in alt (fresh load /
 	//     second tab on an in-alt session) stores the main-screen history before
 	//     the window frame puts it into alt; otherwise the replay is dropped and

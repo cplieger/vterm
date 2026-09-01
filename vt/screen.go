@@ -44,17 +44,14 @@ type Screen struct {
 	tabStops     []bool
 	Drained      [][]WireRun
 	Cells        [][]Cell
-	// wrapped[y] marks row y as a soft-wrap CONTINUATION of row y-1: autowrap
-	// (not a hard newline) carried the text onto it. It is the row-chain
-	// signal the URL autolinker joins rows with (see wire.go stampAutolinks),
-	// the same per-line isWrapped model xterm.js keeps for its link addon.
-	// The flag travels with row IDENTITY: every site that shifts whole rows
-	// (scroll, drain, IL/DL, resize, alt switch) mirrors its move here, and a
-	// row replaced wholesale gets false. In-place content edits (boxed
-	// scrolls, rect fills, partial erases) deliberately leave it: a stale
-	// true only joins text the regex then fails to match — harmless — while
-	// missing a true would break a real wrapped URL. Cleared with history on
-	// ED2/ED3/RIS.
+	// wrapped[y] marks row y as a soft-wrap CONTINUATION of row y-1 (autowrap,
+	// not a hard newline) — the row-chain signal the URL autolinker joins rows
+	// with (wire.go stampAutolinks). It travels with row IDENTITY: every site
+	// that shifts whole rows (scroll, drain, IL/DL, resize, alt switch) mirrors
+	// its move here; a row replaced wholesale gets false. In-place content
+	// edits deliberately leave it stale-safe: a stale true only fails a later
+	// regex match, while a missing true would break a real wrapped URL.
+	// Cleared with history on ED2/ED3/RIS.
 	wrapped []bool
 	// drainTail retains the text of the most recently drained (scrolled-off)
 	// rows while the row now at the top of the screen still continues them,
@@ -278,21 +275,17 @@ func DefaultTheme() Theme {
 const MinimumContrastOff = 1.0
 
 // WithMinimumContrast sets a floor on the WCAG contrast ratio between a run's
-// text and its background. A foreground below the floor is blended toward white
-// or black until it reaches it (see contrast.go); backgrounds are never changed,
-// and neither is a DEFAULT foreground, which the client's own CSS owns.
+// text and its background. A foreground below the floor blends toward white or
+// black until it reaches it (contrast.go); backgrounds and a DEFAULT foreground
+// (owned by the client's CSS) are never changed.
 //
-// The ratio is clamped to 1..21. 1 is off and the default, matching xterm.js's
-// minimumContrastRatio, so upgrading the engine never silently recolors an
-// existing consumer. 4.5 is the WCAG AA floor for body text and the value VS
-// Code applies to every integrated terminal; pass it when your client renders on
-// a dark background and your users read output they do not control.
-//
-// Reach for this in addition to, not instead of, a palette suited to your
-// background: the floor is what covers an application's OSC 4 overrides, the
-// dark corners of the 256-color cube, and truecolor an application picked blind.
-// The engine's own basic-16 default already clears 4.5:1 on black in 13 of 16
-// slots.
+// Clamped to 1..21. 1 is off and the default, matching xterm.js's
+// minimumContrastRatio, so an engine upgrade never silently recolors an
+// existing consumer. 4.5 is the WCAG AA floor for body text (also VS Code's
+// integrated-terminal default); pass it when your client renders on a dark
+// background and your users read output they do not control. Use this in
+// addition to, not instead of, a suitable palette: it covers an application's
+// OSC 4 overrides, the 256-color cube's dark corners, and blind truecolor.
 func WithMinimumContrast(ratio float64) Option {
 	return func(s *Screen) {
 		if math.IsNaN(ratio) {
@@ -386,12 +379,10 @@ func (s *Screen) Resize(rows, cols int) {
 	// invalidates any DECSLRM box (xterm does the same on DECCOLM).
 	s.leftMargin = 0
 	s.rightMargin = s.Width - 1
-	// Note: we deliberately do NOT clear cells or reset the cursor here.
-	// the host application starts at the correct dimensions (first resize message
-	// triggers ensureStarted) so initial-paint stale content is no longer
-	// a concern. SIGWINCH will trigger the host application to redraw, which will
-	// overwrite cells in place. Clearing here causes a visible "blank
-	// screen + cursor at top-left" flash on every keyboard transition.
+	// Deliberately not clearing cells or resetting the cursor here: the host
+	// application's SIGWINCH redraw overwrites cells in place, while clearing
+	// causes a visible "blank screen + cursor at top-left" flash on every
+	// keyboard transition.
 	s.resizeSavedMain(rows, cols)
 }
 
@@ -459,13 +450,10 @@ func (s *Screen) resizeWidth(cols int) {
 		copy(s.Cells[i], old)
 	}
 	s.Width = cols
-	// nil-as-lazy, NOT len==0: nil means "default stops, computed on demand"
-	// (nextTabStop answers arithmetically), while an EMPTY non-nil array is an
-	// explicit all-cleared configuration that must still be rebuilt here — both
-	// to extend it with the default pattern like any other explicit config, and
-	// because every non-nil array must keep len == Width for nextTabStop's scan
-	// to index safely. A len()==0 guard read better and returned early, which
-	// left that invariant broken (TestResizeTabStopsGrow pins this boundary).
+	// nil-as-lazy, NOT len==0: nil means "default stops, computed on demand",
+	// while an EMPTY non-nil array is an explicit all-cleared configuration
+	// that must still be rebuilt to len == Width for nextTabStop's scan to
+	// index safely (TestResizeTabStopsGrow pins this boundary).
 	if s.tabStops == nil {
 		return
 	}
@@ -483,16 +471,12 @@ func (s *Screen) resizeWidth(cols int) {
 // while in alt-screen mode, so exiting alt-screen restores correctly at the new
 // size. rows and cols are the already-clamped target dimensions.
 //
-// A resize to the dimensions the saved buffer already has returns early. The
-// rebuild is one allocation per saved row plus one, and the alternate screen is
-// where a session sits for as long as a full-screen program runs, so without the
-// check a reconnect or a second viewer attaching at the current size copied the
-// whole saved screen to produce a byte-identical result: 25 allocations on a
-// 24-row screen, 101 on a 100-row one, against zero for the same no-op on the
-// main screen. Checking the SAVED buffer's own dimensions rather than s.Height
-// and s.Width is what makes the guard correct: the live screen has already been
-// resized by the time this runs, so comparing against it would skip the rebuild
-// exactly when it is needed.
+// Returns early when the saved buffer already has these dimensions, avoiding a
+// same-size reconnect or second-viewer attach copying the whole saved screen
+// for a byte-identical result (25 allocations on a 24-row screen otherwise).
+// The check compares the SAVED buffer's own dimensions, not s.Height/s.Width:
+// the live screen has already been resized by the time this runs, so
+// comparing against it would skip the rebuild exactly when it is needed.
 func (s *Screen) resizeSavedMain(rows, cols int) {
 	if s.savedMainCells == nil {
 		return
@@ -654,7 +638,6 @@ func (s *Screen) put(r rune) {
 	s.lastPrintedStyle = s.style
 
 	if w == 2 {
-		// Place spacer/continuation cell.
 		s.curX++
 		if s.curX < s.Width && s.curY < s.Height {
 			s.Cells[s.curY][s.curX] = Cell{Ch: 0, Style: s.style, Hyperlink: s.hyperlink, Protected: s.curProtected, IsoProtected: s.curIsoProtected}
@@ -890,7 +873,6 @@ func (s *Screen) exitAltScreen(mode int) {
 	}
 	// Same rule as the enter side: the link belongs to the screen being left.
 	s.hyperlink = ""
-	// Persist (or discard) the alt buffer for a later re-enter.
 	s.altCells = s.Cells
 	if mode == 1047 || mode == 1049 {
 		s.altCells = nil

@@ -166,8 +166,7 @@ func (p *OriginPolicy) Allows(r *http.Request) bool {
 
 // acceptOptions renders the policy for coder/websocket.
 //
-// Inactive: nil, which leaves the library's own same-origin check as the gate,
-// exactly as before this type existed.
+// Inactive: nil, which leaves the library's own same-origin check as the gate.
 //
 // Active: InsecureSkipVerify, because Allows has already made a strictly
 // stronger decision than AcceptOptions.OriginPatterns can express. That matching

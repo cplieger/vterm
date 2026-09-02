@@ -1,6 +1,6 @@
 window.BENCHMARK_DATA = {
   "lastUpdate": 1788308492084,
-  "repoUrl": "https://github.com/cplieger/ci",
+  "repoUrl": "https://github.com/cplieger/web-terminal-engine",
   "entries": {
     "Benchmark": [
       {
@@ -79,10 +79,10 @@ window.BENCHMARK_DATA = {
             "username": "web-flow",
             "email": "noreply@github.com"
           },
-          "id": "73fcb5e94e2f68f4366ffd27bd2af0247e0b054a",
-          "message": "chore(deps): update cplieger/ci digest to 77bb665 (#557)",
-          "timestamp": "2026-09-01T16:02:18Z",
-          "url": "https://github.com/cplieger/ci/commit/73fcb5e94e2f68f4366ffd27bd2af0247e0b054a"
+          "id": "009c220169ff878a3ece162eb7170acedd6a9be0",
+          "message": "fix(deps): update module github.com/cplieger/runesafe/v2 to v2.0.1 (#537)",
+          "timestamp": "2026-09-01T22:17:50Z",
+          "url": "https://github.com/cplieger/web-terminal-engine/commit/009c220169ff878a3ece162eb7170acedd6a9be0"
         },
         "date": 1788308491296,
         "tool": "customSmallerIsBetter",

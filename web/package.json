@@ -17,9 +17,9 @@
     "@stryker-mutator/vitest-runner": "10.0.0",
     "@types/pngjs": "6.0.5",
     "@typescript/native": "npm:typescript@7.0.2",
-    "@vitest/browser": "4.1.11",
-    "@vitest/browser-playwright": "4.1.11",
-    "@vitest/coverage-v8": "4.1.11",
+    "@vitest/browser": "5.0.0",
+    "@vitest/browser-playwright": "5.0.0",
+    "@vitest/coverage-v8": "5.0.0",
     "esbuild": "0.28.2",
     "eslint": "10.9.1",
     "fast-check": "4.9.0",
@@ -28,7 +28,7 @@
     "prettier": "3.9.6",
     "typescript": "npm:@typescript/typescript6@6.0.2",
     "typescript-eslint": "8.69.0",
-    "vitest": "4.1.11"
+    "vitest": "5.0.0"
   },
   "overrides": {
     "qs": "^6.15.2"
